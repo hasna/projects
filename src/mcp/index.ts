@@ -18,6 +18,7 @@ import { syncProject } from "../lib/sync.js";
 import { importProject, importBulk } from "../lib/import.js";
 import { publishProject, unpublishProject } from "../lib/github.js";
 import { syncAll, getScheduleConfig, saveScheduleConfig, installCron, removeCron } from "../lib/scheduler.js";
+import { registerCloudSyncTools } from "./tools/cloud.js";
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../db/workdirs.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
 
@@ -512,6 +513,9 @@ server.tool(
     }
   },
 );
+
+// ── Cloud sync tools ──────────────────────────────────────────────────────────
+registerCloudSyncTools(server);
 
 // ── Start server ──────────────────────────────────────────────────────────────
 const transport = new StdioServerTransport();
