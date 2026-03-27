@@ -1,0 +1,236 @@
+import type { Database, SQLQueryBindings } from "bun:sqlite";
+import { customAlphabet } from "nanoid";
+import type {
+  CreateProjectInput,
+  UpdateProjectInput,
+  Project,
+  ProjectRow,
+  ProjectFilter,
+  SyncLog,
+  SyncLogRow,
+  SyncDirection,
+} from "../types/index.js";
+import {
+  ProjectNotFoundError,
+  ProjectSlugConflictError,
+  ProjectPathConflictError,
+} from "../types/index.js";
+import { getDatabase, now, uuid } from "./database.js";
+
+const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
+
+export function generateProjectId(): string {
+  return `prj_${nanoid()}`;
+}
+
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function ensureUniqueSlug(base: string, db: Database, excludeId?: string): string {
+  let candidate = base;
+  let suffix = 1;
+  while (true) {
+    const row = db
+      .query("SELECT id FROM projects WHERE slug = ?")
+      .get(candidate) as { id: string } | null;
+    if (!row || row.id === excludeId) return candidate;
+    suffix++;
+    candidate = `${base}-${suffix}`;
+  }
+}
+
+function rowToProject(row: ProjectRow): Project {
+  return {
+    ...row,
+    status: row.status as Project["status"],
+    tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+  };
+}
+
+export function createProject(input: CreateProjectInput, db?: Database): Project {
+  const d = db || getDatabase();
+  const id = generateProjectId();
+  const ts = now();
+  const baseSlug = input.slug || slugify(input.name);
+  const slug = ensureUniqueSlug(baseSlug, d);
+
+  // Check path uniqueness
+  const existing = d
+    .query("SELECT id FROM projects WHERE path = ?")
+    .get(input.path) as { id: string } | null;
+  if (existing) throw new ProjectPathConflictError(input.path);
+
+  d.run(
+    `INSERT INTO projects (id, slug, name, description, status, path, s3_bucket, s3_prefix, git_remote, tags, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      slug,
+      input.name,
+      input.description ?? null,
+      input.path,
+      input.s3_bucket ?? null,
+      input.s3_prefix ?? null,
+      input.git_remote ?? null,
+      JSON.stringify(input.tags ?? []),
+      ts,
+      ts,
+    ],
+  );
+
+  return getProject(id, d)!;
+}
+
+export function getProject(id: string, db?: Database): Project | null {
+  const d = db || getDatabase();
+  const row = d
+    .query("SELECT * FROM projects WHERE id = ?")
+    .get(id) as ProjectRow | null;
+  return row ? rowToProject(row) : null;
+}
+
+export function getProjectBySlug(slug: string, db?: Database): Project | null {
+  const d = db || getDatabase();
+  const row = d
+    .query("SELECT * FROM projects WHERE slug = ?")
+    .get(slug) as ProjectRow | null;
+  return row ? rowToProject(row) : null;
+}
+
+export function getProjectByPath(path: string, db?: Database): Project | null {
+  const d = db || getDatabase();
+  const row = d
+    .query("SELECT * FROM projects WHERE path = ?")
+    .get(path) as ProjectRow | null;
+  return row ? rowToProject(row) : null;
+}
+
+export function listProjects(filter: ProjectFilter = {}, db?: Database): Project[] {
+  const d = db || getDatabase();
+  const conditions: string[] = [];
+  const params: SQLQueryBindings[] = [];
+
+  if (filter.status) {
+    conditions.push("status = ?");
+    params.push(filter.status);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = filter.limit ?? 100;
+  const offset = filter.offset ?? 0;
+
+  const rows = d
+    .query(`SELECT * FROM projects ${where} ORDER BY name ASC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as ProjectRow[];
+
+  return rows.map(rowToProject);
+}
+
+export function updateProject(
+  id: string,
+  input: UpdateProjectInput,
+  db?: Database,
+): Project {
+  const d = db || getDatabase();
+  const project = getProject(id, d);
+  if (!project) throw new ProjectNotFoundError(id);
+
+  const sets: string[] = [];
+  const params: SQLQueryBindings[] = [];
+
+  if (input.name !== undefined) { sets.push("name = ?"); params.push(input.name); }
+  if (input.description !== undefined) { sets.push("description = ?"); params.push(input.description); }
+  if (input.path !== undefined) { sets.push("path = ?"); params.push(input.path); }
+  if (input.tags !== undefined) { sets.push("tags = ?"); params.push(JSON.stringify(input.tags)); }
+  if ("s3_bucket" in input) { sets.push("s3_bucket = ?"); params.push(input.s3_bucket ?? null); }
+  if ("s3_prefix" in input) { sets.push("s3_prefix = ?"); params.push(input.s3_prefix ?? null); }
+  if ("git_remote" in input) { sets.push("git_remote = ?"); params.push(input.git_remote ?? null); }
+
+  if (sets.length === 0) return project;
+
+  sets.push("updated_at = ?");
+  params.push(now());
+  params.push(id);
+
+  d.run(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`, params);
+  return getProject(id, d)!;
+}
+
+export function archiveProject(id: string, db?: Database): Project {
+  const d = db || getDatabase();
+  const project = getProject(id, d);
+  if (!project) throw new ProjectNotFoundError(id);
+  d.run("UPDATE projects SET status = 'archived', updated_at = ? WHERE id = ?", [now(), id]);
+  return getProject(id, d)!;
+}
+
+export function unarchiveProject(id: string, db?: Database): Project {
+  const d = db || getDatabase();
+  const project = getProject(id, d);
+  if (!project) throw new ProjectNotFoundError(id);
+  d.run("UPDATE projects SET status = 'active', updated_at = ? WHERE id = ?", [now(), id]);
+  return getProject(id, d)!;
+}
+
+// Resolve id-or-slug to a full project id
+export function resolveProject(idOrSlug: string, db?: Database): Project | null {
+  const d = db || getDatabase();
+  // Try exact ID first
+  let project = getProject(idOrSlug, d);
+  if (project) return project;
+  // Try slug
+  project = getProjectBySlug(idOrSlug, d);
+  if (project) return project;
+  // Try partial ID prefix
+  const row = d
+    .query("SELECT id FROM projects WHERE id LIKE ? LIMIT 1")
+    .get(`${idOrSlug}%`) as { id: string } | null;
+  return row ? getProject(row.id, d) : null;
+}
+
+// Sync log helpers
+function syncRowToLog(row: SyncLogRow): SyncLog {
+  return { ...row, direction: row.direction as SyncDirection, status: row.status as SyncLog["status"] };
+}
+
+export function startSyncLog(
+  projectId: string,
+  direction: SyncDirection,
+  db?: Database,
+): SyncLog {
+  const d = db || getDatabase();
+  const id = uuid();
+  const ts = now();
+  d.run(
+    "INSERT INTO sync_log (id, project_id, direction, status, started_at) VALUES (?, ?, ?, 'running', ?)",
+    [id, projectId, direction, ts],
+  );
+  return d.query("SELECT * FROM sync_log WHERE id = ?").get(id) as SyncLog;
+}
+
+export function completeSyncLog(
+  id: string,
+  result: { files_synced?: number; bytes?: number; error?: string },
+  db?: Database,
+): SyncLog {
+  const d = db || getDatabase();
+  const status = result.error ? "failed" : "completed";
+  d.run(
+    "UPDATE sync_log SET status = ?, files_synced = ?, bytes = ?, error = ?, completed_at = ? WHERE id = ?",
+    [status, result.files_synced ?? 0, result.bytes ?? 0, result.error ?? null, now(), id],
+  );
+  const row = d.query("SELECT * FROM sync_log WHERE id = ?").get(id) as SyncLogRow;
+  return syncRowToLog(row);
+}
+
+export function listSyncLogs(projectId: string, limit = 20, db?: Database): SyncLog[] {
+  const d = db || getDatabase();
+  const rows = d
+    .query("SELECT * FROM sync_log WHERE project_id = ? ORDER BY started_at DESC LIMIT ?")
+    .all(projectId, limit) as SyncLogRow[];
+  return rows.map(syncRowToLog);
+}
