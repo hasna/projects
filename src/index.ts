@@ -20,3 +20,4 @@ export {
 export { getDatabase } from "./db/database.js";
 export { syncProject } from "./lib/sync.js";
 export { importProject, importBulk } from "./lib/import.js";
+export { publishProject, unpublishProject, getGitHubUrl } from "./lib/github.js";

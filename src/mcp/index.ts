@@ -16,6 +16,7 @@ import {
 } from "../db/projects.js";
 import { syncProject } from "../lib/sync.js";
 import { importProject, importBulk } from "../lib/import.js";
+import { publishProject, unpublishProject } from "../lib/github.js";
 
 const server = new McpServer({
   name: "open-projects",
@@ -242,6 +243,31 @@ server.tool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(logs, null, 2) }],
     };
+  },
+);
+
+// ── projects_publish ──────────────────────────────────────────────────────────
+server.tool(
+  "projects_publish",
+  "Publish a project to GitHub. Creates the repo, adds remote, and pushes.",
+  {
+    id: z.string().describe("Project ID or slug"),
+    org: z.string().optional().describe("GitHub org (default: hasnaxyz)"),
+    private: z.boolean().optional().describe("Make repo private (default: true)"),
+  },
+  async (input) => {
+    try {
+      const project = resolveProject(input.id);
+      if (!project) return { content: [{ type: "text" as const, text: `Project not found: ${input.id}` }], isError: true };
+      const result = publishProject(project.name, project.path, {
+        org: input.org,
+        private: input.private !== false,
+        description: project.description ?? undefined,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
   },
 );
 

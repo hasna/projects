@@ -14,6 +14,7 @@ import {
 import { gitPassthrough } from "../../lib/git.js";
 import { syncProject } from "../../lib/sync.js";
 import { importProject, importBulk } from "../../lib/import.js";
+import { publishProject, unpublishProject } from "../../lib/github.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 function printProject(p: ReturnType<typeof resolveProject>) {
@@ -211,6 +212,40 @@ export function registerProjectCommands(program: Command): void {
         console.error(chalk.red(`Sync failed: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
       }
+    });
+
+  // projects publish
+  cmd
+    .command("publish <id-or-slug>")
+    .description("Publish project to GitHub")
+    .option("--org <org>", "GitHub org (default: hasnaxyz)")
+    .option("--public", "Make repo public (default: private)")
+    .action((idOrSlug, opts) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      try {
+        const result = publishProject(project.name, project.path, {
+          org: opts.org,
+          private: !opts.public,
+          description: project.description ?? undefined,
+        });
+        console.log(chalk.green(`✓ Published: ${result.url}`));
+        if (result.pushed) console.log(chalk.dim("  pushed to origin"));
+      } catch (err: unknown) {
+        console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    });
+
+  // projects unpublish
+  cmd
+    .command("unpublish <id-or-slug>")
+    .description("Remove GitHub remote from project (does not delete the repo)")
+    .action((idOrSlug) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      unpublishProject(project.path);
+      console.log(chalk.yellow(`✓ Removed origin remote from ${project.name}`));
     });
 
   // projects import
