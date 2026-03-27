@@ -24,7 +24,19 @@ import {
 } from "../../lib/scheduler.js";
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../../db/workdirs.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../../lib/generate.js";
+import { detectCurrentProject } from "../../lib/detect.js";
 import type { ProjectFilter } from "../../types/index.js";
+
+/** Resolve project from arg or cwd. Prints hint if auto-detected. */
+function requireProject(idOrSlug: string | undefined): ReturnType<typeof resolveProject> {
+  if (idOrSlug) return resolveProject(idOrSlug);
+  const detected = detectCurrentProject();
+  if (detected) {
+    console.log(chalk.dim(`[detected: ${detected.slug}]`));
+    return detected;
+  }
+  return null;
+}
 
 function printProject(p: ReturnType<typeof resolveProject>) {
   if (!p) return;
@@ -104,12 +116,12 @@ export function registerProjectCommands(program: Command): void {
 
   // projects get
   cmd
-    .command("get <id-or-slug>")
-    .description("Get project details")
-    .action((idOrSlug) => {
-      const project = resolveProject(idOrSlug);
+    .command("get [id-or-slug]")
+    .description("Get project details (auto-detects from cwd if no arg given)")
+    .action((idOrSlug?: string) => {
+      const project = requireProject(idOrSlug);
       if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
+        console.error(chalk.red(idOrSlug ? `Project not found: ${idOrSlug}` : "No project detected in current directory. Pass a project ID or slug."));
         process.exit(1);
       }
       printProject(project);
@@ -175,10 +187,10 @@ export function registerProjectCommands(program: Command): void {
 
   // projects open
   cmd
-    .command("open <id-or-slug>")
-    .description("Print the path of a project (for use with cd)")
-    .action((idOrSlug) => {
-      const project = resolveProject(idOrSlug);
+    .command("open [id-or-slug]")
+    .description("Print the path of a project (for use with cd, auto-detects from cwd)")
+    .action((idOrSlug?: string) => {
+      const project = requireProject(idOrSlug);
       if (!project) {
         console.error(chalk.red(`Project not found: ${idOrSlug}`));
         process.exit(1);
@@ -192,15 +204,15 @@ export function registerProjectCommands(program: Command): void {
 
   // projects sync
   cmd
-    .command("sync <id-or-slug>")
-    .description("Sync project files to/from S3")
+    .command("sync [id-or-slug]")
+    .description("Sync project files to/from S3 (auto-detects from cwd)")
     .option("--direction <dir>", "push, pull, or both (default: both)", "both")
     .option("--dry-run", "Show what would be synced without doing it")
     .option("--region <region>", "AWS region")
-    .action(async (idOrSlug, opts) => {
-      const project = resolveProject(idOrSlug);
+    .action(async (idOrSlug: string | undefined, opts) => {
+      const project = requireProject(idOrSlug);
       if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
+        console.error(chalk.red(idOrSlug ? `Project not found: ${idOrSlug}` : "No project detected in current directory."));
         process.exit(1);
       }
       try {
