@@ -233,20 +233,49 @@ export function unarchiveProject(id: string, db?: Database): Project {
   return getProject(id, d)!;
 }
 
-// Resolve id-or-slug to a full project id
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0]![j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i]![j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1]![j - 1]!
+        : 1 + Math.min(dp[i - 1]![j]!, dp[i]![j - 1]!, dp[i - 1]![j - 1]!);
+  return dp[m]![n]!;
+}
+
+// Resolve id-or-slug to a full project: exact → slug → partial ID → substring → Levenshtein
 export function resolveProject(idOrSlug: string, db?: Database): Project | null {
   const d = db || getDatabase();
-  // Try exact ID first
+
+  // 1. Exact ID
   let project = getProject(idOrSlug, d);
   if (project) return project;
-  // Try slug
+
+  // 2. Exact slug
   project = getProjectBySlug(idOrSlug, d);
   if (project) return project;
-  // Try partial ID prefix
-  const row = d
+
+  // 3. Partial ID prefix
+  const prefixRow = d
     .query("SELECT id FROM projects WHERE id LIKE ? LIMIT 1")
     .get(`${idOrSlug}%`) as { id: string } | null;
-  return row ? getProject(row.id, d) : null;
+  if (prefixRow) return getProject(prefixRow.id, d);
+
+  // 4. Substring match on slug
+  const subRow = d
+    .query("SELECT id FROM projects WHERE slug LIKE ? ORDER BY length(slug) ASC LIMIT 1")
+    .get(`%${idOrSlug}%`) as { id: string } | null;
+  if (subRow) return getProject(subRow.id, d);
+
+  // 5. Levenshtein ≤ 2 on slug
+  const allRows = d.query("SELECT id, slug FROM projects WHERE status = 'active'").all() as { id: string; slug: string }[];
+  const best = allRows
+    .map((r) => ({ id: r.id, dist: levenshtein(idOrSlug, r.slug) }))
+    .filter((r) => r.dist <= 2)
+    .sort((a, b) => a.dist - b.dist)[0];
+  return best ? getProject(best.id, d) : null;
 }
 
 // Sync log helpers

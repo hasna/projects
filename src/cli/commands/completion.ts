@@ -73,6 +73,31 @@ _projects() {
 compdef _projects projects
 `;
 
+const WORKON_FUNCTION = [
+  "",
+  "# workon — cd into a project directory",
+  "# Usage: workon [slug]   (no arg = interactive fzf picker if available)",
+  "workon() {",
+  '  if [ -z "$1" ]; then',
+  "    if command -v fzf >/dev/null 2>&1; then",
+  "      local slug",
+  '      slug=$(projects list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
+  '      [ -n "$slug" ] && cd "$(projects open "$slug")"',
+  "    else",
+  "      projects list",
+  "    fi",
+  "  else",
+  '    cd "$(projects open "$1")"',
+  "  fi",
+  "}",
+  "",
+  "# penv — load a project's .env into current shell",
+  "# Usage: penv [slug]",
+  "penv() {",
+  '  eval "$(projects env "${1}")"',
+  "}",
+].join("\n");
+
 export function registerCompletionCommand(program: Command): void {
   program
     .command("completion")
@@ -81,9 +106,11 @@ export function registerCompletionCommand(program: Command): void {
     .action((opts) => {
       if (opts.shell === "zsh") {
         console.log(ZSH_COMPLETION.trim());
+        console.log(WORKON_FUNCTION.trim());
         console.log('\n# Add to ~/.zshrc:\n# eval "$(projects completion --shell zsh)"');
       } else {
         console.log(BASH_COMPLETION.trim());
+        console.log(WORKON_FUNCTION.trim());
         console.log('\n# Add to ~/.bashrc:\n# eval "$(projects completion)"');
       }
     });

@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import {
   createProject,
   listProjects,
@@ -95,16 +95,18 @@ export function registerProjectCommands(program: Command): void {
     .option("--status <status>", "Filter by status (active|archived)")
     .option("--tags <tags>", "Filter by tags (comma-separated)")
     .option("--limit <n>", "Max results", "50")
+    .option("--json", "Output raw JSON")
     .action((opts) => {
       const filter: ProjectFilter = {
         status: opts.status,
         limit: parseInt(opts.limit, 10),
       };
       const projects = listProjects(filter);
-      if (!projects.length) {
-        console.log(chalk.dim("No projects found."));
+      if (opts.json || process.env["PROJECTS_JSON"]) {
+        console.log(JSON.stringify(projects, null, 2));
         return;
       }
+      if (!projects.length) { console.log(chalk.dim("No projects found.")); return; }
       for (const p of projects) {
         const tags = p.tags.length ? chalk.dim(` [${p.tags.join(", ")}]`) : "";
         const status = p.status === "archived" ? chalk.yellow(" [archived]") : "";
@@ -118,13 +120,59 @@ export function registerProjectCommands(program: Command): void {
   cmd
     .command("get [id-or-slug]")
     .description("Get project details (auto-detects from cwd if no arg given)")
-    .action((idOrSlug?: string) => {
+    .option("--json", "Output raw JSON")
+    .action((idOrSlug?: string, opts?: { json?: boolean }) => {
       const project = requireProject(idOrSlug);
       if (!project) {
         console.error(chalk.red(idOrSlug ? `Project not found: ${idOrSlug}` : "No project detected in current directory. Pass a project ID or slug."));
         process.exit(1);
       }
+      if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(project, null, 2)); return; }
       printProject(project);
+    });
+
+  // projects rename
+  cmd
+    .command("rename <id-or-slug> <new-name>")
+    .description("Rename a project and update slug + .project.json in all workdirs")
+    .action((idOrSlug, newName) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const updated = updateProject(project.id, { name: newName });
+      const workdirs = listWorkdirs(project.id);
+      for (const w of workdirs) {
+        try {
+          const jsonPath = join(w.path, ".project.json");
+          if (existsSync(jsonPath)) {
+            const existing = JSON.parse(readFileSync(jsonPath, "utf-8")) as Record<string, unknown>;
+            writeFileSync(jsonPath, JSON.stringify({ ...existing, name: newName, slug: updated.slug }, null, 2) + "\n");
+          }
+        } catch { /* non-fatal */ }
+      }
+      console.log(chalk.green(`✓ Renamed: ${project.name} → ${updated.name} (slug: ${updated.slug})`));
+    });
+
+  // projects tag / untag
+  cmd
+    .command("tag <id-or-slug> [tags...]")
+    .description("Add tags to a project")
+    .action((idOrSlug, tags: string[]) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const merged = [...new Set([...project.tags, ...tags])];
+      updateProject(project.id, { tags: merged });
+      console.log(chalk.green(`✓ Tags: ${merged.join(", ")}`));
+    });
+
+  cmd
+    .command("untag <id-or-slug> [tags...]")
+    .description("Remove tags from a project")
+    .action((idOrSlug, tags: string[]) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const remaining = project.tags.filter((t) => !tags.includes(t));
+      updateProject(project.id, { tags: remaining });
+      console.log(chalk.green(`✓ Tags: ${remaining.length ? remaining.join(", ") : "(none)"}`));
     });
 
   // projects update
