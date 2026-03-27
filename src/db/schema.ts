@@ -55,6 +55,12 @@ export const MIGRATIONS: string[] = [
 
   INSERT OR IGNORE INTO _migrations (id) VALUES (1);
   `,
+
+  // Migration 2: Add integrations column
+  `
+  ALTER TABLE projects ADD COLUMN integrations TEXT NOT NULL DEFAULT '{}';
+  INSERT OR IGNORE INTO _migrations (id) VALUES (2);
+  `,
 ];
 
 export function runMigrations(db: Database): void {

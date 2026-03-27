@@ -1,3 +1,12 @@
+// External service integrations stored per-project
+export interface ProjectIntegrations {
+  todos_project_id?: string;       // open-todos project ID
+  mementos_project_id?: string;    // open-mementos project ID
+  conversations_space?: string;    // open-conversations space name
+  files_index_id?: string;         // open-files index ID
+  [key: string]: string | undefined;
+}
+
 // Project statuses
 export const PROJECT_STATUSES = ["active", "archived"] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
@@ -22,6 +31,7 @@ export interface Project {
   s3_prefix: string | null;
   git_remote: string | null;
   tags: string[];
+  integrations: ProjectIntegrations;
   created_at: string;
   updated_at: string;
   synced_at: string | null;
@@ -38,6 +48,7 @@ export interface ProjectRow {
   s3_prefix: string | null;
   git_remote: string | null;
   tags: string | null;
+  integrations: string | null;
   created_at: string;
   updated_at: string;
   synced_at: string | null;
@@ -63,6 +74,7 @@ export interface UpdateProjectInput {
   s3_bucket?: string | null;
   s3_prefix?: string | null;
   git_remote?: string | null;
+  integrations?: ProjectIntegrations;
 }
 
 export interface ProjectFilter {

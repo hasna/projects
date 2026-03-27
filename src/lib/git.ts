@@ -70,6 +70,7 @@ export function gitInit(project: Project): void {
     slug,
     name,
     created_at: project.created_at,
+    integrations: project.integrations ?? {},
   };
   writeFileSync(join(path, ".project.json"), JSON.stringify(projectJson, null, 2) + "\n", "utf-8");
 

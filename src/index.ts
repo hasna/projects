@@ -13,6 +13,7 @@ export {
   startSyncLog,
   completeSyncLog,
   listSyncLogs,
+  setIntegrations,
   generateProjectId,
   slugify,
 } from "./db/projects.js";

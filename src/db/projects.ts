@@ -6,6 +6,7 @@ import type {
   Project,
   ProjectRow,
   ProjectFilter,
+  ProjectIntegrations,
   SyncLog,
   SyncLogRow,
   SyncDirection,
@@ -15,6 +16,8 @@ import {
   ProjectSlugConflictError,
   ProjectPathConflictError,
 } from "../types/index.js";
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { gitInit, isGitRepo } from "../lib/git.js";
 
@@ -49,6 +52,7 @@ function rowToProject(row: ProjectRow): Project {
     ...row,
     status: row.status as Project["status"],
     tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+    integrations: row.integrations ? (JSON.parse(row.integrations) as ProjectIntegrations) : {},
   };
 }
 
@@ -162,6 +166,10 @@ export function updateProject(
   if ("s3_bucket" in input) { sets.push("s3_bucket = ?"); params.push(input.s3_bucket ?? null); }
   if ("s3_prefix" in input) { sets.push("s3_prefix = ?"); params.push(input.s3_prefix ?? null); }
   if ("git_remote" in input) { sets.push("git_remote = ?"); params.push(input.git_remote ?? null); }
+  if ("integrations" in input && input.integrations !== undefined) {
+    sets.push("integrations = ?");
+    params.push(JSON.stringify(input.integrations));
+  }
 
   if (sets.length === 0) return project;
 
@@ -170,6 +178,34 @@ export function updateProject(
   params.push(id);
 
   d.run(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`, params);
+  return getProject(id, d)!;
+}
+
+// Merge new integration IDs into existing integrations (non-destructive)
+export function setIntegrations(
+  id: string,
+  integrations: ProjectIntegrations,
+  db?: Database,
+): Project {
+  const d = db || getDatabase();
+  const project = getProject(id, d);
+  if (!project) throw new ProjectNotFoundError(id);
+  const merged = { ...project.integrations, ...integrations };
+  d.run("UPDATE projects SET integrations = ?, updated_at = ? WHERE id = ?", [
+    JSON.stringify(merged),
+    now(),
+    id,
+  ]);
+  // Also update .project.json if it exists
+  try {
+    const jsonPath = join(project.path, ".project.json");
+    if (existsSync(jsonPath)) {
+      const existing = JSON.parse(readFileSync(jsonPath, "utf-8")) as Record<string, unknown>;
+      writeFileSync(jsonPath, JSON.stringify({ ...existing, integrations: merged }, null, 2) + "\n", "utf-8");
+    }
+  } catch {
+    // Non-fatal
+  }
   return getProject(id, d)!;
 }
 

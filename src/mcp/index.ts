@@ -12,6 +12,7 @@ import {
   unarchiveProject,
   resolveProject,
   listSyncLogs,
+  setIntegrations,
 } from "../db/projects.js";
 
 const server = new McpServer({
@@ -45,7 +46,27 @@ server.tool(
             text: JSON.stringify({
               ...project,
               workingDirectory: project.path,
-              instruction: `Project created. To work on this project, use workingDirectory: ${project.path}`,
+              instruction: `Project "${project.name}" created at ${project.path}. workingDirectory: ${project.path}`,
+              post_create_actions: [
+                {
+                  description: "Register with open-todos for task tracking",
+                  tool: "mcp__todos__create_project",
+                  args: { name: project.name, path: project.path, description: project.description },
+                  on_complete: `Call projects_link with todos_project_id=<returned id>`,
+                },
+                {
+                  description: "Register with open-mementos for persistent memory",
+                  tool: "mcp__mementos__register_project",
+                  args: { name: project.name, path: project.path },
+                  on_complete: `Call projects_link with mementos_project_id=<returned id>`,
+                },
+                {
+                  description: "Create a conversations space for team coordination (optional)",
+                  tool: "mcp__conversations__create_space",
+                  args: { name: project.slug, description: project.description },
+                  on_complete: `Call projects_link with conversations_space=<returned space name>`,
+                },
+              ],
             }, null, 2),
           },
         ],
@@ -219,6 +240,44 @@ server.tool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(logs, null, 2) }],
     };
+  },
+);
+
+// ── projects_link ─────────────────────────────────────────────────────────────
+server.tool(
+  "projects_link",
+  "Store external service integration IDs for a project (todos, mementos, conversations, files). Call this after registering the project with each external service.",
+  {
+    id: z.string().describe("Project ID or slug"),
+    todos_project_id: z.string().optional().describe("open-todos project ID"),
+    mementos_project_id: z.string().optional().describe("open-mementos project ID"),
+    conversations_space: z.string().optional().describe("open-conversations space name"),
+    files_index_id: z.string().optional().describe("open-files index ID"),
+  },
+  async (input) => {
+    try {
+      const project = resolveProject(input.id);
+      if (!project) {
+        return {
+          content: [{ type: "text" as const, text: `Project not found: ${input.id}` }],
+          isError: true,
+        };
+      }
+      const { id: _id, ...integrations } = input;
+      // Remove undefined values
+      const clean = Object.fromEntries(
+        Object.entries(integrations).filter(([, v]) => v !== undefined),
+      );
+      const updated = setIntegrations(project.id, clean);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(updated.integrations, null, 2) }],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   },
 );
 
