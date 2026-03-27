@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerProjectCommands } from "./commands/projects.js";
+import { registerCompletionCommand } from "./commands/completion.js";
 
 function getPackageVersion(): string {
   try {
@@ -23,5 +24,6 @@ program
   .version(getPackageVersion());
 
 registerProjectCommands(program);
+registerCompletionCommand(program);
 
 program.parse(process.argv);
