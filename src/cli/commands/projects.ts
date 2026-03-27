@@ -15,6 +15,13 @@ import { gitPassthrough } from "../../lib/git.js";
 import { syncProject } from "../../lib/sync.js";
 import { importProject, importBulk } from "../../lib/import.js";
 import { publishProject, unpublishProject } from "../../lib/github.js";
+import {
+  getScheduleConfig,
+  saveScheduleConfig,
+  installCron,
+  removeCron,
+  syncAll,
+} from "../../lib/scheduler.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 function printProject(p: ReturnType<typeof resolveProject>) {
@@ -212,6 +219,61 @@ export function registerProjectCommands(program: Command): void {
         console.error(chalk.red(`Sync failed: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
       }
+    });
+
+  // projects sync --all
+  cmd
+    .command("sync-all")
+    .description("Sync all active projects that have S3 configured")
+    .option("--direction <dir>", "push, pull, or both (default: both)", "both")
+    .action(async (opts) => {
+      console.log(chalk.dim("Syncing all active projects..."));
+      const result = await syncAll(opts.direction, (msg) => console.log(chalk.dim(`  ${msg}`)));
+      console.log(chalk.green(`✓ synced: ${result.synced.length}`));
+      if (result.skipped.length) console.log(chalk.dim(`  skipped (no S3): ${result.skipped.join(", ")}`));
+      if (result.errors.length) {
+        result.errors.forEach((e) => console.log(chalk.red(`  ${e.name}: ${e.error}`)));
+      }
+    });
+
+  // projects schedule
+  const scheduleCmd = cmd.command("schedule").description("Manage auto-sync schedule");
+
+  scheduleCmd
+    .command("set")
+    .description("Enable scheduled sync")
+    .option("--interval <n>", "hourly, daily, or weekly (default: daily)", "daily")
+    .option("--direction <dir>", "push, pull, or both (default: both)", "both")
+    .action((opts) => {
+      const config = { enabled: true, interval: opts.interval, direction: opts.direction };
+      saveScheduleConfig(config);
+      try {
+        installCron(config);
+        console.log(chalk.green(`✓ Scheduled: ${opts.interval} sync (${opts.direction})`));
+      } catch (err: unknown) {
+        console.log(chalk.yellow("Config saved, but crontab install failed:"), err instanceof Error ? err.message : String(err));
+      }
+    });
+
+  scheduleCmd
+    .command("remove")
+    .description("Disable scheduled sync")
+    .action(() => {
+      const config = getScheduleConfig();
+      saveScheduleConfig({ ...config, enabled: false });
+      removeCron();
+      console.log(chalk.yellow("✓ Schedule removed"));
+    });
+
+  scheduleCmd
+    .command("status")
+    .description("Show schedule configuration")
+    .action(() => {
+      const config = getScheduleConfig();
+      console.log(`enabled:  ${config.enabled ? chalk.green("yes") : chalk.dim("no")}`);
+      console.log(`interval: ${config.interval}`);
+      console.log(`direction: ${config.direction}`);
+      if (config.last_run) console.log(`last run: ${config.last_run}`);
     });
 
   // projects publish

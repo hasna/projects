@@ -17,6 +17,7 @@ import {
 import { syncProject } from "../lib/sync.js";
 import { importProject, importBulk } from "../lib/import.js";
 import { publishProject, unpublishProject } from "../lib/github.js";
+import { syncAll, getScheduleConfig, saveScheduleConfig, installCron, removeCron } from "../lib/scheduler.js";
 
 const server = new McpServer({
   name: "open-projects",
@@ -243,6 +244,49 @@ server.tool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(logs, null, 2) }],
     };
+  },
+);
+
+// ── projects_sync_all ─────────────────────────────────────────────────────────
+server.tool(
+  "projects_sync_all",
+  "Sync all active projects that have S3 configured",
+  {
+    direction: z.enum(["push", "pull", "both"]).optional(),
+  },
+  async (input) => {
+    const logs: string[] = [];
+    const result = await syncAll(input.direction, (msg) => logs.push(msg));
+    return { content: [{ type: "text" as const, text: JSON.stringify({ ...result, log: logs }, null, 2) }] };
+  },
+);
+
+server.tool(
+  "projects_schedule_set",
+  "Enable scheduled auto-sync via system cron",
+  {
+    interval: z.enum(["hourly", "daily", "weekly"]).optional(),
+    direction: z.enum(["push", "pull", "both"]).optional(),
+  },
+  async (input) => {
+    const config = { enabled: true, interval: input.interval ?? "daily", direction: input.direction ?? "both" };
+    saveScheduleConfig(config);
+    try {
+      installCron(config);
+      return { content: [{ type: "text" as const, text: `Scheduled: ${config.interval} sync (${config.direction})` }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Config saved but crontab install failed: ${err instanceof Error ? err.message : String(err)}` }] };
+    }
+  },
+);
+
+server.tool(
+  "projects_schedule_status",
+  "Get current auto-sync schedule configuration",
+  {},
+  async () => {
+    const config = getScheduleConfig();
+    return { content: [{ type: "text" as const, text: JSON.stringify(config, null, 2) }] };
   },
 );
 
