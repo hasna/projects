@@ -96,6 +96,19 @@ async function listS3Objects(
   return objects;
 }
 
+export async function cloneProject(
+  project: Project,
+  targetPath: string,
+  options: { region?: string; onProgress?: (msg: string) => void } = {},
+): Promise<SyncResult> {
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(targetPath, { recursive: true });
+
+  // Pull from S3 into the target path
+  const clonedProject = { ...project, path: targetPath };
+  return syncProject(clonedProject, { direction: "pull", region: options.region, onProgress: options.onProgress });
+}
+
 export async function syncProject(
   project: Project,
   options: SyncOptions = {},

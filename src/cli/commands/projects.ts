@@ -12,7 +12,8 @@ import {
   listSyncLogs,
 } from "../../db/projects.js";
 import { gitPassthrough } from "../../lib/git.js";
-import { syncProject } from "../../lib/sync.js";
+import { syncProject, cloneProject } from "../../lib/sync.js";
+import type { Project } from "../../types/index.js";
 import { importProject, importBulk } from "../../lib/import.js";
 import { publishProject, unpublishProject } from "../../lib/github.js";
 import {
@@ -25,6 +26,11 @@ import {
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../../db/workdirs.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../../lib/generate.js";
 import { detectCurrentProject } from "../../lib/detect.js";
+import { doctorAll, doctorProject, fixProject } from "../../lib/doctor.js";
+import { getAllStatus, getProjectStatus, getRecentProjects, touchLastOpened } from "../../lib/status.js";
+import { loadProjectEnv, printExportStatements, listEnvKeys } from "../../lib/env.js";
+import { watchProject } from "../../lib/watch.js";
+import { getGlobalStats, getProjectStats, formatBytes } from "../../lib/stats.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 /** Resolve project from arg or cwd. Prints hint if auto-detected. */
@@ -247,7 +253,159 @@ export function registerProjectCommands(program: Command): void {
         console.error(chalk.red(`Path does not exist on this machine: ${project.path}`));
         process.exit(1);
       }
+      touchLastOpened(project.id);
       console.log(project.path);
+    });
+
+  // projects recent
+  cmd
+    .command("recent")
+    .description("List recently opened projects")
+    .option("--limit <n>", "Max results", "10")
+    .option("--json", "Output raw JSON")
+    .action((opts) => {
+      const projects = getRecentProjects(parseInt(opts.limit, 10));
+      if (opts.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(projects, null, 2)); return; }
+      if (!projects.length) { console.log(chalk.dim("No recently opened projects.")); return; }
+      for (const p of projects) {
+        console.log(`${chalk.bold(p.name)}  ${chalk.dim(p.path)}`);
+        if ((p as Project & { last_opened_at?: string }).last_opened_at) console.log(`  ${chalk.dim("opened:")} ${(p as Project & { last_opened_at?: string }).last_opened_at}`);
+      }
+    });
+
+  // projects status
+  cmd
+    .command("status [id-or-slug]")
+    .description("Show project health at a glance")
+    .option("--json", "Output raw JSON")
+    .action(async (idOrSlug?: string, opts?: { json?: boolean }) => {
+      if (idOrSlug) {
+        const project = resolveProject(idOrSlug);
+        if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+        const s = getProjectStatus(project);
+        if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(s, null, 2)); return; }
+        printProject(project);
+        const icon = (st: string | null) => st === "clean" ? chalk.green("✓") : chalk.yellow("⚠");
+        console.log(`  git:       ${icon(s.git_status)} ${s.git_status ?? "n/a"}`);
+        console.log(`  last sync: ${s.last_synced ?? chalk.dim("never")}`);
+        console.log(`  workdirs:  ${s.workdir_count}`);
+        if (s.disk_bytes !== null) console.log(`  disk:      ${formatBytes(s.disk_bytes)}`);
+      } else {
+        const all = getAllStatus();
+        if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(all, null, 2)); return; }
+        if (!all.length) { console.log(chalk.dim("No active projects.")); return; }
+        for (const s of all) {
+          const pathIcon = s.path_exists ? chalk.green("✓") : chalk.red("✗");
+          const gitStr = s.git_status === "clean" ? chalk.green("clean") : s.git_status ? chalk.yellow(s.git_status) : chalk.dim("n/a");
+          const syncStr = s.last_synced ? chalk.dim(s.last_synced.slice(0, 10)) : chalk.dim("never");
+          console.log(`${pathIcon} ${chalk.bold(s.project.slug.padEnd(28))} git:${gitStr}  sync:${syncStr}  dirs:${s.workdir_count}`);
+        }
+      }
+    });
+
+  // projects doctor
+  cmd
+    .command("doctor [id-or-slug]")
+    .description("Health-check all registered projects")
+    .option("--fix", "Auto-repair what can be fixed")
+    .option("--json", "Output raw JSON")
+    .action(async (idOrSlug?: string, opts?: { fix?: boolean; json?: boolean }) => {
+      const target = idOrSlug ? resolveProject(idOrSlug) : null;
+      if (idOrSlug && !target) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const results = target ? [await doctorProject(target)] : await doctorAll();
+      if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(results, null, 2)); return; }
+      let hasError = false;
+      for (const r of results) {
+        console.log(`\n${chalk.bold(r.project.name)} ${chalk.dim(r.project.slug)}`);
+        for (const c of r.checks) {
+          const icon = c.status === "ok" ? chalk.green("✓") : c.status === "warn" ? chalk.yellow("⚠") : chalk.red("✗");
+          console.log(`  ${icon} ${c.name.padEnd(14)} ${c.message}`);
+          if (c.status === "error") hasError = true;
+        }
+        if (opts?.fix) {
+          const fixes = fixProject(r.project);
+          fixes.forEach((f) => console.log(chalk.cyan(`  → fixed: ${f}`)));
+        }
+      }
+      if (hasError) process.exit(1);
+    });
+
+  // projects stats
+  cmd
+    .command("stats [id-or-slug]")
+    .description("Show storage and sync statistics")
+    .option("--json", "Output raw JSON")
+    .action((idOrSlug?: string, opts?: { json?: boolean }) => {
+      if (idOrSlug) {
+        const project = resolveProject(idOrSlug);
+        if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+        const s = getProjectStats(project.id);
+        if (!s) { console.error(chalk.red("Stats not available")); process.exit(1); }
+        if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(s, null, 2)); return; }
+        console.log(`${chalk.bold(s.name)}`);
+        console.log(`  files:      ${s.file_count}  (${formatBytes(s.disk_bytes)})`);
+        console.log(`  syncs:      ${s.sync_count}  (${formatBytes(s.synced_bytes)} total)`);
+        console.log(`  last sync:  ${s.last_synced ?? chalk.dim("never")}`);
+        console.log(`  workdirs:   ${s.workdir_count}`);
+      } else {
+        const g = getGlobalStats();
+        if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(g, null, 2)); return; }
+        console.log(`projects:  ${g.active} active, ${g.archived} archived`);
+        console.log(`disk:      ${formatBytes(g.total_disk_bytes)}`);
+        console.log(`synced:    ${formatBytes(g.total_synced_bytes)} across ${g.total_syncs} sync(s)`);
+      }
+    });
+
+  // projects env
+  cmd
+    .command("env [id-or-slug]")
+    .description("Print export statements for a project's .env (eval to load into shell)")
+    .option("--list", "Only list key names, no values")
+    .action((idOrSlug?: string, opts?: { list?: boolean }) => {
+      const project = requireProject(idOrSlug);
+      if (!project) { console.error(chalk.red("No project found.")); process.exit(1); }
+      const vars = loadProjectEnv(project);
+      if (!Object.keys(vars).length) { console.error(chalk.red(`No .env found in ${project.path}`)); process.exit(1); }
+      if (opts?.list) { listEnvKeys(vars); } else { printExportStatements(vars); }
+    });
+
+  // projects clone
+  cmd
+    .command("clone <id-or-slug> [target-path]")
+    .description("Pull a project from S3 to a new local path and register as workdir")
+    .option("--region <region>", "AWS region")
+    .option("--label <label>", "Workdir label", "clone")
+    .action(async (idOrSlug, targetPath: string | undefined, opts) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const dest = resolve(targetPath ?? join(process.cwd(), project.slug));
+      console.log(chalk.dim(`Cloning ${project.name} → ${dest}...`));
+      try {
+        const result = await cloneProject(project, dest, {
+          region: opts.region,
+          onProgress: (m) => console.log(chalk.dim(`  ${m}`)),
+        });
+        const workdir = addWorkdir({ project_id: project.id, path: dest, label: opts.label });
+        const allDirs = listWorkdirs(project.id);
+        generateForWorkdir(project, workdir, allDirs);
+        console.log(chalk.green(`✓ Cloned: pulled ${result.pulled} files (${result.bytes}B)`));
+        console.log(chalk.dim(`  CLAUDE.md + AGENTS.md generated`));
+        console.log(dest);
+      } catch (err: unknown) {
+        console.error(chalk.red(`Clone failed: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
+    });
+
+  // projects sync --watch
+  cmd
+    .command("watch [id-or-slug]")
+    .description("Watch project files and push changes to S3 in real time")
+    .option("--region <region>", "AWS region")
+    .action(async (idOrSlug?: string, opts?: { region?: string }) => {
+      const project = requireProject(idOrSlug);
+      if (!project) { console.error(chalk.red("No project found.")); process.exit(1); }
+      await watchProject(project, { region: opts?.region });
     });
 
   // projects sync

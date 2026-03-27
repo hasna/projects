@@ -24,6 +24,8 @@ function ensureDir(filePath: string): void {
 
 let _db: Database | null = null;
 
+export function getDb(): Database { return getDatabase(); }
+
 export function getDatabase(path?: string): Database {
   if (path) {
     ensureDir(path);
