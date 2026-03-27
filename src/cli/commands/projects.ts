@@ -13,6 +13,7 @@ import {
 } from "../../db/projects.js";
 import { gitPassthrough } from "../../lib/git.js";
 import { syncProject } from "../../lib/sync.js";
+import { importProject, importBulk } from "../../lib/import.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 function printProject(p: ReturnType<typeof resolveProject>) {
@@ -209,6 +210,43 @@ export function registerProjectCommands(program: Command): void {
       } catch (err: unknown) {
         console.error(chalk.red(`Sync failed: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
+      }
+    });
+
+  // projects import
+  cmd
+    .command("import <path>")
+    .description("Import an existing directory as a project")
+    .option("--tags <tags>", "Tags (comma-separated)")
+    .option("--dry-run", "Show what would be imported without doing it")
+    .action(async (path, opts) => {
+      const { project, skipped, error } = await importProject(path, {
+        dryRun: opts.dryRun,
+        defaultTags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
+        onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
+      });
+      if (error) { console.error(chalk.red(`Error: ${error}`)); process.exit(1); }
+      if (skipped) { console.log(chalk.yellow(`Skipped: ${skipped}`)); return; }
+      if (project) { console.log(chalk.green("✓ Imported")); printProject(project); }
+    });
+
+  // projects import-bulk
+  cmd
+    .command("import-bulk <dir>")
+    .description("Import all subdirectories of a directory as projects")
+    .option("--tags <tags>", "Tags to apply to all imported projects (comma-separated)")
+    .option("--dry-run", "Show what would be imported without doing it")
+    .action(async (dir, opts) => {
+      const result = await importBulk(dir, {
+        dryRun: opts.dryRun,
+        defaultTags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
+        onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
+      });
+      console.log(chalk.green(`✓ imported: ${result.imported.length}`));
+      if (result.skipped.length) console.log(chalk.dim(`  skipped: ${result.skipped.length}`));
+      if (result.errors.length) {
+        console.log(chalk.red(`  errors: ${result.errors.length}`));
+        result.errors.forEach((e) => console.log(`    ${chalk.red(e.error)} — ${e.path}`));
       }
     });
 

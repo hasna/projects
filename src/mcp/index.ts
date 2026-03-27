@@ -15,6 +15,7 @@ import {
   setIntegrations,
 } from "../db/projects.js";
 import { syncProject } from "../lib/sync.js";
+import { importProject, importBulk } from "../lib/import.js";
 
 const server = new McpServer({
   name: "open-projects",
@@ -240,6 +241,52 @@ server.tool(
     const logs = listSyncLogs(project.id, input.limit ?? 10);
     return {
       content: [{ type: "text" as const, text: JSON.stringify(logs, null, 2) }],
+    };
+  },
+);
+
+// ── projects_import ───────────────────────────────────────────────────────────
+server.tool(
+  "projects_import",
+  "Import an existing directory as a project. Infers name from package.json or directory name.",
+  {
+    path: z.string().describe("Absolute path to import"),
+    tags: z.array(z.string()).optional().describe("Tags to apply"),
+    dry_run: z.boolean().optional().describe("Preview without importing"),
+  },
+  async (input) => {
+    const logs: string[] = [];
+    const { project, skipped, error } = await importProject(input.path, {
+      dryRun: input.dry_run,
+      defaultTags: input.tags,
+      onProgress: (msg) => logs.push(msg),
+    });
+    if (error) {
+      return { content: [{ type: "text" as const, text: `Error: ${error}` }], isError: true };
+    }
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ project: project ?? null, skipped: skipped ?? null, log: logs }, null, 2) }],
+    };
+  },
+);
+
+server.tool(
+  "projects_import_bulk",
+  "Import all subdirectories of a path as projects. Useful for migrating existing project collections.",
+  {
+    dir: z.string().describe("Directory whose subdirectories will be imported"),
+    tags: z.array(z.string()).optional().describe("Tags to apply to all imported projects"),
+    dry_run: z.boolean().optional().describe("Preview without importing"),
+  },
+  async (input) => {
+    const logs: string[] = [];
+    const result = await importBulk(input.dir, {
+      dryRun: input.dry_run,
+      defaultTags: input.tags,
+      onProgress: (msg) => logs.push(msg),
+    });
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ...result, log: logs }, null, 2) }],
     };
   },
 );

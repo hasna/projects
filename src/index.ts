@@ -18,3 +18,5 @@ export {
   slugify,
 } from "./db/projects.js";
 export { getDatabase } from "./db/database.js";
+export { syncProject } from "./lib/sync.js";
+export { importProject, importBulk } from "./lib/import.js";
