@@ -14,6 +14,7 @@ import {
   listSyncLogs,
   setIntegrations,
 } from "../db/projects.js";
+import { syncProject } from "../lib/sync.js";
 
 const server = new McpServer({
   name: "open-projects",
@@ -240,6 +241,49 @@ server.tool(
     return {
       content: [{ type: "text" as const, text: JSON.stringify(logs, null, 2) }],
     };
+  },
+);
+
+// ── projects_sync ─────────────────────────────────────────────────────────────
+server.tool(
+  "projects_sync",
+  "Sync a project's files to/from S3. Incremental via file hashes. Skips files >100MB.",
+  {
+    id: z.string().describe("Project ID or slug"),
+    direction: z.enum(["push", "pull", "both"]).optional().describe("Sync direction (default: both)"),
+    dry_run: z.boolean().optional().describe("Show what would sync without doing it"),
+    region: z.string().optional().describe("AWS region (default: AWS_DEFAULT_REGION or us-east-1)"),
+  },
+  async (input) => {
+    try {
+      const project = resolveProject(input.id);
+      if (!project) {
+        return {
+          content: [{ type: "text" as const, text: `Project not found: ${input.id}` }],
+          isError: true,
+        };
+      }
+      const logs: string[] = [];
+      const result = await syncProject(project, {
+        direction: input.direction,
+        dryRun: input.dry_run,
+        region: input.region,
+        onProgress: (msg) => logs.push(msg),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...result, log: logs }, null, 2),
+          },
+        ],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   },
 );
 

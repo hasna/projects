@@ -12,6 +12,7 @@ import {
   listSyncLogs,
 } from "../../db/projects.js";
 import { gitPassthrough } from "../../lib/git.js";
+import { syncProject } from "../../lib/sync.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 function printProject(p: ReturnType<typeof resolveProject>) {
@@ -176,6 +177,39 @@ export function registerProjectCommands(program: Command): void {
         process.exit(1);
       }
       console.log(project.path);
+    });
+
+  // projects sync
+  cmd
+    .command("sync <id-or-slug>")
+    .description("Sync project files to/from S3")
+    .option("--direction <dir>", "push, pull, or both (default: both)", "both")
+    .option("--dry-run", "Show what would be synced without doing it")
+    .option("--region <region>", "AWS region")
+    .action(async (idOrSlug, opts) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) {
+        console.error(chalk.red(`Project not found: ${idOrSlug}`));
+        process.exit(1);
+      }
+      try {
+        console.log(chalk.dim(`Syncing ${project.name} (${opts.direction})...`));
+        const result = await syncProject(project, {
+          direction: opts.direction,
+          dryRun: opts.dryRun,
+          region: opts.region,
+          onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
+        });
+        console.log(chalk.green(`✓ Sync complete`));
+        console.log(`  pushed: ${result.pushed}, pulled: ${result.pulled}, skipped: ${result.skipped}, bytes: ${result.bytes}`);
+        if (result.errors.length) {
+          console.log(chalk.yellow(`  warnings (${result.errors.length}):`));
+          result.errors.forEach((e) => console.log(`    ${chalk.yellow(e)}`));
+        }
+      } catch (err: unknown) {
+        console.error(chalk.red(`Sync failed: ${err instanceof Error ? err.message : String(err)}`));
+        process.exit(1);
+      }
     });
 
   // projects git — passthrough to git in project directory
