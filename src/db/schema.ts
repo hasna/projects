@@ -61,6 +61,29 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN integrations TEXT NOT NULL DEFAULT '{}';
   INSERT OR IGNORE INTO _migrations (id) VALUES (2);
   `,
+
+  // Migration 3: Working directories + last_opened_at
+  `
+  CREATE TABLE IF NOT EXISTS project_workdirs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT 'main',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    claude_md_generated INTEGER NOT NULL DEFAULT 0,
+    agents_md_generated INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(project_id, path)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workdirs_project ON project_workdirs(project_id);
+  CREATE INDEX IF NOT EXISTS idx_workdirs_machine ON project_workdirs(machine_id);
+
+  ALTER TABLE projects ADD COLUMN last_opened_at TEXT;
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (3);
+  `,
 ];
 
 export function runMigrations(db: Database): void {

@@ -119,6 +119,38 @@ export interface SyncLogRow {
   completed_at: string | null;
 }
 
+// Working directory
+export interface ProjectWorkdir {
+  id: string;
+  project_id: string;
+  path: string;
+  machine_id: string;
+  label: string;
+  is_primary: boolean;
+  claude_md_generated: boolean;
+  agents_md_generated: boolean;
+  created_at: string;
+}
+
+export interface ProjectWorkdirRow {
+  id: string;
+  project_id: string;
+  path: string;
+  machine_id: string;
+  label: string;
+  is_primary: number;
+  claude_md_generated: number;
+  agents_md_generated: number;
+  created_at: string;
+}
+
+export interface AddWorkdirInput {
+  project_id: string;
+  path: string;
+  label?: string;
+  is_primary?: boolean;
+}
+
 // Errors
 export class ProjectNotFoundError extends Error {
   static readonly code = "PROJECT_NOT_FOUND";

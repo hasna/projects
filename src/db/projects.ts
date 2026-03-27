@@ -20,6 +20,7 @@ import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { gitInit, isGitRepo } from "../lib/git.js";
+import { addWorkdir, getMachineId } from "./workdirs.js";
 
 const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
 
@@ -88,6 +89,13 @@ export function createProject(input: CreateProjectInput, db?: Database): Project
   );
 
   const project = getProject(id, d)!;
+
+  // Auto-register primary workdir for this machine
+  try {
+    addWorkdir({ project_id: id, path: input.path, label: "main", is_primary: true }, d);
+  } catch {
+    // Non-fatal
+  }
 
   // Auto-init git repo unless explicitly disabled
   const shouldGitInit = input.git_init !== false;
