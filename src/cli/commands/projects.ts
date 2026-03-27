@@ -11,6 +11,7 @@ import {
   resolveProject,
   listSyncLogs,
 } from "../../db/projects.js";
+import { gitPassthrough } from "../../lib/git.js";
 import type { ProjectFilter } from "../../types/index.js";
 
 function printProject(p: ReturnType<typeof resolveProject>) {
@@ -40,6 +41,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--s3-bucket <bucket>", "S3 bucket for sync")
     .option("--s3-prefix <prefix>", "S3 prefix")
     .option("--git-remote <remote>", "Git remote URL")
+    .option("--no-git-init", "Skip auto git init")
     .action((opts) => {
       try {
         const path = opts.path ? resolve(opts.path) : process.cwd();
@@ -52,6 +54,7 @@ export function registerProjectCommands(program: Command): void {
           s3_bucket: opts.s3Bucket,
           s3_prefix: opts.s3Prefix,
           git_remote: opts.gitRemote,
+          git_init: opts.gitInit !== false,
         });
         console.log(chalk.green("✓ Project created"));
         printProject(project);
@@ -173,6 +176,24 @@ export function registerProjectCommands(program: Command): void {
         process.exit(1);
       }
       console.log(project.path);
+    });
+
+  // projects git — passthrough to git in project directory
+  cmd
+    .command("git <id-or-slug> [git-args...]")
+    .description("Run a git command inside the project directory")
+    .allowUnknownOption()
+    .action((idOrSlug, gitArgs) => {
+      const project = resolveProject(idOrSlug);
+      if (!project) {
+        console.error(chalk.red(`Project not found: ${idOrSlug}`));
+        process.exit(1);
+      }
+      try {
+        gitPassthrough(project.path, gitArgs as string[]);
+      } catch (err: unknown) {
+        process.exit(err instanceof Error && "status" in err ? (err as NodeJS.ErrnoException & { status: number }).status ?? 1 : 1);
+      }
     });
 
   // projects sync-log

@@ -16,6 +16,7 @@ import {
   ProjectPathConflictError,
 } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
+import { gitInit, isGitRepo } from "../lib/git.js";
 
 const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
 
@@ -82,7 +83,19 @@ export function createProject(input: CreateProjectInput, db?: Database): Project
     ],
   );
 
-  return getProject(id, d)!;
+  const project = getProject(id, d)!;
+
+  // Auto-init git repo unless explicitly disabled
+  const shouldGitInit = input.git_init !== false;
+  if (shouldGitInit) {
+    try {
+      gitInit(project);
+    } catch {
+      // Non-fatal — project is registered even if git init fails
+    }
+  }
+
+  return project;
 }
 
 export function getProject(id: string, db?: Database): Project | null {

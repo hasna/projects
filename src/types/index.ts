@@ -52,6 +52,7 @@ export interface CreateProjectInput {
   s3_bucket?: string;
   s3_prefix?: string;
   git_remote?: string;
+  git_init?: boolean; // auto-init git repo (default: true if path exists and is not already a repo)
 }
 
 export interface UpdateProjectInput {

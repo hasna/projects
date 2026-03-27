@@ -32,6 +32,7 @@ server.tool(
     s3_bucket: z.string().optional().describe("S3 bucket for sync"),
     s3_prefix: z.string().optional().describe("S3 key prefix"),
     git_remote: z.string().optional().describe("Git remote URL"),
+    git_init: z.boolean().optional().describe("Auto-init a git repo in the project path (default: true)"),
   },
   async (input) => {
     try {
