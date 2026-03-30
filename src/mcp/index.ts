@@ -23,8 +23,8 @@ import { addWorkdir, listWorkdirs, removeWorkdir } from "../db/workdirs.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
 
 const server = new McpServer({
-  name: "open-projects",
-  version: "0.1.0",
+  name: "project",
+  version: "0.1.2",
 });
 
 // ── projects_create ───────────────────────────────────────────────────────────

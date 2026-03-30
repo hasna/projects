@@ -1,13 +1,13 @@
 {
-  "name": "@hasna/open-projects",
-  "version": "0.1.1",
+  "name": "@hasna/project",
+  "version": "0.1.2",
   "description": "Project management CLI + MCP server for AI agents — register, sync, and open projects across machines",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "projects": "dist/cli/index.js",
-    "projects-mcp": "dist/mcp/index.js"
+    "project": "dist/cli/index.js",
+    "project-mcp": "dist/mcp/index.js"
   },
   "exports": {
     ".": {

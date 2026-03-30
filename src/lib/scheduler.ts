@@ -50,9 +50,9 @@ function intervalToCron(interval: ScheduleConfig["interval"]): string {
 function projectsBin(): string {
   // Find the CLI binary
   try {
-    return execSync("which projects", { stdio: "pipe", encoding: "utf-8" }).trim();
+    return execSync("which project", { stdio: "pipe", encoding: "utf-8" }).trim();
   } catch {
-    return "projects";
+    return "project";
   }
 }
 

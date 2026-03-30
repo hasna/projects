@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 const BASH_COMPLETION = `
 # open-projects bash completion
-_projects_completion() {
+_project_completion() {
   local cur prev words cword
   _init_completion || return
 
@@ -16,7 +16,7 @@ _projects_completion() {
     get|update|archive|unarchive|open|sync|sync-log|git|publish|unpublish)
       # Complete with project slugs
       local slugs
-      slugs=$(projects list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
+      slugs=$(project list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
       COMPREPLY=( $(compgen -W "$slugs" -- "$cur") )
       return 0
       ;;
@@ -40,12 +40,12 @@ _projects_completion() {
 
   COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
 }
-complete -F _projects_completion projects
+complete -F _project_completion project
 `;
 
 const ZSH_COMPLETION = `
 # open-projects zsh completion
-_projects() {
+_project() {
   local -a commands
   commands=(
     'create:Register a new project'
@@ -70,7 +70,7 @@ _projects() {
   _describe 'command' commands
 }
 
-compdef _projects projects
+compdef _project project
 `;
 
 const WORKON_FUNCTION = [
@@ -81,20 +81,20 @@ const WORKON_FUNCTION = [
   '  if [ -z "$1" ]; then',
   "    if command -v fzf >/dev/null 2>&1; then",
   "      local slug",
-  '      slug=$(projects list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
-  '      [ -n "$slug" ] && cd "$(projects open "$slug")"',
+  '      slug=$(project list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
+  '      [ -n "$slug" ] && cd "$(project open "$slug")"',
   "    else",
-  "      projects list",
+  "      project list",
   "    fi",
   "  else",
-  '    cd "$(projects open "$1")"',
+  '    cd "$(project open "$1")"',
   "  fi",
   "}",
   "",
   "# penv — load a project's .env into current shell",
   "# Usage: penv [slug]",
   "penv() {",
-  '  eval "$(projects env "${1}")"',
+  '  eval "$(project env "${1}")"',
   "}",
 ].join("\n");
 
