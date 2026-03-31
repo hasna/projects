@@ -45,11 +45,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/hasna/open-projects.git"
+    "url": "https://github.com/hasna/projects.git"
   },
-  "homepage": "https://github.com/hasna/open-projects",
+  "homepage": "https://github.com/hasna/projects",
   "bugs": {
-    "url": "https://github.com/hasna/open-projects/issues"
+    "url": "https://github.com/hasna/projects/issues"
   },
   "engines": {
     "bun": ">=1.0.0"
