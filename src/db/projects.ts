@@ -148,9 +148,17 @@ export function listProjects(filter: ProjectFilter = {}, db?: Database): Project
   const limit = filter.limit ?? 100;
   const offset = filter.offset ?? 0;
 
-  const rows = d
+  let rows = d
     .query(`SELECT * FROM projects ${where} ORDER BY name ASC LIMIT ? OFFSET ?`)
     .all(...params, limit, offset) as ProjectRow[];
+
+  // Filter by tags in memory (tags stored as JSON array)
+  if (filter.tags && filter.tags.length > 0) {
+    rows = rows.filter((row) => {
+      const rowTags: string[] = row.tags ? (JSON.parse(row.tags) as string[]) : [];
+      return filter.tags!.every((t) => rowTags.includes(t));
+    });
+  }
 
   return rows.map(rowToProject);
 }

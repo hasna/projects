@@ -218,6 +218,41 @@ describe("sync log", () => {
   });
 });
 
+describe("listProjects tag filter", () => {
+  test("filters by single tag", () => {
+    const db = makeDb();
+    const d1 = tmpDir(); const d2 = tmpDir(); const d3 = tmpDir();
+    createProject({ name: "A", path: d1, tags: ["web", "ts"], git_init: false }, db);
+    createProject({ name: "B", path: d2, tags: ["web"], git_init: false }, db);
+    createProject({ name: "C", path: d3, tags: ["mobile"], git_init: false }, db);
+    const web = listProjects({ tags: ["web"] }, db);
+    expect(web.length).toBe(2);
+    const mobile = listProjects({ tags: ["mobile"] }, db);
+    expect(mobile.length).toBe(1);
+    [d1, d2, d3].forEach((d) => rmSync(d, { recursive: true }));
+  });
+
+  test("filters by multiple tags (AND)", () => {
+    const db = makeDb();
+    const d1 = tmpDir(); const d2 = tmpDir();
+    createProject({ name: "A", path: d1, tags: ["web", "ts"], git_init: false }, db);
+    createProject({ name: "B", path: d2, tags: ["web"], git_init: false }, db);
+    const both = listProjects({ tags: ["web", "ts"] }, db);
+    expect(both.length).toBe(1);
+    expect(both[0]!.name).toBe("A");
+    [d1, d2].forEach((d) => rmSync(d, { recursive: true }));
+  });
+
+  test("returns empty list when no match", () => {
+    const db = makeDb();
+    const d1 = tmpDir();
+    createProject({ name: "A", path: d1, tags: ["web"], git_init: false }, db);
+    const none = listProjects({ tags: ["nonexistent"] }, db);
+    expect(none.length).toBe(0);
+    rmSync(d1, { recursive: true });
+  });
+});
+
 describe("rename (v0.1.3 — slug update)", () => {
   test("rename updates slug to match new name", () => {
     const db = makeDb();

@@ -106,6 +106,7 @@ export function registerProjectCommands(program: Command): void {
       const filter: ProjectFilter = {
         status: opts.status,
         limit: parseInt(opts.limit, 10),
+        tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : undefined,
       };
       const projects = listProjects(filter);
       if (opts.json || process.env["PROJECTS_JSON"]) {
