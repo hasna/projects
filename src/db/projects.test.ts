@@ -217,3 +217,59 @@ describe("sync log", () => {
     rmSync(dir, { recursive: true });
   });
 });
+
+describe("rename (v0.1.3 — slug update)", () => {
+  test("rename updates slug to match new name", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "old-name", path: dir, git_init: false }, db);
+    expect(p.slug).toBe("old-name");
+    const updated = updateProject(p.id, { name: "new-name" }, db);
+    expect(updated.name).toBe("new-name");
+    expect(updated.slug).toBe("new-name");
+    rmSync(dir, { recursive: true });
+  });
+
+  test("slug deduplicates on rename conflict", () => {
+    const db = makeDb();
+    const dir1 = tmpDir();
+    const dir2 = tmpDir();
+    createProject({ name: "target", path: dir1, git_init: false }, db);
+    const p2 = createProject({ name: "original", path: dir2, git_init: false }, db);
+    const updated = updateProject(p2.id, { name: "target" }, db);
+    // slug can't be "target" (taken), should be "target-2"
+    expect(updated.slug).toBe("target-2");
+    rmSync(dir1, { recursive: true });
+    rmSync(dir2, { recursive: true });
+  });
+});
+
+describe("resolveProject (v0.1.3 — name-based lookup)", () => {
+  test("resolves by exact name", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "My Cool App", path: dir, git_init: false }, db);
+    const resolved = resolveProject("My Cool App", db);
+    expect(resolved?.id).toBe(p.id);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("resolves by new name after rename", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "before", path: dir, git_init: false }, db);
+    updateProject(p.id, { name: "after" }, db);
+    const resolved = resolveProject("after", db);
+    expect(resolved?.id).toBe(p.id);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("resolves by name substring", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "my-app-backend", path: dir, git_init: false }, db);
+    const resolved = resolveProject("backend", db);
+    expect(resolved?.id).toBe(p.id);
+    rmSync(dir, { recursive: true });
+  });
+});
