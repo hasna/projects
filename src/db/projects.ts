@@ -167,7 +167,14 @@ export function updateProject(
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 
-  if (input.name !== undefined) { sets.push("name = ?"); params.push(input.name); }
+  if (input.name !== undefined) {
+    sets.push("name = ?");
+    params.push(input.name);
+    // Also update slug to stay in sync with name
+    const newSlug = ensureUniqueSlug(slugify(input.name), d, id);
+    sets.push("slug = ?");
+    params.push(newSlug);
+  }
   if (input.description !== undefined) { sets.push("description = ?"); params.push(input.description); }
   if (input.path !== undefined) { sets.push("path = ?"); params.push(input.path); }
   if (input.tags !== undefined) { sets.push("tags = ?"); params.push(JSON.stringify(input.tags)); }
@@ -263,10 +270,16 @@ export function resolveProject(idOrSlug: string, db?: Database): Project | null 
     .get(`${idOrSlug}%`) as { id: string } | null;
   if (prefixRow) return getProject(prefixRow.id, d);
 
-  // 4. Substring match on slug
+  // 4. Exact name match
+  const nameRow = d
+    .query("SELECT id FROM projects WHERE name = ? LIMIT 1")
+    .get(idOrSlug) as { id: string } | null;
+  if (nameRow) return getProject(nameRow.id, d);
+
+  // 5. Substring match on slug or name
   const subRow = d
-    .query("SELECT id FROM projects WHERE slug LIKE ? ORDER BY length(slug) ASC LIMIT 1")
-    .get(`%${idOrSlug}%`) as { id: string } | null;
+    .query("SELECT id FROM projects WHERE slug LIKE ? OR name LIKE ? ORDER BY length(slug) ASC LIMIT 1")
+    .get(`%${idOrSlug}%`, `%${idOrSlug}%`) as { id: string } | null;
   if (subRow) return getProject(subRow.id, d);
 
   // 5. Levenshtein ≤ 2 on slug
