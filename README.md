@@ -5,58 +5,58 @@ Project management CLI + MCP server for AI agents. Register projects once, open 
 ## Install
 
 ```bash
-bun install -g @hasna/open-projects
+bun install -g @hasna/project
 ```
 
 ## CLI
 
 ```bash
 # Register a project
-projects create --name my-app --path /path/to/my-app
+project create --name my-app --path /path/to/my-app
 
 # List projects
-projects list
-projects list --status archived
+project list
+project list --status archived
 
 # Get details
-projects get my-app
+project get my-app
 
 # Open a project (cd into it)
-cd $(projects open my-app)
+cd $(project open my-app)
 
 # Update metadata
-projects update my-app --description "My app" --tags "web,ts"
+project update my-app --description "My app" --tags "web,ts"
 
 # Archive / unarchive
-projects archive my-app
-projects unarchive my-app
+project archive my-app
+project unarchive my-app
 
 # Import existing directories
-projects import /path/to/existing-project
-projects import-bulk /path/to/workspace     # imports all subdirs
+project import /path/to/existing-project
+project import-bulk /path/to/workspace     # imports all subdirs
 
 # Sync to/from S3
-projects update my-app --s3-bucket my-bucket
-projects sync my-app
-projects sync my-app --direction push
-projects sync-all                           # sync all projects with S3 configured
+project update my-app --s3-bucket my-bucket
+project sync my-app
+project sync my-app --direction push
+project sync-all                           # sync all projects with S3 configured
 
 # Schedule auto-sync
-projects schedule set --interval daily --direction both
-projects schedule status
-projects schedule remove
+project schedule set --interval daily --direction both
+project schedule status
+project schedule remove
 
 # Publish to GitHub
-projects publish my-app --org hasnaxyz
-projects unpublish my-app
+project publish my-app --org hasnaxyz
+project unpublish my-app
 
 # Git passthrough
-projects git my-app status
-projects git my-app log --oneline -10
+project git my-app status
+project git my-app log --oneline -10
 
 # Shell completion
-eval "$(projects completion)"          # bash
-eval "$(projects completion --shell zsh)"  # zsh
+eval "$(project completion)"          # bash
+eval "$(project completion --shell zsh)"  # zsh
 ```
 
 ## MCP Server
@@ -67,7 +67,7 @@ Add to your Claude config:
 {
   "mcpServers": {
     "open-projects": {
-      "command": "projects-mcp"
+      "command": "project-mcp"
     }
   }
 }
