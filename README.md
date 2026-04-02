@@ -13,38 +13,69 @@ bun install -g @hasna/project
 ```bash
 # Register a project
 project create --name my-app --path /path/to/my-app
+project create --name my-app                          # uses cwd as path
 
-# List projects
+# List / search
 project list
 project list --status archived
+project list --tags web,ts                            # AND filter
+project list --json | jq '.[].path'                  # machine-readable
 
-# Get details
-project get my-app
+# Get / status
+project get my-app                                    # auto-detects from cwd
+project get my-app --json
+project status                                        # all projects at a glance
+project status my-app                                 # single project detail
+project recent                                        # recently opened (with relative times)
+project doctor                                        # health-check all projects
+project doctor my-app --fix                           # auto-repair what can be fixed
+project stats                                         # disk / sync totals
+project stats my-app
 
-# Open a project (cd into it)
-cd $(project open my-app)
-
-# Update metadata
+# Modify
 project update my-app --description "My app" --tags "web,ts"
-
-# Archive / unarchive
+project rename my-app my-app-v2                       # updates slug + .project.json
+project tag my-app infra cloud                        # add tags
+project untag my-app cloud                            # remove a tag
 project archive my-app
 project unarchive my-app
 
+# Open (cd into it)
+cd $(project open my-app)                             # print path; auto-detects cwd
+workon my-app                                         # shell function — actually cd's
+penv my-app                                           # load project .env into shell
+project env my-app                                    # print export statements (eval)
+project env my-app --list                             # list keys only
+
+# Working directories (multi-machine / multi-repo)
+project workdir add my-app /path/to/dir --label backend
+project workdir list my-app
+project workdir generate my-app                       # write CLAUDE.md + AGENTS.md
+project workdir generate my-app --dry-run
+project workdir remove my-app /path/to/dir
+
 # Import existing directories
 project import /path/to/existing-project
-project import-bulk /path/to/workspace     # imports all subdirs
+project import-bulk /path/to/workspace                # imports all subdirs
+project clone my-app /new/local/path                  # pull from S3 to new machine path
 
 # Sync to/from S3
 project update my-app --s3-bucket my-bucket
 project sync my-app
 project sync my-app --direction push
-project sync-all                           # sync all projects with S3 configured
+project sync-all                                      # sync all projects with S3 configured
+project watch my-app                                  # push changes live as you edit
+project sync-log my-app                               # show sync history
 
 # Schedule auto-sync
 project schedule set --interval daily --direction both
 project schedule status
 project schedule remove
+
+# Cloud sync (SQLite ↔ RDS PostgreSQL)
+project cloud status
+project cloud pull
+project cloud push
 
 # Publish to GitHub
 project publish my-app --org hasnaxyz
@@ -54,9 +85,9 @@ project unpublish my-app
 project git my-app status
 project git my-app log --oneline -10
 
-# Shell completion
-eval "$(project completion)"          # bash
-eval "$(project completion --shell zsh)"  # zsh
+# Shell completion (includes workon + penv functions)
+eval "$(project completion)"                          # bash
+eval "$(project completion --shell zsh)"              # zsh
 ```
 
 ## MCP Server
@@ -78,20 +109,26 @@ Add to your Claude config:
 | Tool | Description |
 |------|-------------|
 | `projects_create` | Register a new project. Returns `workingDirectory` + `post_create_actions` |
-| `projects_list` | List projects, filter by status |
+| `projects_list` | List projects, filter by `status` and/or `tags` |
 | `projects_get` | Get project by ID or slug. Returns `workingDirectory` |
 | `projects_update` | Update project metadata |
 | `projects_archive` | Archive a project |
-| `projects_open` | Get `workingDirectory` for a project |
+| `projects_open` | Get `workingDirectory` for a project (also tracks `last_opened_at`) |
 | `projects_sync` | Sync to/from S3 (incremental, by file hash) |
 | `projects_sync_all` | Sync all active projects with S3 configured |
+| `projects_sync_log` | List recent sync history |
 | `projects_link` | Store integration IDs (todos, mementos, conversations, files) |
 | `projects_import` | Import an existing directory as a project |
 | `projects_import_bulk` | Import all subdirectories of a path |
 | `projects_publish` | Create GitHub repo, add remote, push |
+| `projects_workdir_add` | Add a working directory; optionally generate CLAUDE.md + AGENTS.md |
+| `projects_workdir_list` | List all working directories for a project |
+| `projects_workdir_generate` | Generate CLAUDE.md + AGENTS.md in working directories |
 | `projects_schedule_set` | Enable cron-based auto-sync |
 | `projects_schedule_status` | Get current schedule config |
-| `projects_sync_log` | List recent sync history |
+| `projects_cloud_status` | Show RDS connection health |
+| `projects_cloud_pull` | Pull from cloud PostgreSQL to local SQLite |
+| `projects_cloud_push` | Push local SQLite to cloud PostgreSQL |
 
 ### projects_create response
 
