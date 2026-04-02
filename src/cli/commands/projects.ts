@@ -100,6 +100,10 @@ export function registerProjectCommands(program: Command): void {
         });
         console.log(chalk.green("✓ Project created"));
         printProject(project);
+        if (!existsSync(project.path)) {
+          console.log(chalk.yellow(`  ⚠ Path does not exist yet: ${project.path}`));
+          console.log(chalk.dim(`    Create it to enable git init and workdir generation.`));
+        }
       } catch (err: unknown) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
@@ -680,6 +684,7 @@ export function registerProjectCommands(program: Command): void {
     .command("status")
     .description("Show cloud configuration and connection health")
     .action(async () => {
+      process.env["NODE_NO_WARNINGS"] = "1";
       const { getCloudConfig, getConnectionString, PgAdapterAsync } = await import("@hasna/cloud");
       const config = getCloudConfig();
       console.log(`mode:    ${config.mode}`);
@@ -704,7 +709,7 @@ export function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       console.log(chalk.dim("Pulling from cloud..."));
       try {
-        const { syncPull, getCloudConfig, getConnectionString, PgAdapterAsync, SqliteAdapter } = await import("@hasna/cloud");
+        process.env["NODE_NO_WARNINGS"] = "1"; const { syncPull, getCloudConfig, getConnectionString, PgAdapterAsync, SqliteAdapter } = await import("@hasna/cloud");
         const config = getCloudConfig();
         if (!((config.rds as unknown) as Record<string, unknown>)?.host) { console.error(chalk.red("Cloud not configured. Set HASNA_RDS_HOST.")); process.exit(1); }
         const tables = opts.tables ? opts.tables.split(",").map((t: string) => t.trim()) : ["projects", "project_workdirs", "project_files", "sync_log"];
@@ -726,7 +731,7 @@ export function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       console.log(chalk.dim("Pushing to cloud..."));
       try {
-        const { syncPush, getCloudConfig, getConnectionString, PgAdapterAsync, SqliteAdapter } = await import("@hasna/cloud");
+        process.env["NODE_NO_WARNINGS"] = "1"; const { syncPush, getCloudConfig, getConnectionString, PgAdapterAsync, SqliteAdapter } = await import("@hasna/cloud");
         const { runPgMigrations } = await import("../../db/pg-migrations.js");
         const config = getCloudConfig();
         if (!((config.rds as unknown) as Record<string, unknown>)?.host) { console.error(chalk.red("Cloud not configured. Set HASNA_RDS_HOST.")); process.exit(1); }
