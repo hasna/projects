@@ -12,6 +12,28 @@ function getPkgVersion(): string {
     return (JSON.parse(readFileSync(p, "utf-8")) as { version: string }).version;
   } catch { return "0.0.0"; }
 }
+
+function printHelp(): void {
+  console.log(`Usage: project-mcp [options]
+
+MCP server for project management tools (stdio transport)
+
+Options:
+  -V, --version  output the version number
+  -h, --help     display help for command`);
+}
+
+const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) {
+  printHelp();
+  process.exit(0);
+}
+
+if (args.includes("--version") || args.includes("-V")) {
+  console.log(getPkgVersion());
+  process.exit(0);
+}
+
 import {
   createProject,
   listProjects,
