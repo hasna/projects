@@ -2,7 +2,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { resolve } from "node:path";
+import { resolve, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+function getPkgVersion(): string {
+  try {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+    return (JSON.parse(readFileSync(p, "utf-8")) as { version: string }).version;
+  } catch { return "0.0.0"; }
+}
 import {
   createProject,
   listProjects,
@@ -25,7 +34,7 @@ import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
 
 const server = new McpServer({
   name: "project",
-  version: "0.1.2",
+  version: getPkgVersion(),
 });
 
 // ── projects_create ───────────────────────────────────────────────────────────
