@@ -13,7 +13,6 @@ import {
 } from "../../db/projects.js";
 import { gitPassthrough } from "../../lib/git.js";
 import { syncProject, cloneProject } from "../../lib/sync.js";
-import type { Project } from "../../types/index.js";
 import { importProject, importBulk } from "../../lib/import.js";
 import { publishProject, unpublishProject } from "../../lib/github.js";
 import {
@@ -31,7 +30,20 @@ import { getAllStatus, getProjectStatus, getRecentProjects, touchLastOpened } fr
 import { loadProjectEnv, printExportStatements, listEnvKeys } from "../../lib/env.js";
 import { watchProject } from "../../lib/watch.js";
 import { getGlobalStats, getProjectStats, formatBytes } from "../../lib/stats.js";
-import type { ProjectFilter } from "../../types/index.js";
+import type { ProjectFilter, Project } from "../../types/index.js";
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "never";
+  const diff = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
 
 /** Resolve project from arg or cwd. Prints hint if auto-detected. */
 function requireProject(idOrSlug: string | undefined): ReturnType<typeof resolveProject> {
@@ -270,7 +282,7 @@ export function registerProjectCommands(program: Command): void {
       if (!projects.length) { console.log(chalk.dim("No recently opened projects.")); return; }
       for (const p of projects) {
         console.log(`${chalk.bold(p.name)}  ${chalk.dim(p.path)}`);
-        if ((p as Project & { last_opened_at?: string }).last_opened_at) console.log(`  ${chalk.dim("opened:")} ${(p as Project & { last_opened_at?: string }).last_opened_at}`);
+        if (p.last_opened_at) console.log(`  ${chalk.dim("opened:")} ${timeAgo(p.last_opened_at)}`);
       }
     });
 
@@ -288,7 +300,7 @@ export function registerProjectCommands(program: Command): void {
         printProject(project);
         const icon = (st: string | null) => st === "clean" ? chalk.green("✓") : chalk.yellow("⚠");
         console.log(`  git:       ${icon(s.git_status)} ${s.git_status ?? "n/a"}`);
-        console.log(`  last sync: ${s.last_synced ?? chalk.dim("never")}`);
+        console.log(`  last sync: ${s.last_synced ? chalk.dim(timeAgo(s.last_synced)) : chalk.dim("never")}`);
         console.log(`  workdirs:  ${s.workdir_count}`);
         if (s.disk_bytes !== null) console.log(`  disk:      ${formatBytes(s.disk_bytes)}`);
       } else {
@@ -298,7 +310,7 @@ export function registerProjectCommands(program: Command): void {
         for (const s of all) {
           const pathIcon = s.path_exists ? chalk.green("✓") : chalk.red("✗");
           const gitStr = s.git_status === "clean" ? chalk.green("clean") : s.git_status ? chalk.yellow(s.git_status) : chalk.dim("n/a");
-          const syncStr = s.last_synced ? chalk.dim(s.last_synced.slice(0, 10)) : chalk.dim("never");
+          const syncStr = s.last_synced ? chalk.dim(timeAgo(s.last_synced)) : chalk.dim("never");
           console.log(`${pathIcon} ${chalk.bold(s.project.slug.padEnd(28))} git:${gitStr}  sync:${syncStr}  dirs:${s.workdir_count}`);
         }
       }
@@ -346,7 +358,7 @@ export function registerProjectCommands(program: Command): void {
         console.log(`${chalk.bold(s.name)}`);
         console.log(`  files:      ${s.file_count}  (${formatBytes(s.disk_bytes)})`);
         console.log(`  syncs:      ${s.sync_count}  (${formatBytes(s.synced_bytes)} total)`);
-        console.log(`  last sync:  ${s.last_synced ?? chalk.dim("never")}`);
+        console.log(`  last sync:  ${s.last_synced ? chalk.dim(timeAgo(s.last_synced)) : chalk.dim("never")}`);
         console.log(`  workdirs:   ${s.workdir_count}`);
       } else {
         const g = getGlobalStats();

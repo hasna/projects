@@ -32,6 +32,7 @@ export interface Project {
   git_remote: string | null;
   tags: string[];
   integrations: ProjectIntegrations;
+  last_opened_at: string | null;
   created_at: string;
   updated_at: string;
   synced_at: string | null;
@@ -49,6 +50,7 @@ export interface ProjectRow {
   git_remote: string | null;
   tags: string | null;
   integrations: string | null;
+  last_opened_at: string | null;
   created_at: string;
   updated_at: string;
   synced_at: string | null;

@@ -54,6 +54,7 @@ function rowToProject(row: ProjectRow): Project {
     status: row.status as Project["status"],
     tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
     integrations: row.integrations ? (JSON.parse(row.integrations) as ProjectIntegrations) : {},
+    last_opened_at: row.last_opened_at ?? null,
   };
 }
 
