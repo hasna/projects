@@ -68,6 +68,45 @@ function parsePositiveIntOrExit(raw: string | undefined, flagName: string, fallb
   return value;
 }
 
+function exitProjectNotFound(idOrSlug: string): never {
+  console.error(chalk.red(`Project not found: ${idOrSlug}`));
+
+  const query = idOrSlug.toLowerCase();
+  const candidates = [
+    ...listProjects({ status: "active", limit: 500 }),
+    ...listProjects({ status: "archived", limit: 500 }),
+  ];
+
+  const seen = new Set<string>();
+  const matches: Project[] = [];
+  for (const project of candidates) {
+    if (seen.has(project.id)) continue;
+    seen.add(project.id);
+    const haystack = `${project.slug} ${project.name}`.toLowerCase();
+    if (haystack.includes(query) || project.id.startsWith(idOrSlug)) {
+      matches.push(project);
+    }
+    if (matches.length >= 5) break;
+  }
+
+  if (matches.length) {
+    console.error(chalk.dim("Did you mean:"));
+    for (const project of matches) {
+      console.error(chalk.dim(`  - ${project.slug} (${project.id})`));
+    }
+  } else {
+    console.error(chalk.dim("Hint: run `project list --limit 20` to see available project IDs/slugs."));
+  }
+
+  process.exit(1);
+}
+
+function resolveProjectOrExit(idOrSlug: string) {
+  const project = resolveProject(idOrSlug);
+  if (!project) exitProjectNotFound(idOrSlug);
+  return project;
+}
+
 /** Resolve project from arg or cwd. Prints hint if auto-detected. */
 function requireProject(idOrSlug: string | undefined): ReturnType<typeof resolveProject> {
   if (idOrSlug) return resolveProject(idOrSlug);
@@ -175,7 +214,8 @@ export function registerProjectCommands(program: Command): void {
     .action((idOrSlug?: string, opts?: { json?: boolean }) => {
       const project = requireProject(idOrSlug);
       if (!project) {
-        console.error(chalk.red(idOrSlug ? `Project not found: ${idOrSlug}` : "No project detected in current directory. Pass a project ID or slug."));
+        if (idOrSlug) exitProjectNotFound(idOrSlug);
+        console.error(chalk.red("No project detected in current directory. Pass a project ID or slug."));
         process.exit(1);
       }
       if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(project, null, 2)); return; }
@@ -188,8 +228,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Rename a project and update slug + .project.json in all workdirs")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, newName, opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const updated = updateProject(project.id, { name: newName });
       const workdirs = listWorkdirs(project.id);
       for (const w of workdirs) {
@@ -211,8 +250,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Add tags to a project")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, tags: string[], opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const merged = [...new Set([...project.tags, ...tags])];
       const updated = updateProject(project.id, { tags: merged });
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
@@ -224,8 +262,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Remove tags from a project")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, tags: string[], opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const remaining = project.tags.filter((t) => !tags.includes(t));
       const updated = updateProject(project.id, { tags: remaining });
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
@@ -245,11 +282,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--git-remote <remote>", "Git remote URL")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
-        process.exit(1);
-      }
+      const project = resolveProjectOrExit(idOrSlug);
       const updated = updateProject(project.id, {
         name: opts.name,
         description: opts.description,
@@ -270,11 +303,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Archive a project")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
-        process.exit(1);
-      }
+      const project = resolveProjectOrExit(idOrSlug);
       const archived = archiveProject(project.id);
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(archived, null, 2)); return; }
       console.log(chalk.yellow(`✓ Archived: ${project.name}`));
@@ -286,11 +315,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Unarchive a project")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
-        process.exit(1);
-      }
+      const project = resolveProjectOrExit(idOrSlug);
       const unarchived = unarchiveProject(project.id);
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(unarchived, null, 2)); return; }
       console.log(chalk.green(`✓ Unarchived: ${project.name}`));
@@ -337,8 +362,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--json", "Output raw JSON")
     .action(async (idOrSlug?: string, opts?: { json?: boolean }) => {
       if (idOrSlug) {
-        const project = resolveProject(idOrSlug);
-        if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+        const project = resolveProjectOrExit(idOrSlug);
         const s = getProjectStatus(project);
         if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(s, null, 2)); return; }
         printProject(project);
@@ -368,7 +392,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--json", "Output raw JSON")
     .action(async (idOrSlug?: string, opts?: { fix?: boolean; json?: boolean }) => {
       const target = idOrSlug ? resolveProject(idOrSlug) : null;
-      if (idOrSlug && !target) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      if (idOrSlug && !target) exitProjectNotFound(idOrSlug);
       const results = target ? [await doctorProject(target)] : await doctorAll();
       if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(results, null, 2)); return; }
       let hasError = false;
@@ -394,8 +418,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--json", "Output raw JSON")
     .action((idOrSlug?: string, opts?: { json?: boolean }) => {
       if (idOrSlug) {
-        const project = resolveProject(idOrSlug);
-        if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+        const project = resolveProjectOrExit(idOrSlug);
         const s = getProjectStats(project.id);
         if (!s) { console.error(chalk.red("Stats not available")); process.exit(1); }
         if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(s, null, 2)); return; }
@@ -433,8 +456,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--region <region>", "AWS region")
     .option("--label <label>", "Workdir label", "clone")
     .action(async (idOrSlug, targetPath: string | undefined, opts) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const dest = resolve(targetPath ?? join(process.cwd(), project.slug));
       console.log(chalk.dim(`Cloning ${project.name} → ${dest}...`));
       try {
@@ -475,7 +497,8 @@ export function registerProjectCommands(program: Command): void {
     .action(async (idOrSlug: string | undefined, opts) => {
       const project = requireProject(idOrSlug);
       if (!project) {
-        console.error(chalk.red(idOrSlug ? `Project not found: ${idOrSlug}` : "No project detected in current directory."));
+        if (idOrSlug) exitProjectNotFound(idOrSlug);
+        console.error(chalk.red("No project detected in current directory."));
         process.exit(1);
       }
       try {
@@ -563,8 +586,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--primary", "Set as the primary working directory")
     .option("--generate", "Generate CLAUDE.md + AGENTS.md immediately")
     .action((idOrSlug, path, opts) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const absPath = resolve(path);
       const workdir = addWorkdir({ project_id: project.id, path: absPath, label: opts.label, is_primary: opts.primary });
       console.log(chalk.green(`✓ Added workdir: ${workdir.label} → ${workdir.path}`));
@@ -581,8 +603,7 @@ export function registerProjectCommands(program: Command): void {
     .description("List all working directories for a project")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts?: { json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const workdirs = listWorkdirs(project.id);
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(workdirs, null, 2)); return; }
       if (!workdirs.length) { console.log(chalk.dim("No workdirs registered.")); return; }
@@ -598,8 +619,7 @@ export function registerProjectCommands(program: Command): void {
     .command("remove <id-or-slug> <path>")
     .description("Remove a working directory from a project")
     .action((idOrSlug, path) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       removeWorkdir(project.id, resolve(path));
       console.log(chalk.yellow(`✓ Removed workdir: ${path}`));
     });
@@ -611,8 +631,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Show what would be generated without writing")
     .option("--force", "Overwrite existing CLAUDE.md even if not generated by open-projects")
     .action((idOrSlug, opts) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       const allDirs = listWorkdirs(project.id);
 
       if (opts.path) {
@@ -637,8 +656,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--org <org>", "GitHub org (default: hasnaxyz)")
     .option("--public", "Make repo public (default: private)")
     .action((idOrSlug, opts) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       try {
         const result = publishProject(project.name, project.path, {
           org: opts.org,
@@ -658,8 +676,7 @@ export function registerProjectCommands(program: Command): void {
     .command("unpublish <id-or-slug>")
     .description("Remove GitHub remote from project (does not delete the repo)")
     .action((idOrSlug) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
+      const project = resolveProjectOrExit(idOrSlug);
       unpublishProject(project.path);
       console.log(chalk.yellow(`✓ Removed origin remote from ${project.name}`));
     });
@@ -715,11 +732,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Run a git command inside the project directory")
     .allowUnknownOption()
     .action((idOrSlug, gitArgs) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
-        process.exit(1);
-      }
+      const project = resolveProjectOrExit(idOrSlug);
       try {
         gitPassthrough(project.path, gitArgs as string[]);
       } catch (err: unknown) {
@@ -805,11 +818,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--limit <n>", "Max entries", "10")
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts?: { limit?: string; json?: boolean }) => {
-      const project = resolveProject(idOrSlug);
-      if (!project) {
-        console.error(chalk.red(`Project not found: ${idOrSlug}`));
-        process.exit(1);
-      }
+      const project = resolveProjectOrExit(idOrSlug);
       const logs = listSyncLogs(project.id, parsePositiveIntOrExit(opts?.limit, "--limit", 10));
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(logs, null, 2)); return; }
       if (!logs.length) {
