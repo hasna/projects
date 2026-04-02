@@ -58,6 +58,16 @@ function wantsJsonOutput(opts?: { json?: boolean }): boolean {
   return Boolean(opts?.json || process.env["PROJECTS_JSON"]);
 }
 
+function parsePositiveIntOrExit(raw: string | undefined, flagName: string, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(chalk.red(`Invalid value for ${flagName}: ${raw}. Expected a positive integer.`));
+    process.exit(1);
+  }
+  return value;
+}
+
 /** Resolve project from arg or cwd. Prints hint if auto-detected. */
 function requireProject(idOrSlug: string | undefined): ReturnType<typeof resolveProject> {
   if (idOrSlug) return resolveProject(idOrSlug);
@@ -139,7 +149,7 @@ export function registerProjectCommands(program: Command): void {
     .action((opts) => {
       const filter: ProjectFilter = {
         status: opts.status,
-        limit: parseInt(opts.limit, 10),
+        limit: parsePositiveIntOrExit(opts.limit, "--limit", 50),
         tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : undefined,
       };
       const projects = listProjects(filter);
@@ -311,7 +321,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--limit <n>", "Max results", "10")
     .option("--json", "Output raw JSON")
     .action((opts) => {
-      const projects = getRecentProjects(parseInt(opts.limit, 10));
+      const projects = getRecentProjects(parsePositiveIntOrExit(opts.limit, "--limit", 10));
       if (opts.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(projects, null, 2)); return; }
       if (!projects.length) { console.log(chalk.dim("No recently opened projects.")); return; }
       for (const p of projects) {
@@ -800,7 +810,7 @@ export function registerProjectCommands(program: Command): void {
         console.error(chalk.red(`Project not found: ${idOrSlug}`));
         process.exit(1);
       }
-      const logs = listSyncLogs(project.id, parseInt(opts?.limit ?? "10", 10));
+      const logs = listSyncLogs(project.id, parsePositiveIntOrExit(opts?.limit, "--limit", 10));
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(logs, null, 2)); return; }
       if (!logs.length) {
         console.log(chalk.dim("No sync history."));
