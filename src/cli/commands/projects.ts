@@ -54,6 +54,10 @@ function suppressSslWarnings(): void {
   };
 }
 
+function wantsJsonOutput(opts?: { json?: boolean }): boolean {
+  return Boolean(opts?.json || process.env["PROJECTS_JSON"]);
+}
+
 /** Resolve project from arg or cwd. Prints hint if auto-detected. */
 function requireProject(idOrSlug: string | undefined): ReturnType<typeof resolveProject> {
   if (idOrSlug) return resolveProject(idOrSlug);
@@ -93,6 +97,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--s3-prefix <prefix>", "S3 prefix")
     .option("--git-remote <remote>", "Git remote URL")
     .option("--no-git-init", "Skip auto git init")
+    .option("-j, --json", "Output raw JSON")
     .action((opts) => {
       try {
         const path = opts.path ? resolve(opts.path) : process.cwd();
@@ -107,6 +112,10 @@ export function registerProjectCommands(program: Command): void {
           git_remote: opts.gitRemote,
           git_init: opts.gitInit !== false,
         });
+        if (wantsJsonOutput(opts)) {
+          console.log(JSON.stringify(project, null, 2));
+          return;
+        }
         console.log(chalk.green("✓ Project created"));
         printProject(project);
         if (!existsSync(project.path)) {
@@ -167,7 +176,8 @@ export function registerProjectCommands(program: Command): void {
   cmd
     .command("rename <id-or-slug> <new-name>")
     .description("Rename a project and update slug + .project.json in all workdirs")
-    .action((idOrSlug, newName) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, newName, opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
       const updated = updateProject(project.id, { name: newName });
@@ -181,6 +191,7 @@ export function registerProjectCommands(program: Command): void {
           }
         } catch { /* non-fatal */ }
       }
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
       console.log(chalk.green(`✓ Renamed: ${project.name} → ${updated.name} (slug: ${updated.slug})`));
     });
 
@@ -188,22 +199,26 @@ export function registerProjectCommands(program: Command): void {
   cmd
     .command("tag <id-or-slug> [tags...]")
     .description("Add tags to a project")
-    .action((idOrSlug, tags: string[]) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, tags: string[], opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
       const merged = [...new Set([...project.tags, ...tags])];
-      updateProject(project.id, { tags: merged });
+      const updated = updateProject(project.id, { tags: merged });
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
       console.log(chalk.green(`✓ Tags: ${merged.join(", ")}`));
     });
 
   cmd
     .command("untag <id-or-slug> [tags...]")
     .description("Remove tags from a project")
-    .action((idOrSlug, tags: string[]) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, tags: string[], opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
       const remaining = project.tags.filter((t) => !tags.includes(t));
-      updateProject(project.id, { tags: remaining });
+      const updated = updateProject(project.id, { tags: remaining });
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
       console.log(chalk.green(`✓ Tags: ${remaining.length ? remaining.join(", ") : "(none)"}`));
     });
 
@@ -218,6 +233,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--s3-bucket <bucket>", "S3 bucket")
     .option("--s3-prefix <prefix>", "S3 prefix")
     .option("--git-remote <remote>", "Git remote URL")
+    .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts) => {
       const project = resolveProject(idOrSlug);
       if (!project) {
@@ -233,6 +249,7 @@ export function registerProjectCommands(program: Command): void {
         s3_prefix: opts.s3Prefix,
         git_remote: opts.gitRemote,
       });
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
       console.log(chalk.green("✓ Project updated"));
       printProject(updated);
     });
@@ -241,13 +258,15 @@ export function registerProjectCommands(program: Command): void {
   cmd
     .command("archive <id-or-slug>")
     .description("Archive a project")
-    .action((idOrSlug) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) {
         console.error(chalk.red(`Project not found: ${idOrSlug}`));
         process.exit(1);
       }
-      archiveProject(project.id);
+      const archived = archiveProject(project.id);
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(archived, null, 2)); return; }
       console.log(chalk.yellow(`✓ Archived: ${project.name}`));
     });
 
@@ -255,13 +274,15 @@ export function registerProjectCommands(program: Command): void {
   cmd
     .command("unarchive <id-or-slug>")
     .description("Unarchive a project")
-    .action((idOrSlug) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) {
         console.error(chalk.red(`Project not found: ${idOrSlug}`));
         process.exit(1);
       }
-      unarchiveProject(project.id);
+      const unarchived = unarchiveProject(project.id);
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(unarchived, null, 2)); return; }
       console.log(chalk.green(`✓ Unarchived: ${project.name}`));
     });
 
@@ -548,10 +569,12 @@ export function registerProjectCommands(program: Command): void {
   workdirCmd
     .command("list <id-or-slug>")
     .description("List all working directories for a project")
-    .action((idOrSlug) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, opts?: { json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); }
       const workdirs = listWorkdirs(project.id);
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(workdirs, null, 2)); return; }
       if (!workdirs.length) { console.log(chalk.dim("No workdirs registered.")); return; }
       for (const w of workdirs) {
         const primary = w.is_primary ? chalk.cyan(" [primary]") : "";
@@ -637,12 +660,18 @@ export function registerProjectCommands(program: Command): void {
     .description("Import an existing directory as a project")
     .option("--tags <tags>", "Tags (comma-separated)")
     .option("--dry-run", "Show what would be imported without doing it")
+    .option("-j, --json", "Output raw JSON")
     .action(async (path, opts) => {
       const { project, skipped, error } = await importProject(path, {
         dryRun: opts.dryRun,
         defaultTags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
         onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
       });
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify({ project: project ?? null, skipped: skipped ?? null, error: error ?? null }, null, 2));
+        if (error) process.exit(1);
+        return;
+      }
       if (error) { console.error(chalk.red(`Error: ${error}`)); process.exit(1); }
       if (skipped) { console.log(chalk.yellow(`Skipped: ${skipped}`)); return; }
       if (project) { console.log(chalk.green("✓ Imported")); printProject(project); }
@@ -654,12 +683,14 @@ export function registerProjectCommands(program: Command): void {
     .description("Import all subdirectories of a directory as projects")
     .option("--tags <tags>", "Tags to apply to all imported projects (comma-separated)")
     .option("--dry-run", "Show what would be imported without doing it")
+    .option("-j, --json", "Output raw JSON")
     .action(async (dir, opts) => {
       const result = await importBulk(dir, {
         dryRun: opts.dryRun,
         defaultTags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
         onProgress: (msg) => console.log(chalk.dim(`  ${msg}`)),
       });
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(result, null, 2)); return; }
       console.log(chalk.green(`✓ imported: ${result.imported.length}`));
       if (result.skipped.length) console.log(chalk.dim(`  skipped: ${result.skipped.length}`));
       if (result.errors.length) {
@@ -762,13 +793,15 @@ export function registerProjectCommands(program: Command): void {
     .command("sync-log <id-or-slug>")
     .description("Show sync history for a project")
     .option("--limit <n>", "Max entries", "10")
-    .action((idOrSlug, opts) => {
+    .option("-j, --json", "Output raw JSON")
+    .action((idOrSlug, opts?: { limit?: string; json?: boolean }) => {
       const project = resolveProject(idOrSlug);
       if (!project) {
         console.error(chalk.red(`Project not found: ${idOrSlug}`));
         process.exit(1);
       }
-      const logs = listSyncLogs(project.id, parseInt(opts.limit, 10));
+      const logs = listSyncLogs(project.id, parseInt(opts?.limit ?? "10", 10));
+      if (wantsJsonOutput(opts)) { console.log(JSON.stringify(logs, null, 2)); return; }
       if (!logs.length) {
         console.log(chalk.dim("No sync history."));
         return;
