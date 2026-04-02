@@ -20,6 +20,7 @@ import { publishProject, unpublishProject } from "../lib/github.js";
 import { syncAll, getScheduleConfig, saveScheduleConfig, installCron, removeCron } from "../lib/scheduler.js";
 import { registerCloudSyncTools } from "./tools/cloud.js";
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../db/workdirs.js";
+import { touchLastOpened } from "../lib/status.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
 
 const server = new McpServer({
@@ -93,10 +94,11 @@ server.tool(
   "List all registered projects",
   {
     status: z.enum(["active", "archived"]).optional().describe("Filter by status"),
+    tags: z.array(z.string()).optional().describe("Filter by tags (AND — all tags must match)"),
     limit: z.number().optional().describe("Max results (default 50)"),
   },
   async (input) => {
-    const projects = listProjects({ status: input.status, limit: input.limit ?? 50 });
+    const projects = listProjects({ status: input.status, tags: input.tags, limit: input.limit ?? 50 });
     return {
       content: [{ type: "text" as const, text: JSON.stringify(projects, null, 2) }],
     };
@@ -210,6 +212,7 @@ server.tool(
         isError: true,
       };
     }
+    touchLastOpened(project.id);
     return {
       content: [
         {
