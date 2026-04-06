@@ -75,8 +75,9 @@ export function registerCreateCommand(cmd: Cmd) {
 async function autoLinkIntegrations(project: ReturnType<typeof createProject>): Promise<void> {
   const results: string[] = [];
 
-  // Run in background with very short timeout - don't block CLI
-  const linkPromise = (async () => {
+  // Fire and forget - errors are caught internally
+  // This runs completely detached from the CLI flow
+  (async () => {
     try {
       const { getMcpClient } = await import("../../../lib/mcp-client.js");
       const mcp = getMcpClient();
@@ -144,16 +145,12 @@ async function autoLinkIntegrations(project: ReturnType<typeof createProject>): 
           }
         }
       } catch { /* skip */ }
+
+      if (results.length > 0) {
+        console.log(chalk.dim(`  Linked: ${results.join(", ")}`));
+      }
     } catch { /* MCP not available, skip integrations */ }
-
-    if (results.length > 0) {
-      console.log(chalk.dim(`  Linked: ${results.join(", ")}`));
-    }
-  })();
-
-  // Don't await - let it run in background
-  // If it doesn't complete in 1s, just move on
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  })().catch(() => { /* ignore errors - fire and forget */ });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
