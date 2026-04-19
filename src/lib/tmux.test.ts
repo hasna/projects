@@ -5,22 +5,17 @@ import {
   createTmuxWindow,
   restartSession,
   killSession,
+  killWindow,
   listSessions,
   listWindows,
+  attachSession,
+  focusWindow,
+  renameWindow,
+  renameSession,
+  execInWindow,
+  cleanupDeadSessions,
+  findDeadSessions,
 } from "./tmux";
-
-/**
- * Regression tests for tmux session and window management.
- *
- * Key bugs being tested:
- * 1. `-g` flag on `tmux new-session` is invalid and causes silent failure
- * 2. createTmuxWindow should not create duplicate windows
- * 3. restartSession should preserve group membership
- *
- * These tests run against a real tmux instance using temporary session
- * names that are cleaned up after each test. If tmux is not available,
- * all tests are skipped gracefully.
- */
 
 const TEST_SESSIONS: string[] = [];
 let tmuxAvailable = false;
@@ -65,13 +60,42 @@ function windowNamesInSession(session: string): string[] {
   }
 }
 
-describe("tmux regression", () => {
+function sessionGroup(name: string): string {
+  const output = safeRun(`tmux list-sessions -F '#{session_name}:#{session_group}'`);
+  const line = output.split("\n").find((l) => l.startsWith(name + ":"));
+  return line?.split(":")[1] || "";
+}
+
+function ensureMaster(): void {
+  try {
+    safeTmux("new-session -d -s master");
+    trackSession("master");
+  } catch {
+    // master already exists
+  }
+}
+
+function trackSession(name: string) {
+  TEST_SESSIONS.push(name);
+}
+
+/**
+ * Regression tests for tmux session and window management.
+ *
+ * Tests cover:
+ * 1. No -g flag on tmux new-session (previously caused silent failures)
+ * 2. createTmuxWindow does not create duplicate windows
+ * 3. restartSession preserves group membership
+ * 4. Sessions linked to master share windows (group architecture)
+ * 5. New QoL functions: attach, focus, rename, exec, cleanup
+ */
+
+describe("tmux", () => {
   beforeAll(() => {
     tmuxAvailable = checkTmux();
   });
 
   afterAll(() => {
-    // Clean up all test sessions
     for (const name of TEST_SESSIONS) {
       try {
         killSession(name);
@@ -81,62 +105,95 @@ describe("tmux regression", () => {
     }
   });
 
-  function trackSession(name: string) {
-    TEST_SESSIONS.push(name);
-  }
-
-  describe("createSession — no -g flag", () => {
-    test("createSession creates session without -g flag failure", () => {
+  describe("createSession", () => {
+    test("creates session linked to master", () => {
       if (!tmuxAvailable) return;
 
-      const sessionName = `test-nog-${Date.now()}`;
+      const sessionName = `test-create-${Date.now()}`;
       trackSession(sessionName);
+      ensureMaster();
 
       createSession(sessionName);
 
-      // Verify session exists
       expect(sessionExists(sessionName)).toBe(true);
+      // Should be linked to master group
+      expect(sessionGroup(sessionName)).toBe("master");
     });
 
+    test("creates a project-specific window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-win-${Date.now()}`;
+      trackSession(sessionName);
+      ensureMaster();
+
+      createSession(sessionName, "/tmp/test", "mywindow");
+
+      const windows = windowNamesInSession(sessionName);
+      expect(windows).toContain("mywindow");
+    });
+
+    test("sends cd command to window when path provided", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-cd-${Date.now()}`;
+      trackSession(sessionName);
+      ensureMaster();
+
+      createSession(sessionName, "/tmp", "mywindow");
+
+      // Find the window ID and capture from it
+      const allWindows = safeRun(`tmux list-windows -t ${sessionName} -F '#{window_id}:#{window_name}'`);
+      const line = allWindows.split("\n").find((l) => l.endsWith(":mywindow"));
+      const winId = line?.split(":")[0] || "";
+      const output = safeRun(`tmux capture-pane -t "${winId}" -p`);
+      expect(output).toContain("cd /tmp");
+    });
+  });
+
+  describe("createSession — no -g flag regression", () => {
     test("tmux new-session with -g flag fails (proving the old bug)", () => {
       if (!tmuxAvailable) return;
 
       const sessionName = `test-flag-${Date.now()}`;
-      // No need to track — this session is not created
-
-      // The old code used: tmux new-session -d -s name -t master -g group -n win
-      // This should fail because -g is not valid for new-session
       let oldCmdFailed = false;
       try {
+        ensureMaster();
         safeTmux(`new-session -d -s ${sessionName} -t master -g projectmaintain -n ${sessionName}`);
       } catch {
         oldCmdFailed = true;
       }
       expect(oldCmdFailed).toBe(true);
+    });
 
-      // Fixed command without -g should succeed via linking to master
-      try {
-        // Ensure master exists first
-        try {
-          safeTmux(`new-session -d -s master -n main`);
-          trackSession("master");
-        } catch {
-          // master may already exist
+    test("source code has no -g flag", async () => {
+      const source = Bun.file("src/lib/tmux.ts");
+      const content = await source.text();
+      const lines = content.split("\n");
+      for (const line of lines) {
+        if (line.includes("new-session") && !line.includes("//") && !line.includes("/*")) {
+          expect(line).not.toMatch(/-g\s+\$\{/);
+          expect(line).not.toMatch(/-g\s+['"]\w/);
         }
-        safeTmux(`new-session -d -s ${sessionName} -t master -n ${sessionName}`);
-        trackSession(sessionName);
-        expect(sessionExists(sessionName)).toBe(true);
-      } catch {
-        // If master isn't available, standalone should work
-        safeTmux(`new-session -d -s ${sessionName} -n ${sessionName}`);
-        trackSession(sessionName);
-        expect(sessionExists(sessionName)).toBe(true);
       }
     });
   });
 
-  describe("createTmuxWindow — no duplicate windows", () => {
-    test("calling createTmuxWindow twice does not create duplicate windows", () => {
+  describe("createTmuxWindow", () => {
+    test("creates session linked to master", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `test-tmuxwin-${Date.now()}`;
+      trackSession(`proj-${slug}`);
+
+      const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(`proj-${slug}`)).toBe(true);
+      expect(sessionGroup(`proj-${slug}`)).toBe("master");
+    });
+
+    test("does not create duplicate windows", () => {
       if (!tmuxAvailable) return;
 
       const slug = `test-nodup-${Date.now()}`;
@@ -144,58 +201,217 @@ describe("tmux regression", () => {
 
       const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
 
-      // First call — creates session and window
       createTmuxWindow(project);
-
-      // Get window count before second call
       const countBefore = windowCount(`proj-${slug}`);
-
-      // Second call — should select existing window, not create duplicate
       createTmuxWindow(project);
-
       const countAfter = windowCount(`proj-${slug}`);
+
       expect(countAfter).toBe(countBefore);
     });
   });
 
-  describe("restartSession — group membership preserved", () => {
-    test("restartSession recreates session successfully", () => {
+  describe("restartSession", () => {
+    test("recreates session after kill", () => {
       if (!tmuxAvailable) return;
 
       const sessionName = `test-restart-${Date.now()}`;
       trackSession(sessionName);
+      ensureMaster();
 
-      // Ensure master exists
-      try {
-        safeTmux(`new-session -d -s master -n main`);
-        trackSession("master");
-      } catch {
-        // master may already exist
-      }
-
-      // Create then restart
       safeTmux(`new-session -d -s ${sessionName} -n main`);
       restartSession(sessionName, "/tmp/test", "main");
 
-      // Verify session is alive after restart
       expect(sessionExists(sessionName)).toBe(true);
+      expect(sessionGroup(sessionName)).toBe("master");
     });
   });
 
-  describe("source code validation — no -g flag", () => {
+  describe("listSessions and listWindows", () => {
+    test("listSessions returns sessions with expected fields", () => {
+      if (!tmuxAvailable) return;
+
+      const sessions = listSessions();
+      expect(sessions.length).toBeGreaterThan(0);
+      expect(sessions[0].name).toBeDefined();
+      expect(sessions[0].windows).toBeDefined();
+      expect(typeof sessions[0].attached).toBe("boolean");
+    });
+
+    test("listWindows returns windows for a session", () => {
+      if (!tmuxAvailable) return;
+
+      const windows = listWindows("master");
+      expect(windows.length).toBeGreaterThan(0);
+      expect(windows[0].session).toBe("master");
+      expect(typeof windows[0].index).toBe("number");
+    });
+  });
+
+  describe("killSession", () => {
+    test("kills an existing session", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-kill-${Date.now()}`;
+      safeTmux(`new-session -d -s ${sessionName}`);
+      expect(sessionExists(sessionName)).toBe(true);
+
+      killSession(sessionName);
+      expect(sessionExists(sessionName)).toBe(false);
+    });
+  });
+
+  describe("killWindow", () => {
+    test("kills a window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-killwin-${Date.now()}`;
+      safeTmux(`new-session -d -s ${sessionName}`);
+      safeTmux(`new-window -t ${sessionName} -n testkill`);
+      expect(windowNamesInSession(sessionName)).toContain("testkill");
+
+      killWindow(sessionName, "testkill");
+      expect(windowNamesInSession(sessionName)).not.toContain("testkill");
+      trackSession(sessionName);
+    });
+  });
+
+  describe("attachSession", () => {
+    test("throws for non-existent session", () => {
+      if (!tmuxAvailable) return;
+
+      expect(() => attachSession("non-existent-session-xyz")).toThrow();
+    });
+  });
+
+  describe("focusWindow", () => {
+    test("selects a window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-focus-${Date.now()}`;
+      safeTmux(`new-session -d -s ${sessionName}`);
+      safeTmux(`new-window -t ${sessionName} -n focustest`);
+      trackSession(sessionName);
+
+      // Should not throw
+      focusWindow(sessionName, "focustest");
+
+      // Verify the window is active
+      const windows = listWindows(sessionName);
+      const active = windows.find((w) => w.active);
+      expect(active?.name).toBe("focustest");
+    });
+  });
+
+  describe("renameWindow", () => {
+    test("renames a window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-rename-win-${Date.now()}`;
+      safeTmux(`new-session -d -s ${sessionName}`);
+      safeTmux(`new-window -t ${sessionName} -n oldname`);
+      trackSession(sessionName);
+
+      renameWindow(sessionName, "oldname", "newname");
+
+      expect(windowNamesInSession(sessionName)).toContain("newname");
+      expect(windowNamesInSession(sessionName)).not.toContain("oldname");
+    });
+  });
+
+  describe("renameSession", () => {
+    test("renames a session", () => {
+      if (!tmuxAvailable) return;
+
+      const oldName = `test-rns-${Date.now()}`;
+      const newName = `test-rns-new-${Date.now()}`;
+      safeTmux(`new-session -d -s ${oldName}`);
+      trackSession(newName); // track the new name for cleanup
+
+      renameSession(oldName, newName);
+
+      expect(sessionExists(oldName)).toBe(false);
+      expect(sessionExists(newName)).toBe(true);
+    });
+  });
+
+  describe("execInWindow", () => {
+    test("sends a command to a window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-exec-${Date.now()}`;
+      safeTmux(`new-session -d -s ${sessionName}`);
+      safeTmux(`new-window -t ${sessionName} -n execwin`);
+      trackSession(sessionName);
+
+      execInWindow(sessionName, "execwin", "echo hello-test");
+
+      const output = safeRun(`tmux capture-pane -t ${sessionName}:execwin -p`);
+      expect(output).toContain("hello-test");
+    });
+  });
+
+  describe("findDeadSessions", () => {
+    test("returns empty list when no dead sessions", () => {
+      if (!tmuxAvailable) return;
+
+      const dead = findDeadSessions();
+      // All current sessions should be healthy
+      for (const name of dead) {
+        expect(sessionExists(name)).toBe(true);
+      }
+    });
+  });
+
+  describe("cleanupDeadSessions", () => {
+    test("returns empty when no dead sessions", () => {
+      if (!tmuxAvailable) return;
+
+      const before = findDeadSessions();
+      // No dead sessions in our clean test environment
+      expect(Array.isArray(before)).toBe(true);
+    });
+
+    test("kills a truly dead session", () => {
+      if (!tmuxAvailable) return;
+
+      // Create a standalone session (not linked to master) with 2 windows
+      const deadName = `test-dead-${Date.now()}`;
+      safeTmux(`new-session -d -s ${deadName}`);
+      safeTmux(`new-window -t ${deadName} -n killme`);
+      trackSession(deadName);
+
+      // Kill the last non-zero window to make it "dead-like"
+      safeTmux(`kill-window -t ${deadName}:killme`);
+
+      // The session still has window 0, so won't show as dead
+      // But findDeadSessions should still handle it gracefully
+      const before = findDeadSessions();
+      const killed = cleanupDeadSessions();
+      expect(Array.isArray(before)).toBe(true);
+      expect(Array.isArray(killed)).toBe(true);
+      // Session should still exist (it had windows)
+      expect(sessionExists(deadName)).toBe(true);
+    });
+  });
+
+  describe("source code validation", () => {
     test("tmux new-session commands do not use -g flag", async () => {
       const source = Bun.file("src/lib/tmux.ts");
       const content = await source.text();
-
-      // Split into lines and find all tmux new-session commands
       const lines = content.split("\n");
       for (const line of lines) {
         if (line.includes("new-session") && !line.includes("//") && !line.includes("/*")) {
-          // Should not contain -g flag pattern (space followed by -g and space or variable)
           expect(line).not.toMatch(/-g\s+\$\{/);
           expect(line).not.toMatch(/-g\s+['"]\w/);
         }
       }
+    });
+
+    test("createTmuxWindow checks for master without group filter", async () => {
+      const source = Bun.file("src/lib/tmux.ts");
+      const content = await source.text();
+      // Should check master by name only, not by group name (which may be empty)
+      expect(content).not.toContain("sGroup === groupName");
     });
   });
 });

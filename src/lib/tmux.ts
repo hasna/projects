@@ -6,6 +6,20 @@ function run(cmd: string): string {
   return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
 }
 
+function findWindowId(session: string, windowName: string): string {
+  const output = run(
+    `tmux list-windows -t ${session} -F '#{window_id}:#{window_name}'`,
+  );
+  for (const line of output.split("\n").filter(Boolean)) {
+    const colonPos = line.indexOf(":");
+    if (colonPos === -1) continue;
+    const id = line.substring(0, colonPos);
+    const name = line.substring(colonPos + 1);
+    if (name === windowName) return id;
+  }
+  return "";
+}
+
 export interface TmuxSession {
   name: string;
   group: string;
@@ -54,40 +68,38 @@ export function listWindows(session?: string): TmuxWindow[] {
 
 export function createSession(name: string, projectPath?: string, windowName?: string): void {
   const config = getConfig();
-  const groupName = config.default_tmux_group || "projectmaintain";
   const master = config.default_tmux_master || "master";
   const win = windowName || name;
 
-  // Ensure master session exists in the group
+  // Ensure master session exists
   try {
-    run(`tmux new-session -d -s ${master} -n main`);
-    run(`tmux set-option -t ${master} session-group "${groupName}"`);
+    run(`tmux new-session -d -s ${master}`);
   } catch {
-    // Master may already exist or group option may not apply — continue anyway
+    // Master already exists
   }
 
-  // Create session linked to master (creates a session group)
+  // Create session linked to master group (no -n flag — shares master's window list)
   try {
-    run(`tmux new-session -d -s ${name} -t ${master} -n ${win}`);
+    run(`tmux new-session -d -s ${name} -t ${master}`);
   } catch {
-    // Fallback: create standalone session then link to group
-    run(`tmux new-session -d -s ${name} -n ${win}`);
-    try {
-      run(`tmux set-option -t ${name} session-group "${groupName}"`);
-    } catch {
-      // session-group option not available — session remains standalone
-    }
+    // Fallback: create standalone session
+    run(`tmux new-session -d -s ${name}`);
   }
+
+  // Add a project-specific window to the session
+  run(`tmux new-window -t ${name} -n ${win}`);
 
   if (projectPath) {
-    run(`tmux send-keys -t ${name}:${win} "cd ${projectPath}" Enter`);
+    const winId = findWindowId(name, win);
+    run(`tmux send-keys -t "${winId}" "cd ${projectPath}" Enter`);
   }
 }
 
 export function createWindow(session: string, name: string, command?: string): void {
   run(`tmux new-window -t ${session} -n ${name}`);
   if (command) {
-    run(`tmux send-keys -t ${session}:${name} "${command}" Enter`);
+    const winId = findWindowId(session, name);
+    run(`tmux send-keys -t "${winId}" "${command}" Enter`);
   }
 }
 
@@ -101,7 +113,6 @@ export function killWindow(session: string, name: string): void {
 
 export function restartSession(name: string, projectPath?: string, windowName?: string): void {
   const config = getConfig();
-  const groupName = config.default_tmux_group || "projectmaintain";
   const masterSession = config.default_tmux_master || "master";
   const win = windowName || name;
 
@@ -112,18 +123,24 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
   }
 
   try {
-    // Recreate within the master group for persistence
-    run(`tmux new-session -d -s ${name} -t ${masterSession} -n ${win}`);
+    // Recreate linked to master (no -n flag — shares master's window list)
+    run(`tmux new-session -d -s ${name} -t ${masterSession}`);
   } catch {
     // Master may not exist — create standalone
     createSession(name, projectPath, windowName);
+    return;
   }
 
+  // Add a project-specific window
+  run(`tmux new-window -t ${name} -n ${win}`);
+
   if (projectPath) {
-    run(`tmux send-keys -t ${name}:${win} "cd ${projectPath}" Enter`);
+    const winId = findWindowId(name, win);
+    run(`tmux send-keys -t "${winId}" "cd ${projectPath}" Enter`);
   }
   if (config.launch_takumi !== false && projectPath) {
-    run(`tmux send-keys -t ${name}:${win} "takumi" Enter`);
+    const winId = findWindowId(name, win);
+    run(`tmux send-keys -t "${winId}" "takumi" Enter`);
   }
 }
 
@@ -153,13 +170,16 @@ export function findDeadSessions(): string[] {
   const sessions = listSessions();
   const dead: string[] = [];
   for (const s of sessions) {
+    if (s.name === "master") continue;
+    // In linked sessions, windows are shared — only check standalone sessions
+    if (s.group === "master") continue;
     if (!s.attached && s.windows === 0) {
       dead.push(s.name);
       continue;
     }
     // Check for takumi crashes
     try {
-      const output = run(`tmux capture-pane -t ${s.name}:0 -p`);
+      const output = run(`tmux capture-pane -t ${s.name} -p`);
       if (output.includes("ERR_") || output.includes("Error [ERR")) {
         dead.push(s.name);
       }
@@ -173,7 +193,6 @@ export function findDeadSessions(): string[] {
 export function createTmuxWindow(project: Project): void {
   const { name, path, slug } = project;
   const config = getConfig();
-  const groupName = config.default_tmux_group || "projectmaintain";
   const masterSession = config.default_tmux_master || "master";
   const sessionName = `proj-${slug || name}`;
   const windowName = slug || name;
@@ -183,23 +202,17 @@ export function createTmuxWindow(project: Project): void {
     const lines = sessions.split("\n").filter(Boolean);
     const masterExists = lines.some((line) => {
       const [sName, sGroup] = line.split(":");
-      return sName === masterSession && sGroup === groupName;
+      return sName === masterSession;
     });
 
     if (!masterExists) {
-      run(`tmux new-session -d -s ${masterSession} -n main`);
-      try {
-        run(`tmux set-option -t ${masterSession} session-group "${groupName}"`);
-      } catch {
-        // group option not available — continue anyway
-      }
+      run(`tmux new-session -d -s ${masterSession}`);
     }
 
-    const sessionLine = lines.find((line) => {
+    const sessionExists = lines.some((line) => {
       const [sName] = line.split(":");
       return sName === sessionName;
     });
-    const sessionExists = !!sessionLine;
 
     if (sessionExists) {
       // Check if a window with this name already exists
@@ -207,20 +220,49 @@ export function createTmuxWindow(project: Project): void {
       const existingWindow = windows.find((w) => w.name === windowName);
       if (existingWindow) {
         // Window already exists — move to it instead of creating a duplicate
-        run(`tmux select-window -t ${sessionName}:${windowName}`);
+        run(`tmux select-window -t "${existingWindow.name}"`);
         return;
       }
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     } else {
-      run(
-        `tmux new-session -d -s ${sessionName} -t ${masterSession} -n ${windowName}`,
-      );
+      // Create session linked to master (no -n flag — shares master's window list)
+      run(`tmux new-session -d -s ${sessionName} -t ${masterSession}`);
+      run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     }
 
     if (config.launch_takumi !== false) {
-      run(`tmux send-keys -t ${sessionName}:${windowName} "cd ${path} && takumi" Enter`);
+      const winId = findWindowId(sessionName, windowName);
+      run(`tmux send-keys -t "${winId}" "cd ${path} && takumi" Enter`);
     }
   } catch {
     // Non-fatal — tmux may not be available
   }
+}
+
+export function attachSession(name: string): void {
+  run(`tmux attach-session -t ${name}`);
+}
+
+export function focusWindow(session: string, window: string): void {
+  run(`tmux select-window -t ${session}:${window}`);
+}
+
+export function renameWindow(session: string, oldName: string, newName: string): void {
+  run(`tmux rename-window -t ${session}:${oldName} ${newName}`);
+}
+
+export function renameSession(oldName: string, newName: string): void {
+  run(`tmux rename-session -t ${oldName} ${newName}`);
+}
+
+export function execInWindow(session: string, window: string, command: string): void {
+  run(`tmux send-keys -t ${session}:${window} "${command}" Enter`);
+}
+
+export function cleanupDeadSessions(): string[] {
+  const dead = findDeadSessions();
+  for (const name of dead) {
+    try { killSession(name); } catch { /* ignore */ }
+  }
+  return dead;
 }

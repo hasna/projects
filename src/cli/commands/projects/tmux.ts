@@ -5,10 +5,17 @@ import {
   createSession,
   createWindow,
   killSession,
+  killWindow,
   restartSession,
   reviveSession,
   findDeadSessions,
   createTmuxWindow,
+  attachSession,
+  focusWindow,
+  renameWindow as renameTmuxWindow,
+  renameSession as renameTmuxSession,
+  execInWindow,
+  cleanupDeadSessions,
 } from "../../../lib/tmux.js";
 import {
   wantsJsonOutput,
@@ -128,5 +135,113 @@ export function registerTmuxCommands(cmd: Command) {
       }
       console.log(chalk.yellow(`Dead sessions: ${dead.join(", ")}`));
       console.log(chalk.dim("  Run: project tmux restart <session>"));
+    });
+
+  tmuxCmd
+    .command("attach")
+    .alias("a")
+    .description("Attach to a tmux session")
+    .argument("<name>", "Session name")
+    .action((name) => {
+      try {
+        attachSession(name);
+      } catch {
+        console.error(chalk.red(`Session not found: ${name}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("focus")
+    .alias("f")
+    .description("Focus a window in the master group")
+    .argument("<session>", "Session name")
+    .argument("[window]", "Window name (first if omitted)")
+    .action((session, window) => {
+      try {
+        if (!window) {
+          // Use the first project-specific window
+          const windows = listWindows(session);
+          const projWindow = windows.find((w) => !w.name.startsWith("main") && w.name !== "0");
+          if (!projWindow) {
+            console.error(chalk.red(`No suitable window found in ${session}`));
+            process.exit(1);
+          }
+          window = projWindow.name;
+        }
+        focusWindow(session, window);
+        console.log(chalk.green(`✓ Focused ${session}:${window}`));
+      } catch (err: unknown) {
+        console.error(chalk.red(`Window not found: ${session}:${window}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("rename-window")
+    .alias("rnw")
+    .description("Rename a tmux window")
+    .argument("<session>", "Session name")
+    .argument("<old-name>", "Current window name")
+    .argument("<new-name>", "New window name")
+    .action((session, oldName, newName) => {
+      try {
+        renameTmuxWindow(session, oldName, newName);
+        console.log(chalk.green(`✓ Renamed ${session}:${oldName} → ${newName}`));
+      } catch {
+        console.error(chalk.red(`Window not found: ${session}:${oldName}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("rename-session")
+    .alias("rns")
+    .description("Rename a tmux session")
+    .argument("<old-name>", "Current session name")
+    .argument("<new-name>", "New session name")
+    .action((oldName, newName) => {
+      try {
+        renameTmuxSession(oldName, newName);
+        console.log(chalk.green(`✓ Renamed session ${oldName} → ${newName}`));
+      } catch {
+        console.error(chalk.red(`Session not found: ${oldName}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("exec")
+    .alias("x")
+    .description("Execute a command in a tmux window")
+    .argument("<session>", "Session name")
+    .argument("<window>", "Window name")
+    .argument("<command...>", "Command to run")
+    .action((session, window, command: string[]) => {
+      try {
+        execInWindow(session, window, command.join(" "));
+        console.log(chalk.green(`✓ Sent command to ${session}:${window}`));
+      } catch {
+        console.error(chalk.red(`Window not found: ${session}:${window}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("cleanup")
+    .alias("clean")
+    .description("Kill all dead sessions in the master group")
+    .option("-j, --json", "Output as JSON")
+    .action((opts) => {
+      const killed = cleanupDeadSessions();
+      if (killed.length === 0) {
+        console.log(chalk.green("✓ No dead sessions to clean up"));
+        return;
+      }
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify({ cleaned: killed }, null, 2));
+        return;
+      }
+      console.log(chalk.yellow(`Cleaned ${killed.length} dead session(s): ${killed.join(", ")}`));
     });
 }
