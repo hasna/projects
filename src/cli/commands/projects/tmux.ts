@@ -21,12 +21,113 @@ import {
   wantsJsonOutput,
   type Command,
 } from "./shared.js";
-import { resolveProject } from "../../../db/projects.js";
+import { resolveProject, listProjects } from "../../../db/projects.js";
 
 export function registerTmuxCommands(cmd: Command) {
   const tmuxCmd = cmd
     .command("tmux")
     .description("Manage tmux sessions and windows for projects");
+
+  tmuxCmd
+    .command("open")
+    .alias("o")
+    .description("Open a tmux window for a project (auto-detects from cwd)")
+    .option("-n, --name <name>", "Project name (auto-detected if omitted)")
+    .option("-w, --window <name>", "Window name")
+    .option("-c, --command <cmd>", "Initial command to run")
+    .action((opts) => {
+      let project;
+      try {
+        project = resolveProject(opts.name);
+      } catch {
+        console.error(chalk.red("Could not resolve project from cwd. Use --name or specify a project name."));
+        process.exit(1);
+      }
+      if (!project) {
+        console.error(chalk.red("Project not found"));
+        process.exit(1);
+      }
+      createTmuxWindow(project);
+      console.log(chalk.green(`✓ Opened tmux window for ${project.name}`));
+    });
+
+  tmuxCmd
+    .command("create-all")
+    .alias("all")
+    .description("Create tmux windows for all registered projects")
+    .option("-j, --json", "Output as JSON")
+    .action((opts) => {
+      const projects = listProjects();
+      let created = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+      for (const p of projects) {
+        try {
+          createTmuxWindow(p);
+          created++;
+        } catch (err: unknown) {
+          skipped++;
+          errors.push(`${p.name}: ${(err as Error).message}`);
+        }
+      }
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify({ created, skipped, errors }, null, 2));
+        return;
+      }
+      console.log(chalk.green(`✓ Created tmux windows for ${created} project(s)`));
+      if (skipped > 0) {
+        console.log(chalk.yellow(`  Skipped ${skipped} (may already exist)`));
+      }
+      if (errors.length > 0 && errors.length <= 5) {
+        for (const e of errors) {
+          console.log(chalk.dim(`  - ${e}`));
+        }
+      }
+    });
+
+  tmuxCmd
+    .command("status")
+    .alias("s")
+    .description("Show tmux health for all registered projects")
+    .option("-j, --json", "Output as JSON")
+    .action((opts) => {
+      const projects = listProjects();
+      const sessions = listSessions();
+      const sessionNames = new Set(sessions.map((s) => s.name));
+      const windows = listWindows();
+      const windowMap = new Map<string, string[]>();
+      for (const w of windows) {
+        if (!windowMap.has(w.session)) windowMap.set(w.session, []);
+        windowMap.get(w.session)!.push(w.name);
+      }
+      const results = projects.map((p) => {
+        const hasSession = sessionNames.has(p.name);
+        const session = sessions.find((s) => s.name === p.name);
+        return {
+          name: p.name,
+          hasWindow: hasSession,
+          windows: session?.windows || 0,
+          attached: session?.attached || false,
+          group: session?.group || "",
+        };
+      });
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify(results, null, 2));
+        return;
+      }
+      const alive = results.filter((r) => r.hasWindow);
+      const dead = results.filter((r) => !r.hasWindow);
+      console.log(chalk.green(`✓ ${alive.length} project(s) with tmux windows`));
+      if (dead.length > 0) {
+        console.log(chalk.yellow(`⚠ ${dead.length} project(s) without windows:`));
+        for (const d of dead.slice(0, 20)) {
+          console.log(chalk.dim(`  - ${d.name}`));
+        }
+        if (dead.length > 20) {
+          console.log(chalk.dim(`  ... and ${dead.length - 20} more`));
+        }
+      }
+    });
 
   tmuxCmd
     .command("list")
