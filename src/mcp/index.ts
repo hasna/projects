@@ -53,6 +53,7 @@ import { registerCloudSyncTools } from "./tools/cloud.js";
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../db/workdirs.js";
 import { touchLastOpened } from "../lib/status.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
+import { listSessions, listWindows, createSession, killSession, restartSession, reviveSession, findDeadSessions } from "../lib/tmux.js";
 
 const server = new McpServer({
   name: "project",
@@ -550,6 +551,106 @@ server.tool(
 
 // ── Cloud sync tools ──────────────────────────────────────────────────────────
 registerCloudSyncTools(server);
+
+// ── tmux management ───────────────────────────────────────────────────────────
+server.tool(
+  "projects_tmux_list",
+  "List all tmux sessions",
+  {},
+  async () => {
+    try {
+      const sessions = listSessions();
+      return { content: [{ type: "text" as const, text: JSON.stringify(sessions, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_windows",
+  "List tmux windows in a session or all sessions",
+  { session: z.string().optional().describe("Session name (all if omitted)") },
+  async (input) => {
+    try {
+      const windows = listWindows(input.session);
+      return { content: [{ type: "text" as const, text: JSON.stringify(windows, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_create",
+  "Create a new tmux session for a project. Optionally create a window with an initial command.",
+  {
+    name: z.string().describe("Session name"),
+    path: z.string().optional().describe("Project path to cd into"),
+    window: z.string().optional().describe("Window name"),
+    command: z.string().optional().describe("Command to run in the window"),
+  },
+  async (input) => {
+    try {
+      createSession(input.name, input.path, input.window);
+      if (input.command) {
+        const win = input.window || input.name;
+        // Re-implement createWindow inline since we need to send keys to the specific window
+        const { execSync } = await import("node:child_process");
+        execSync(`tmux send-keys -t ${input.name}:${win} "${input.command}" Enter`);
+      }
+      return { content: [{ type: "text" as const, text: `✓ Created session: ${input.name}` }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_kill",
+  "Kill a tmux session",
+  { name: z.string().describe("Session name") },
+  async (input) => {
+    try {
+      killSession(input.name);
+      return { content: [{ type: "text" as const, text: `✓ Killed session: ${input.name}` }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Session not found: ${input.name}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_restart",
+  "Kill and recreate a tmux session",
+  { name: z.string().describe("Session name"), window: z.string().optional().describe("Window name") },
+  async (input) => {
+    try {
+      restartSession(input.name, undefined, input.window);
+      return { content: [{ type: "text" as const, text: `✓ Restarted session: ${input.name}` }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_revive",
+  "Check tmux session health. Revive a session if alive, or find dead sessions.",
+  { name: z.string().optional().describe("Session name (find dead sessions if omitted)") },
+  async (input) => {
+    try {
+      if (input.name) {
+        const alive = reviveSession(input.name);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ name: input.name, alive }, null, 2) }] };
+      }
+      const dead = findDeadSessions();
+      return { content: [{ type: "text" as const, text: JSON.stringify({ dead, all_healthy: dead.length === 0 }, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
 
 // ── Start server ──────────────────────────────────────────────────────────────
 const transport = new StdioServerTransport();
