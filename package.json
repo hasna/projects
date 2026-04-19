@@ -1,5 +1,5 @@
 {
-  "name": "@hasna/project",
+  "name": "@hasna/projects",
   "version": "0.1.16",
   "description": "Project management CLI + MCP server for AI agents — register, sync, and open projects across machines",
   "type": "module",

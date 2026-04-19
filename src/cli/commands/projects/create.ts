@@ -61,10 +61,6 @@ export function registerCreateCommand(cmd: Cmd) {
         }
         console.log(chalk.green("✓ Project created"));
         printProject(project);
-        if (!existsSync(project.path)) {
-          console.log(chalk.yellow(`  ⚠ Path does not exist yet: ${project.path}`));
-          console.log(chalk.dim(`    Create it to enable git init and workdir generation.`));
-        }
       } catch (err: unknown) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);

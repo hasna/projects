@@ -16,7 +16,7 @@ import {
   ProjectSlugConflictError,
   ProjectPathConflictError,
 } from "../types/index.js";
-import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { gitInit, isGitRepo } from "../lib/git.js";
@@ -33,6 +33,14 @@ export function slugify(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function scaffoldProject(path: string): void {
+  if (existsSync(path)) return;
+  mkdirSync(path, { recursive: true });
+  for (const dir of ["data", "scripts", "assets", "docs"]) {
+    mkdirSync(join(path, dir), { recursive: true });
+  }
 }
 
 function ensureUniqueSlug(base: string, db: Database, excludeId?: string): string {
@@ -90,6 +98,9 @@ export function createProject(input: CreateProjectInput, db?: Database): Project
   );
 
   const project = getProject(id, d)!;
+
+  // Scaffold directory if path doesn't exist yet
+  scaffoldProject(input.path);
 
   // Auto-register primary workdir for this machine
   try {

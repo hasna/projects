@@ -5,7 +5,7 @@ Project management CLI + MCP server for AI agents. Register projects once, open 
 ## Install
 
 ```bash
-bun install -g @hasna/project
+bun install -g @hasna/projects
 ```
 
 ## CLI
