@@ -9,13 +9,13 @@ function runMcpCli(args: string[]) {
   });
 }
 
-describe("project-mcp CLI flags", () => {
+describe("projects-mcp CLI flags", () => {
   test("prints help and exits successfully", () => {
     const result = runMcpCli(["--help"]);
     const stdout = Buffer.from(result.stdout).toString("utf-8");
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("Usage: project-mcp [options]");
+    expect(stdout).toContain("Usage: projects-mcp [options]");
     expect(stdout).toContain("--help");
     expect(stdout).toContain("--version");
   });

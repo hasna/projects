@@ -14,7 +14,7 @@ function getPkgVersion(): string {
 }
 
 function printHelp(): void {
-  console.log(`Usage: project-mcp [options]
+  console.log(`Usage: projects-mcp [options]
 
 MCP server for project management tools (stdio transport)
 
@@ -56,7 +56,7 @@ import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
 import { listSessions, listWindows, createSession, killSession, restartSession, reviveSession, findDeadSessions } from "../lib/tmux.js";
 
 const server = new McpServer({
-  name: "project",
+  name: "projects",
   version: getPkgVersion(),
 });
 

@@ -19,7 +19,7 @@ function getPackageVersion(): string {
 const program = new Command();
 
 program
-  .name("project")
+  .name("projects")
   .description("Project management CLI for AI agents")
   .version(getPackageVersion());
 
