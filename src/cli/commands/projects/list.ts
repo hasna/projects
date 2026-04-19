@@ -18,6 +18,7 @@ export function registerListCommands(cmd: Command) {
     .description("List projects")
     .option("--status <status>", "Filter by status (active|archived)")
     .option("--tags <tags>", "Filter by tags (comma-separated)")
+    .option("--query <q>", "Fuzzy search by name or slug")
     .option("--limit <n>", "Max results", "50")
     .option("--json", "Output raw JSON")
     .action((opts) => {
@@ -26,7 +27,11 @@ export function registerListCommands(cmd: Command) {
         limit: parsePositiveIntOrExit(opts.limit, "--limit", 50),
         tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : undefined,
       };
-      const projects = listProjects(filter);
+      let projects = listProjects(filter);
+      if (opts.query) {
+        const q = opts.query.toLowerCase();
+        projects = projects.filter((p) => p.name.toLowerCase().includes(q) || p.slug.toLowerCase().includes(q));
+      }
       if (opts.json || process.env["PROJECTS_JSON"]) {
         console.log(JSON.stringify(projects, null, 2));
         return;

@@ -19,6 +19,11 @@ import { registerDoctorCommands, registerSyncLogCommand } from "./doctor.js";
 import { registerEnvCommand } from "./env.js";
 import { registerConfigCommand } from "./config.js";
 import { registerTmuxCommands } from "./tmux.js";
+import { registerDeleteCommand } from "./delete.js";
+import { registerDescribeCommand } from "./describe.js";
+import { registerSummaryCommand } from "./stats.js";
+import { registerShellCommand } from "./shell.js";
+import { registerInitCommand } from "./init.js";
 
 export function registerProjectCommands(program: Command): void {
   const cmd = program;
@@ -30,15 +35,18 @@ export function registerProjectCommands(program: Command): void {
   registerRenameCommand(cmd);
   registerArchiveCommands(cmd);
   registerTagCommands(cmd);
+  registerDeleteCommand(cmd);
 
   // Listing & discovery
   registerListCommands(cmd);
   registerOpenCommand(cmd);
   registerEnvCommand(cmd);
+  registerDescribeCommand(cmd);
 
   // Health & stats
   registerDoctorCommands(cmd);
   registerSyncLogCommand(cmd);
+  registerSummaryCommand(cmd);
 
   // Sync & storage
   registerSyncCommands(cmd);
@@ -62,4 +70,10 @@ export function registerProjectCommands(program: Command): void {
 
   // tmux management
   registerTmuxCommands(cmd);
+
+  // Shell integration
+  registerShellCommand(cmd);
+
+  // Init
+  registerInitCommand(cmd);
 }
