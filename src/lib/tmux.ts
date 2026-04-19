@@ -54,15 +54,29 @@ export function listWindows(session?: string): TmuxWindow[] {
 
 export function createSession(name: string, projectPath?: string, windowName?: string): void {
   const config = getConfig();
-  const group = config.default_tmux_group || "projectmaintain";
+  const groupName = config.default_tmux_group || "projectmaintain";
   const master = config.default_tmux_master || "master";
   const win = windowName || name;
 
+  // Ensure master session exists in the group
   try {
-    run(`tmux new-session -d -s ${name} -t ${master} -g ${group} -n ${win}`);
+    run(`tmux new-session -d -s ${master} -n main`);
+    run(`tmux set-option -t ${master} session-group "${groupName}"`);
   } catch {
-    // Master may not exist — create standalone
+    // Master may already exist or group option may not apply — continue anyway
+  }
+
+  // Create session linked to master (creates a session group)
+  try {
+    run(`tmux new-session -d -s ${name} -t ${master} -n ${win}`);
+  } catch {
+    // Fallback: create standalone session then link to group
     run(`tmux new-session -d -s ${name} -n ${win}`);
+    try {
+      run(`tmux set-option -t ${name} session-group "${groupName}"`);
+    } catch {
+      // session-group option not available — session remains standalone
+    }
   }
 
   if (projectPath) {
@@ -99,7 +113,7 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
 
   try {
     // Recreate within the master group for persistence
-    run(`tmux new-session -d -s ${name} -t ${masterSession} -g ${groupName} -n ${win}`);
+    run(`tmux new-session -d -s ${name} -t ${masterSession} -n ${win}`);
   } catch {
     // Master may not exist — create standalone
     createSession(name, projectPath, windowName);
@@ -173,7 +187,12 @@ export function createTmuxWindow(project: Project): void {
     });
 
     if (!masterExists) {
-      run(`tmux new-session -d -s ${masterSession} -g ${groupName}`);
+      run(`tmux new-session -d -s ${masterSession} -n main`);
+      try {
+        run(`tmux set-option -t ${masterSession} session-group "${groupName}"`);
+      } catch {
+        // group option not available — continue anyway
+      }
     }
 
     const sessionLine = lines.find((line) => {
@@ -194,7 +213,7 @@ export function createTmuxWindow(project: Project): void {
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     } else {
       run(
-        `tmux new-session -d -s ${sessionName} -t ${masterSession} -g ${groupName} -n ${windowName}`,
+        `tmux new-session -d -s ${sessionName} -t ${masterSession} -n ${windowName}`,
       );
     }
 
