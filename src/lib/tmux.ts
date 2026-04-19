@@ -86,14 +86,29 @@ export function killWindow(session: string, name: string): void {
 }
 
 export function restartSession(name: string, projectPath?: string, windowName?: string): void {
+  const config = getConfig();
+  const groupName = config.default_tmux_group || "projectmaintain";
+  const masterSession = config.default_tmux_master || "master";
+  const win = windowName || name;
+
   try {
     killSession(name);
   } catch {
     // ignore if doesn't exist
   }
-  createSession(name, projectPath, windowName);
-  if (getConfig().launch_takumi !== false && projectPath) {
-    const win = windowName || name;
+
+  try {
+    // Recreate within the master group for persistence
+    run(`tmux new-session -d -s ${name} -t ${masterSession} -g ${groupName} -n ${win}`);
+  } catch {
+    // Master may not exist — create standalone
+    createSession(name, projectPath, windowName);
+  }
+
+  if (projectPath) {
+    run(`tmux send-keys -t ${name}:${win} "cd ${projectPath}" Enter`);
+  }
+  if (config.launch_takumi !== false && projectPath) {
     run(`tmux send-keys -t ${name}:${win} "takumi" Enter`);
   }
 }
@@ -161,9 +176,21 @@ export function createTmuxWindow(project: Project): void {
       run(`tmux new-session -d -s ${masterSession} -g ${groupName}`);
     }
 
-    const sessionExists = lines.some((line) => line.startsWith(`${sessionName}:`));
+    const sessionLine = lines.find((line) => {
+      const [sName] = line.split(":");
+      return sName === sessionName;
+    });
+    const sessionExists = !!sessionLine;
 
     if (sessionExists) {
+      // Check if a window with this name already exists
+      const windows = listWindows(sessionName);
+      const existingWindow = windows.find((w) => w.name === windowName);
+      if (existingWindow) {
+        // Window already exists — move to it instead of creating a duplicate
+        run(`tmux select-window -t ${sessionName}:${windowName}`);
+        return;
+      }
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     } else {
       run(
