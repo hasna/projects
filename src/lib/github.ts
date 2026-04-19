@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { isGitRepo } from "./git.js";
+import type { Project } from "../types/index.js";
 
 export interface PublishOptions {
   org?: string;       // default: hasnaxyz
@@ -65,6 +66,31 @@ export function unpublishProject(path: string): void {
   } catch {
     // No remote to remove
   }
+}
+
+export function createGithubRepo(project: Project, org = "hasnaxyz"): string | null {
+  const slug = project.slug || project.name.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const fullName = `${org}/${slug}`;
+  const desc = project.description ? `--description ${JSON.stringify(project.description)}` : "";
+
+  execSync(`gh repo create ${fullName} --private ${desc}`, { stdio: "pipe" });
+
+  const remote = `git@github.com:${fullName}.git`;
+
+  if (isGitRepo(project.path)) {
+    try {
+      const remotes = execSync("git remote", { cwd: project.path, stdio: "pipe", encoding: "utf-8" });
+      if (remotes.includes("origin")) {
+        execSync(`git remote set-url origin ${remote}`, { cwd: project.path, stdio: "pipe" });
+      } else {
+        execSync(`git remote add origin ${remote}`, { cwd: project.path, stdio: "pipe" });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return remote;
 }
 
 export function getGitHubUrl(path: string): string | null {

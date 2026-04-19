@@ -20,6 +20,7 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { gitInit, isGitRepo } from "../lib/git.js";
+import { getConfig } from "../lib/config.js";
 import { addWorkdir, getMachineId } from "./workdirs.js";
 
 const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
@@ -38,7 +39,8 @@ export function slugify(name: string): string {
 function scaffoldProject(path: string): void {
   if (existsSync(path)) return;
   mkdirSync(path, { recursive: true });
-  for (const dir of ["data", "scripts", "assets", "docs"]) {
+  const config = getConfig();
+  for (const dir of config.scaffold_dirs || ["data", "scripts", "assets", "docs"]) {
     mkdirSync(join(path, dir), { recursive: true });
   }
 }
@@ -119,7 +121,7 @@ export function createProject(input: CreateProjectInput, db?: Database): Project
     }
   }
 
-  return project;
+  return getProject(id, d)!;
 }
 
 export function getProject(id: string, db?: Database): Project | null {

@@ -17,6 +17,8 @@ import { registerScheduleCommands } from "./schedule.js";
 import { registerCloudCommands } from "./cloud.js";
 import { registerDoctorCommands, registerSyncLogCommand } from "./doctor.js";
 import { registerEnvCommand } from "./env.js";
+import { registerConfigCommand } from "./config.js";
+import { registerTmuxCommands } from "./tmux.js";
 
 export function registerProjectCommands(program: Command): void {
   const cmd = program;
@@ -54,4 +56,10 @@ export function registerProjectCommands(program: Command): void {
 
   // Cloud sync
   registerCloudCommands(cmd);
+
+  // Config
+  registerConfigCommand(cmd);
+
+  // tmux management
+  registerTmuxCommands(cmd);
 }

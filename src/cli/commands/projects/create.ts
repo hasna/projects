@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import chalk from "chalk";
-import { createProject, updateProject, archiveProject, unarchiveProject } from "../../../db/projects.js";
+import { createProject, updateProject, archiveProject, unarchiveProject, resolveProject, getProjectByPath, getProjectBySlug } from "../../../db/projects.js";
 import { setIntegrations } from "../../../db/projects.js";
 import { listWorkdirs } from "../../../db/workdirs.js";
 import { writeFileSync, readFileSync } from "node:fs";
@@ -13,6 +13,7 @@ import {
   wantsJsonOutput,
   type Command as Cmd,
 } from "./shared.js";
+import { getConfig, resolveProjectPath, resolveProjectName } from "../../../lib/config.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerCreateCommand(cmd: Cmd) {
@@ -30,9 +31,39 @@ export function registerCreateCommand(cmd: Cmd) {
     .option("--no-git-init", "Skip auto git init")
     .option("-j, --json", "Output raw JSON")
     .option("--no-integrations", "Skip auto-linking integrations (todos, mementos)")
-    .action((opts) => {
+    .option("--tmux", "Create a tmux window and launch takumi in it")
+    .option("--publish", "Create a GitHub repo and push")
+    .action(async (opts) => {
       try {
-        const path = opts.path ? resolve(opts.path) : process.cwd();
+        const config = getConfig();
+
+        // Resolve path with fallback to config default
+        const path = resolveProjectPath(opts.path);
+
+        // Check for existing project at this path
+        const existingAtPath = getProjectByPath(path);
+        if (existingAtPath) {
+          console.error(chalk.red(`Error: A project already exists at path: ${path}`));
+          console.error(chalk.dim(`  Name: ${existingAtPath.name} (slug: ${existingAtPath.slug})`));
+          process.exit(1);
+        }
+
+        // Check for slug conflict
+        if (opts.slug) {
+          const existingBySlug = getProjectBySlug(opts.slug);
+          if (existingBySlug) {
+            console.error(chalk.red(`Error: A project already exists with slug: ${opts.slug}`));
+            process.exit(1);
+          }
+        }
+
+        // Check GitHub repo availability (non-blocking warning, suppressed for JSON)
+        const nameCheck = resolveProjectName(opts.name, config);
+        if (nameCheck.suggested && !wantsJsonOutput(opts)) {
+          console.log(chalk.yellow(`  ⚠ GitHub repo ${config.default_github_org}/${opts.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")} already exists`));
+          console.log(chalk.yellow(`  Suggested name: ${nameCheck.suggested}`));
+        }
+
         const project = createProject({
           name: opts.name,
           path,
@@ -61,6 +92,34 @@ export function registerCreateCommand(cmd: Cmd) {
         }
         console.log(chalk.green("✓ Project created"));
         printProject(project);
+
+        // Post-create: tmux (blocking — user wants it)
+        if (opts.tmux) {
+          try {
+            const { createTmuxWindow } = await import("../../../lib/tmux.js");
+            createTmuxWindow(project);
+            console.log(chalk.green(`✓ tmux window created for ${project.name}`));
+          } catch {
+            console.log(chalk.yellow("⚠ tmux unavailable — run `project tmux create ${name}` manually"));
+          }
+        }
+
+        // Post-create: GitHub publish (blocking — user wants it)
+        if (opts.publish) {
+          try {
+            const { publishProject } = await import("../../../lib/github.js");
+            const result = publishProject(project.name, project.path, {
+              org: config.default_github_org,
+              private: config.default_repo_visibility === "private",
+              description: project.description ?? undefined,
+            });
+            console.log(chalk.green(`✓ Published: ${result.url}`));
+          } catch (err: unknown) {
+            console.log(chalk.yellow(`⚠ GitHub publish failed: ${err instanceof Error ? err.message : String(err)}`));
+          }
+        }
+
+        process.exit(0);
       } catch (err: unknown) {
         console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
         process.exit(1);
