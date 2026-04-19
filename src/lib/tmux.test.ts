@@ -142,7 +142,7 @@ describe("tmux regression", () => {
       const slug = `test-nodup-${Date.now()}`;
       trackSession(`proj-${slug}`);
 
-      const project = { name: slug, slug, path: "/tmp/test" };
+      const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
 
       // First call — creates session and window
       createTmuxWindow(project);
