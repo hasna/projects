@@ -173,18 +173,9 @@ export function findDeadSessions(): string[] {
     if (s.name === "master") continue;
     // In linked sessions, windows are shared — only check standalone sessions
     if (s.group === "master") continue;
+    // Sessions with 0 windows are dead (capture-pane omitted — unreliable on linked sessions)
     if (!s.attached && s.windows === 0) {
       dead.push(s.name);
-      continue;
-    }
-    // Check for takumi crashes
-    try {
-      const output = run(`tmux capture-pane -t ${s.name} -p`);
-      if (output.includes("ERR_") || output.includes("Error [ERR")) {
-        dead.push(s.name);
-      }
-    } catch {
-      // ignore
     }
   }
   return dead;
@@ -194,14 +185,21 @@ export function createTmuxWindow(project: Project): void {
   const { name, path, slug } = project;
   const config = getConfig();
   const masterSession = config.default_tmux_master || "master";
-  const sessionName = `proj-${slug || name}`;
+
+  // For open-* projects in opensourcedev, use open- prefix; otherwise proj-
+  const sessionName = path?.includes("opensourcedev")
+    ? `${slug || name}`.replace("proj-", "").startsWith("open-")
+      ? `${slug || name}`.replace("proj-", "")
+      : `open-${slug || name}`.replace("proj-", "")
+    : `proj-${slug || name}`;
+
   const windowName = slug || name;
 
   try {
     const sessions = run("tmux list-sessions -F '#{session_name}:#{session_group}'");
     const lines = sessions.split("\n").filter(Boolean);
     const masterExists = lines.some((line) => {
-      const [sName, sGroup] = line.split(":");
+      const [sName] = line.split(":");
       return sName === masterSession;
     });
 
@@ -225,7 +223,7 @@ export function createTmuxWindow(project: Project): void {
       }
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     } else {
-      // Create session linked to master (no -n flag — shares master's window list)
+      // Create session linked to master group (no -n flag — shares master's window list)
       run(`tmux new-session -d -s ${sessionName} -t ${masterSession}`);
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     }

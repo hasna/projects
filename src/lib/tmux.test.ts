@@ -1,5 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createSession,
   createTmuxWindow,
@@ -16,6 +19,11 @@ import {
   cleanupDeadSessions,
   findDeadSessions,
 } from "./tmux";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+function readSourceFile(name: string): string {
+  return readFileSync(join(__dirname, name), "utf-8");
+}
 
 const TEST_SESSIONS: string[] = [];
 let tmuxAvailable = false;
@@ -166,9 +174,8 @@ describe("tmux", () => {
       expect(oldCmdFailed).toBe(true);
     });
 
-    test("source code has no -g flag", async () => {
-      const source = Bun.file("src/lib/tmux.ts");
-      const content = await source.text();
+    test("source code has no -g flag", () => {
+      const content = readSourceFile("tmux.ts");
       const lines = content.split("\n");
       for (const line of lines) {
         if (line.includes("new-session") && !line.includes("//") && !line.includes("/*")) {
@@ -395,9 +402,8 @@ describe("tmux", () => {
   });
 
   describe("source code validation", () => {
-    test("tmux new-session commands do not use -g flag", async () => {
-      const source = Bun.file("src/lib/tmux.ts");
-      const content = await source.text();
+    test("tmux new-session commands do not use -g flag", () => {
+      const content = readSourceFile("tmux.ts");
       const lines = content.split("\n");
       for (const line of lines) {
         if (line.includes("new-session") && !line.includes("//") && !line.includes("/*")) {
@@ -407,11 +413,169 @@ describe("tmux", () => {
       }
     });
 
-    test("createTmuxWindow checks for master without group filter", async () => {
-      const source = Bun.file("src/lib/tmux.ts");
-      const content = await source.text();
+    test("createTmuxWindow checks for master without group filter", () => {
+      const content = readSourceFile("tmux.ts");
       // Should check master by name only, not by group name (which may be empty)
       expect(content).not.toContain("sGroup === groupName");
+    });
+  });
+
+  describe("open-* project naming — opensourcedev sessions use open- prefix", () => {
+    test("project in opensourcedev gets open- prefix session name", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "analytics";
+      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-analytics";
+      const expectedSession = `open-${slug}`;
+
+      // Track for cleanup
+      trackSession(expectedSession);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(expectedSession)).toBe(true);
+    });
+
+    test("project in opensourcedev session is linked to master group", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "contacts";
+      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-contacts";
+      const sessionName = `open-${slug}`;
+      trackSession(sessionName);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionGroup(sessionName)).toBe("master");
+    });
+
+    test("non-opensourcedev project gets proj- prefix session name", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "iapp-takumi";
+      const path = "/home/hasna/workspace/hasnaxyz/internalapp/iapp-takumi";
+      const expectedSession = `proj-${slug}`;
+
+      trackSession(expectedSession);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(expectedSession)).toBe(true);
+    });
+
+    test("non-opensourcedev project session is linked to master group", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "platform-alumia";
+      const path = "/home/hasna/workspace/hasna/platform/platform-alumia";
+      const sessionName = `proj-${slug}`;
+      trackSession(sessionName);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionGroup(sessionName)).toBe("master");
+    });
+
+    test("open-* project does NOT create proj- prefixed duplicate", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "todos";
+      const opensourcedevPath = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-todos";
+      const expectedSession = `open-${slug}`;
+      const wrongSession = `proj-${slug}`;
+
+      // Make sure the wrong session doesn't exist before
+      const hadWrongSession = sessionExists(wrongSession);
+
+      trackSession(expectedSession);
+      if (!hadWrongSession) trackSession(wrongSession);
+
+      const project = { name: slug, slug, path: opensourcedevPath } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(expectedSession)).toBe(true);
+      // The proj- version should NOT have been created
+      expect(sessionExists(wrongSession)).toBe(false);
+    });
+
+    test("already open- prefixed slug does not double-prefix", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "open-banking";
+      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-banking";
+      // Should be "open-banking", not "open-open-banking"
+      const expectedSession = "open-banking";
+      trackSession(expectedSession);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(expectedSession)).toBe(true);
+      expect(sessionExists("open-open-banking")).toBe(false);
+    });
+
+    test("does not create duplicate windows on repeated calls", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "sessions";
+      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-sessions";
+      const sessionName = `open-${slug}`;
+      trackSession(sessionName);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+
+      createTmuxWindow(project);
+      const countBefore = windowCount(sessionName);
+      createTmuxWindow(project);
+      const countAfter = windowCount(sessionName);
+
+      expect(countAfter).toBe(countBefore);
+    });
+  });
+
+  describe("master group architecture — sessions share windows via -t flag", () => {
+    test("new open-* session is linked to master with -t flag", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "test-arch-open";
+      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-test-arch";
+      const sessionName = `open-${slug}`;
+      trackSession(sessionName);
+
+      // Kill master if it exists to ensure clean test
+      try { killSession("master"); } catch { /* ignore */ }
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(sessionName)).toBe(true);
+      expect(sessionGroup(sessionName)).toBe("master");
+    });
+
+    test("multiple open-* sessions share master group", () => {
+      if (!tmuxAvailable) return;
+
+      const slugs = ["test-a", "test-b"];
+      const sessionNames = slugs.map((s) => `open-${s}`);
+      const paths = slugs.map((s) => `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${s}`);
+
+      for (const sn of sessionNames) trackSession(sn);
+
+      // Kill master to ensure clean state
+      try { killSession("master"); } catch { /* ignore */ }
+
+      for (let i = 0; i < slugs.length; i++) {
+        const project = { name: slugs[i], slug: slugs[i], path: paths[i] } as unknown as import("../types/index.js").Project;
+        createTmuxWindow(project);
+      }
+
+      for (const sn of sessionNames) {
+        expect(sessionGroup(sn)).toBe("master");
+      }
     });
   });
 });
