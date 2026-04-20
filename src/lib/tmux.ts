@@ -34,6 +34,53 @@ export interface TmuxWindow {
   active: boolean;
 }
 
+export interface TmuxGroup {
+  name: string;
+  sessions: string[];
+  windows: number;
+}
+
+function getGroupForProject(name: string, path?: string): string {
+  // Determine group name from project path
+  // open-* projects in opensourcedev -> group "open"
+  // platform-alumia -> group "platform-alumia"
+  // iapp-takumi -> group "iapp-takumi"
+  // default -> project name as group
+  if (path?.includes("opensourcedev")) return "open";
+  return name;
+}
+
+export function listGroups(): TmuxGroup[] {
+  const sessions = listSessions();
+  const groupMap = new Map<string, TmuxGroup>();
+  for (const s of sessions) {
+    const group = s.group || s.name; // standalone sessions are their own group
+    if (!groupMap.has(group)) {
+      groupMap.set(group, { name: group, sessions: [], windows: 0 });
+    }
+    const g = groupMap.get(group)!;
+    g.sessions.push(s.name);
+    g.windows = Math.max(g.windows, s.windows);
+  }
+  return Array.from(groupMap.values());
+}
+
+export function createGroup(name: string): void {
+  try {
+    run(`tmux new-session -d -s ${name}`);
+  } catch {
+    // Group already exists
+  }
+}
+
+export function destroyGroup(name: string): void {
+  try {
+    run(`tmux kill-session -t ${name}`);
+  } catch {
+    // ignore
+  }
+}
+
 export function listSessions(): TmuxSession[] {
   const output = run(
     "tmux list-sessions -F '#{session_name}:#{session_group}:#{session_windows}:#{session_attached}'",
@@ -181,10 +228,9 @@ export function findDeadSessions(): string[] {
   return dead;
 }
 
-export function createTmuxWindow(project: Project): void {
+export function createTmuxWindow(project: Project, overrideGroup?: string): void {
   const { name, path, slug } = project;
   const config = getConfig();
-  const masterSession = config.default_tmux_master || "master";
 
   // For open-* projects in opensourcedev, use open- prefix; otherwise proj-
   const sessionName = path?.includes("opensourcedev")
@@ -193,18 +239,21 @@ export function createTmuxWindow(project: Project): void {
       : `open-${slug || name}`.replace("proj-", "")
     : `proj-${slug || name}`;
 
+  // Group is the tmux master session this project belongs to
+  const groupName = overrideGroup || getGroupForProject(name, path);
+
   const windowName = slug || name;
 
   try {
     const sessions = run("tmux list-sessions -F '#{session_name}:#{session_group}'");
     const lines = sessions.split("\n").filter(Boolean);
-    const masterExists = lines.some((line) => {
+    const groupExists = lines.some((line) => {
       const [sName] = line.split(":");
-      return sName === masterSession;
+      return sName === groupName;
     });
 
-    if (!masterExists) {
-      run(`tmux new-session -d -s ${masterSession}`);
+    if (!groupExists) {
+      run(`tmux new-session -d -s ${groupName}`);
     }
 
     const sessionExists = lines.some((line) => {
@@ -223,8 +272,8 @@ export function createTmuxWindow(project: Project): void {
       }
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     } else {
-      // Create session linked to master group (no -n flag — shares master's window list)
-      run(`tmux new-session -d -s ${sessionName} -t ${masterSession}`);
+      // Create session linked to its group (no -n flag — shares group's window list)
+      run(`tmux new-session -d -s ${sessionName} -t ${groupName}`);
       run(`tmux new-window -t ${sessionName} -n ${windowName}`);
     }
 

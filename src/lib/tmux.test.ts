@@ -18,6 +18,9 @@ import {
   execInWindow,
   cleanupDeadSessions,
   findDeadSessions,
+  listGroups,
+  createGroup,
+  destroyGroup,
 } from "./tmux";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -187,7 +190,7 @@ describe("tmux", () => {
   });
 
   describe("createTmuxWindow", () => {
-    test("creates session linked to master", () => {
+    test("creates session linked to its group", () => {
       if (!tmuxAvailable) return;
 
       const slug = `test-tmuxwin-${Date.now()}`;
@@ -197,7 +200,8 @@ describe("tmux", () => {
       createTmuxWindow(project);
 
       expect(sessionExists(`proj-${slug}`)).toBe(true);
-      expect(sessionGroup(`proj-${slug}`)).toBe("master");
+      // Non-opensourcedev projects get their slug as group
+      expect(sessionGroup(`proj-${slug}`)).toBe(slug);
     });
 
     test("does not create duplicate windows", () => {
@@ -437,7 +441,7 @@ describe("tmux", () => {
       expect(sessionExists(expectedSession)).toBe(true);
     });
 
-    test("project in opensourcedev session is linked to master group", () => {
+    test("project in opensourcedev session is linked to open group", () => {
       if (!tmuxAvailable) return;
 
       const slug = "contacts";
@@ -448,7 +452,7 @@ describe("tmux", () => {
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionGroup(sessionName)).toBe("master");
+      expect(sessionGroup(sessionName)).toBe("open");
     });
 
     test("non-opensourcedev project gets proj- prefix session name", () => {
@@ -466,7 +470,7 @@ describe("tmux", () => {
       expect(sessionExists(expectedSession)).toBe(true);
     });
 
-    test("non-opensourcedev project session is linked to master group", () => {
+    test("non-opensourcedev project session gets own group", () => {
       if (!tmuxAvailable) return;
 
       const slug = "platform-alumia";
@@ -477,7 +481,7 @@ describe("tmux", () => {
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionGroup(sessionName)).toBe("master");
+      expect(sessionGroup(sessionName)).toBe(slug);
     });
 
     test("open-* project does NOT create proj- prefixed duplicate", () => {
@@ -537,8 +541,8 @@ describe("tmux", () => {
     });
   });
 
-  describe("master group architecture — sessions share windows via -t flag", () => {
-    test("new open-* session is linked to master with -t flag", () => {
+  describe("group architecture — opensourcedev projects share open group", () => {
+    test("new open-* session is linked to open group", () => {
       if (!tmuxAvailable) return;
 
       const slug = "test-arch-open";
@@ -546,17 +550,14 @@ describe("tmux", () => {
       const sessionName = `open-${slug}`;
       trackSession(sessionName);
 
-      // Kill master if it exists to ensure clean test
-      try { killSession("master"); } catch { /* ignore */ }
-
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
       expect(sessionExists(sessionName)).toBe(true);
-      expect(sessionGroup(sessionName)).toBe("master");
+      expect(sessionGroup(sessionName)).toBe("open");
     });
 
-    test("multiple open-* sessions share master group", () => {
+    test("multiple open-* sessions share open group", () => {
       if (!tmuxAvailable) return;
 
       const slugs = ["test-a", "test-b"];
@@ -565,17 +566,233 @@ describe("tmux", () => {
 
       for (const sn of sessionNames) trackSession(sn);
 
-      // Kill master to ensure clean state
-      try { killSession("master"); } catch { /* ignore */ }
-
       for (let i = 0; i < slugs.length; i++) {
         const project = { name: slugs[i], slug: slugs[i], path: paths[i] } as unknown as import("../types/index.js").Project;
         createTmuxWindow(project);
       }
 
       for (const sn of sessionNames) {
-        expect(sessionGroup(sn)).toBe("master");
+        expect(sessionGroup(sn)).toBe("open");
       }
+    });
+
+    test("non-opensourcedev sessions get their own per-project group", () => {
+      if (!tmuxAvailable) return;
+
+      const slugA = "arch-proj-a";
+      const slugB = "arch-proj-b";
+      const pathA = `/home/hasna/workspace/hasna/platform/${slugA}`;
+      const pathB = `/home/hasna/workspace/hasna/platform/${slugB}`;
+      const sessionA = `proj-${slugA}`;
+      const sessionB = `proj-${slugB}`;
+      trackSession(sessionA);
+      trackSession(sessionB);
+
+      const projectA = { name: slugA, slug: slugA, path: pathA } as unknown as import("../types/index.js").Project;
+      const projectB = { name: slugB, slug: slugB, path: pathB } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(projectA);
+      createTmuxWindow(projectB);
+
+      // Each gets its own group
+      expect(sessionGroup(sessionA)).toBe(slugA);
+      expect(sessionGroup(sessionB)).toBe(slugB);
+    });
+  });
+
+  describe("group management", () => {
+    test("createGroup creates a tmux session as group", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-group-${Date.now()}`;
+
+      createGroup(groupName);
+      trackSession(groupName);
+
+      expect(sessionExists(groupName)).toBe(true);
+    });
+
+    test("createGroup is idempotent — does not throw if group exists", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-group-idem-${Date.now()}`;
+      safeTmux(`new-session -d -s ${groupName}`);
+      trackSession(groupName);
+
+      expect(() => createGroup(groupName)).not.toThrow();
+    });
+
+    test("destroyGroup kills the group session", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-destroy-${Date.now()}`;
+      safeTmux(`new-session -d -s ${groupName}`);
+      expect(sessionExists(groupName)).toBe(true);
+
+      destroyGroup(groupName);
+      expect(sessionExists(groupName)).toBe(false);
+    });
+
+    test("destroyGroup does not throw for non-existent group", () => {
+      if (!tmuxAvailable) return;
+
+      expect(() => destroyGroup(`non-existent-${Date.now()}`)).not.toThrow();
+    });
+
+    test("listGroups returns groups with sessions and window counts", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-listgrp-${Date.now()}`;
+      safeTmux(`new-session -d -s ${groupName}`);
+      trackSession(groupName);
+
+      const groups = listGroups();
+      expect(groups.length).toBeGreaterThan(0);
+
+      const testGroup = groups.find((g) => g.name === groupName);
+      expect(testGroup).toBeDefined();
+      expect(Array.isArray(testGroup!.sessions)).toBe(true);
+      expect(testGroup!.sessions).toContain(groupName);
+      expect(typeof testGroup!.windows).toBe("number");
+    });
+
+    test("listGroups aggregates sessions with the same group", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-agggrp-${Date.now()}`;
+      const s1 = `test-agg-s1-${Date.now()}`;
+      const s2 = `test-agg-s2-${Date.now()}`;
+
+      safeTmux(`new-session -d -s ${groupName}`);
+      trackSession(groupName);
+
+      // Create sessions linked to the group via -t
+      safeTmux(`new-session -d -s ${s1} -t ${groupName}`);
+      safeTmux(`new-session -d -s ${s2} -t ${groupName}`);
+      trackSession(s1);
+      trackSession(s2);
+
+      const groups = listGroups();
+      const testGroup = groups.find((g) => g.name === groupName);
+      expect(testGroup).toBeDefined();
+      expect(testGroup!.sessions).toContain(s1);
+      expect(testGroup!.sessions).toContain(s2);
+    });
+
+    test("createTmuxWindow creates per-project group for non-opensourcedev projects", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `my-project-${Date.now()}`;
+      const path = `/home/hasna/workspace/hasna/platform/${slug}`;
+      const sessionName = `proj-${slug}`;
+      trackSession(sessionName);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(sessionName)).toBe(true);
+      // Non-opensourcedev projects get their own group (slug-based)
+      const group = sessionGroup(sessionName);
+      expect(group).not.toBe("master");
+      expect(group).toBe(slug);
+    });
+
+    test("opensourcedev projects are grouped under 'open'", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `grp-test-${Date.now()}`;
+      const path = `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${slug}`;
+      const sessionName = `open-${slug}`;
+      trackSession(sessionName);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists(sessionName)).toBe(true);
+      expect(sessionGroup(sessionName)).toBe("open");
+    });
+
+    test("createTmuxWindow respects overrideGroup parameter", () => {
+      if (!tmuxAvailable) return;
+
+      const customGroup = `custom-grp-${Date.now()}`;
+      const slug = `override-test-${Date.now()}`;
+      const path = `/home/hasna/workspace/hasna/platform/${slug}`;
+      const sessionName = `proj-${slug}`;
+      trackSession(sessionName);
+      trackSession(customGroup);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project, customGroup);
+
+      expect(sessionExists(sessionName)).toBe(true);
+      expect(sessionGroup(sessionName)).toBe(customGroup);
+    });
+
+    test("projects in different groups are isolated", () => {
+      if (!tmuxAvailable) return;
+
+      const grpA = `isolate-a-${Date.now()}`;
+      const grpB = `isolate-b-${Date.now()}`;
+      const slugA = `proj-a-${Date.now()}`;
+      const slugB = `proj-b-${Date.now()}`;
+      const sessionA = `proj-${slugA}`;
+      const sessionB = `proj-${slugB}`;
+      trackSession(grpA);
+      trackSession(grpB);
+      trackSession(sessionA);
+      trackSession(sessionB);
+
+      const projectA = { name: slugA, slug: slugA, path: `/tmp/${slugA}` } as unknown as import("../types/index.js").Project;
+      const projectB = { name: slugB, slug: slugB, path: `/tmp/${slugB}` } as unknown as import("../types/index.js").Project;
+
+      createTmuxWindow(projectA, grpA);
+      createTmuxWindow(projectB, grpB);
+
+      expect(sessionGroup(sessionA)).toBe(grpA);
+      expect(sessionGroup(sessionB)).toBe(grpB);
+      expect(grpA).not.toBe(grpB);
+    });
+
+    test("multiple projects in the same group share the group", () => {
+      if (!tmuxAvailable) return;
+
+      const sharedGroup = `shared-grp-${Date.now()}`;
+      const s1 = `shared-s1-${Date.now()}`;
+      const s2 = `shared-s2-${Date.now()}`;
+      trackSession(sharedGroup);
+      trackSession(s1);
+      trackSession(s2);
+
+      // Create the group first
+      createGroup(sharedGroup);
+
+      // Create sessions linked to the shared group
+      safeTmux(`new-session -d -s ${s1} -t ${sharedGroup}`);
+      safeTmux(`new-session -d -s ${s2} -t ${sharedGroup}`);
+
+      expect(sessionGroup(s1)).toBe(sharedGroup);
+      expect(sessionGroup(s2)).toBe(sharedGroup);
+    });
+
+    test("group created automatically when first project is added", () => {
+      if (!tmuxAvailable) return;
+
+      const autoGroup = `auto-grp-${Date.now()}`;
+      const slug = `auto-slug-${Date.now()}`;
+      const sessionName = `proj-${slug}`;
+      trackSession(sessionName);
+      trackSession(autoGroup);
+
+      // Group doesn't exist yet
+      expect(sessionExists(autoGroup)).toBe(false);
+
+      const project = { name: slug, slug, path: `/tmp/${slug}` } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project, autoGroup);
+
+      // Group should now exist
+      expect(sessionExists(autoGroup)).toBe(true);
+      expect(sessionExists(sessionName)).toBe(true);
+      expect(sessionGroup(sessionName)).toBe(autoGroup);
     });
   });
 });

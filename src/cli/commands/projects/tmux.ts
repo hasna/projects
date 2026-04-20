@@ -16,12 +16,16 @@ import {
   renameSession as renameTmuxSession,
   execInWindow,
   cleanupDeadSessions,
+  listGroups,
+  createGroup,
+  destroyGroup,
 } from "../../../lib/tmux.js";
 import {
   wantsJsonOutput,
   type Command,
 } from "./shared.js";
 import { resolveProject, listProjects } from "../../../db/projects.js";
+import { execSync } from "node:child_process";
 
 export function registerTmuxCommands(cmd: Command) {
   const tmuxCmd = cmd
@@ -345,4 +349,87 @@ export function registerTmuxCommands(cmd: Command) {
       }
       console.log(chalk.yellow(`Cleaned ${killed.length} dead session(s): ${killed.join(", ")}`));
     });
+
+  // Group management subcommand
+  const groupCmd = tmuxCmd
+    .command("group")
+    .alias("g")
+    .description("Manage tmux session groups");
+
+  groupCmd
+    .command("list")
+    .alias("ls")
+    .description("List all tmux groups")
+    .option("-j, --json", "Output as JSON")
+    .action((opts) => {
+      const groups = listGroups();
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify(groups, null, 2));
+        return;
+      }
+      for (const g of groups) {
+        console.log(`  ${chalk.green(g.name)} — ${g.sessions.length} session(s), ${g.windows} window(s)`);
+      }
+    });
+
+  groupCmd
+    .command("create")
+    .alias("c")
+    .description("Create a new tmux group")
+    .argument("<name>", "Group name")
+    .action((name) => {
+      createGroup(name);
+      console.log(chalk.green(`✓ Created group: ${name}`));
+    });
+
+  groupCmd
+    .command("destroy")
+    .alias("rm")
+    .description("Destroy a tmux group and all its sessions")
+    .argument("<name>", "Group name")
+    .action((name) => {
+      // Get all sessions in this group
+      const sessions = listSessions();
+      const groupSessions = sessions.filter((s) => s.group === name);
+      for (const s of groupSessions) {
+        try { killSession(s.name); } catch { /* ignore */ }
+      }
+      destroyGroup(name);
+      console.log(chalk.green(`✓ Destroyed group: ${name} (${groupSessions.length} sessions removed)`));
+    });
+
+  groupCmd
+    .command("move")
+    .alias("mv")
+    .description("Move a session to a different group")
+    .argument("<session>", "Session name")
+    .argument("<group>", "Target group name")
+    .action((session, group) => {
+      // Get current windows
+      const windows = listWindows(session);
+      const windowNames = windows.map((w) => w.name);
+
+      // Kill old session
+      killSession(session);
+
+      // Create group if needed
+      try { createGroup(group); } catch { /* exists */ }
+
+      // Recreate session in new group
+      try {
+        run(`tmux new-session -d -s ${session} -t ${group}`);
+        for (const wn of windowNames) {
+          if (wn === "0") continue;
+          try { run(`tmux new-window -t ${session} -n ${wn}`); } catch { /* ignore */ }
+        }
+      } catch {
+        run(`tmux new-session -d -s ${session}`);
+      }
+      console.log(chalk.green(`✓ Moved ${session} to group: ${group}`));
+    });
+}
+
+// Helper for move command
+function run(cmd: string): string {
+  return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
 }
