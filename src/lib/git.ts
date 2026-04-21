@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import type { Project } from "../types/index.js";
 
 const GITIGNORE_TEMPLATE = `# Dependencies
@@ -84,5 +84,5 @@ export function gitInit(project: Project): void {
 }
 
 export function gitPassthrough(projectPath: string, args: string[]): void {
-  execSync(`git ${args.join(" ")}`, { cwd: projectPath, stdio: "inherit" });
+  execFileSync("git", args, { cwd: projectPath, stdio: "inherit" });
 }

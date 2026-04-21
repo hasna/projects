@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { resolveProject, listSyncLogs } from "../../../db/projects.js";
-import { resolveProjectOrExit, resolveProjectOrExit as resolveProj, exitProjectNotFound, wantsJsonOutput, parsePositiveIntOrExit, timeAgo, type Command } from "./shared.js";
+import { resolveProjectOrExit, exitProjectNotFound, wantsJsonOutput, parsePositiveIntOrExit, timeAgo, type Command } from "./shared.js";
 import { doctorAll, doctorProject, fixProject } from "../../../lib/doctor.js";
 import { getAllStatus, getProjectStatus } from "../../../lib/status.js";
 import { getGlobalStats, getProjectStats, formatBytes } from "../../../lib/stats.js";

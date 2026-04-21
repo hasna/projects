@@ -412,14 +412,16 @@ export function registerTmuxCommands(cmd: Command) {
       try { createGroup(group); } catch { /* exists */ }
 
       // Recreate session in new group
+      const safeSession = shellEscape(session);
+      const safeGroup = shellEscape(group);
       try {
-        run(`tmux new-session -d -s ${session} -t ${group}`);
+        run(`tmux new-session -d -s ${safeSession} -t ${safeGroup}`);
         for (const wn of windowNames) {
           if (wn === "0") continue;
-          try { run(`tmux new-window -t ${session} -n ${wn}`); } catch { /* ignore */ }
+          try { run(`tmux new-window -t ${safeSession} -n ${shellEscape(wn)}`); } catch { /* ignore */ }
         }
       } catch {
-        run(`tmux new-session -d -s ${session}`);
+        run(`tmux new-session -d -s ${safeSession}`);
       }
       console.log(chalk.green(`✓ Moved ${session} to group: ${group}`));
     });
@@ -428,4 +430,8 @@ export function registerTmuxCommands(cmd: Command) {
 // Helper for move command
 function run(cmd: string): string {
   return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
+}
+
+function shellEscape(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }

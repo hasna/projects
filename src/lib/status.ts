@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { listProjects } from "../db/projects.js";
 import { getDatabase } from "../db/database.js";
 import { listWorkdirs } from "../db/workdirs.js";
-import type { Project } from "../types/index.js";
+import type { Project, ProjectRow } from "../types/index.js";
 
 export interface ProjectStatus {
   project: Project;
@@ -28,7 +28,7 @@ function gitStatus(path: string): string | null {
 function dirSize(path: string): number {
   if (!existsSync(path)) return 0;
   try {
-    const out = execSync(`du -sb "${path}" 2>/dev/null || du -sk "${path}" 2>/dev/null`, { stdio: "pipe", encoding: "utf-8" }).trim();
+    const out = execSync(`du -sb -- "${path}" 2>/dev/null || du -sk -- "${path}" 2>/dev/null`, { stdio: "pipe", encoding: "utf-8" }).trim();
     return parseInt(out.split("\t")[0] ?? "0", 10);
   } catch { return 0; }
 }
@@ -61,5 +61,15 @@ export function touchLastOpened(projectId: string): void {
 export function getRecentProjects(limit = 10): Project[] {
   return getDatabase()
     .query("SELECT * FROM projects WHERE last_opened_at IS NOT NULL ORDER BY last_opened_at DESC LIMIT ?")
-    .all(limit) as Project[];
+    .all(limit)
+    .map((r: unknown) => {
+      const row = r as ProjectRow;
+      return {
+        ...row,
+        status: row.status as Project["status"],
+        tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+        integrations: row.integrations ? (JSON.parse(row.integrations) as Project["integrations"]) : {},
+        last_opened_at: row.last_opened_at ?? null,
+      };
+    });
 }

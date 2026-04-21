@@ -261,8 +261,12 @@ export function renameSession(oldName: string, newName: string): void {
   run(`tmux rename-session -t ${oldName} ${newName}`);
 }
 
+function shellEscape(s: string): string {
+  return s.replace(/"/g, '\\"');
+}
+
 export function execInWindow(session: string, window: string, command: string): void {
-  run(`tmux send-keys -t ${session}:${window} "${command}" Enter`);
+  run(`tmux send-keys -t ${session}:${window} "${shellEscape(command)}" Enter`);
 }
 
 export function cleanupDeadSessions(): string[] {

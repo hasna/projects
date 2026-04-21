@@ -18,7 +18,6 @@ export function registerSyncCommands(cmd: Command) {
     .action(async (idOrSlug: string | undefined, opts) => {
       const project = requireProject(idOrSlug);
       if (!project) {
-        if (idOrSlug) resolveProjectOrExit(idOrSlug);
         console.error(chalk.red("No project detected in current directory."));
         process.exit(1);
       }

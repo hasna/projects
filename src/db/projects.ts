@@ -304,7 +304,7 @@ export function resolveProject(idOrSlug: string, db?: Database): Project | null 
     .get(`%${idOrSlug}%`, `%${idOrSlug}%`) as { id: string } | null;
   if (subRow) return getProject(subRow.id, d);
 
-  // 5. Levenshtein ≤ 2 on slug
+  // 6. Levenshtein ≤ 2 on slug
   const allRows = d.query("SELECT id, slug FROM projects WHERE status = 'active'").all() as { id: string; slug: string }[];
   const best = allRows
     .map((r) => ({ id: r.id, dist: levenshtein(idOrSlug, r.slug) }))

@@ -22,13 +22,16 @@ export function timeAgo(iso: string | null): string {
   return `${d}d ago`;
 }
 
-export function suppressSslWarnings(): void {
-  const orig = process.emitWarning.bind(process);
-  process.emitWarning = (msg: string | Error, ...args: unknown[]) => {
-    const text = typeof msg === "string" ? msg : msg.message;
+export function suppressSslWarnings(): () => void {
+  const orig = process.emitWarning;
+  const handler = (...args: unknown[]) => {
+    const msg = args[0];
+    const text = typeof msg === "string" ? msg : (msg as Error).message;
     if (text?.includes("SSL modes")) return;
-    return (orig as (...a: unknown[]) => void)(msg, ...args);
+    (orig as (...a: unknown[]) => void)(...args);
   };
+  process.emitWarning = handler;
+  return () => { process.emitWarning = orig; };
 }
 
 export function wantsJsonOutput(opts?: { json?: boolean }): boolean {

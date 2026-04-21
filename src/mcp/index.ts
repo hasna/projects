@@ -595,9 +595,9 @@ server.tool(
       createSession(input.name, input.path, input.window);
       if (input.command) {
         const win = input.window || input.name;
-        // Re-implement createWindow inline since we need to send keys to the specific window
+        const escaped = input.command.replace(/'/g, "'\\''");
         const { execSync } = await import("node:child_process");
-        execSync(`tmux send-keys -t ${input.name}:${win} "${input.command}" Enter`);
+        execSync(`tmux send-keys -t ${input.name}:${win} "${escaped}" Enter`);
       }
       return { content: [{ type: "text" as const, text: `✓ Created session: ${input.name}` }] };
     } catch (err: unknown) {
