@@ -4,7 +4,7 @@ import type { Command } from "commander";
 export * from "./shared.js";
 
 // Command modules - each registers its own commands on the program
-import { registerCreateCommand, registerRenameCommand, registerArchiveCommands, registerTagCommands } from "./create.js";
+import { registerCreateCommand, registerRenameCommand, registerArchiveCommands, registerTagCommands, registerNewCommand } from "./create.js";
 import { registerListCommands, registerGetCommand } from "./list.js";
 import { registerUpdateCommand } from "./update.js";
 import { registerOpenCommand } from "./open.js";

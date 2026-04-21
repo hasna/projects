@@ -1,11 +1,12 @@
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { resolve, join, basename } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { execSync } from "node:child_process";
 import chalk from "chalk";
 import { createProject, updateProject, archiveProject, unarchiveProject, resolveProject, getProjectByPath, getProjectBySlug } from "../../../db/projects.js";
 import { setIntegrations } from "../../../db/projects.js";
 import { listWorkdirs } from "../../../db/workdirs.js";
 import { writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join as pathJoin } from "node:path";
 import {
   resolveProjectOrExit,
   exitProjectNotFound,
@@ -14,6 +15,36 @@ import {
   type Command as Cmd,
 } from "./shared.js";
 import { getConfig, resolveProjectPath, resolveProjectName } from "../../../lib/config.js";
+import { slugify } from "../../../db/projects.js";
+
+const WORKSPACE = process.env.HASNA_WORKSPACE || "/home/hasna/workspace/hasna";
+
+/**
+ * Derive the project path from the group type.
+ * Groups map to workspace subdirectories:
+ *   open       → opensourcedev/open-<slug>
+ *   community  → community/<slug>
+ *   internal   → internalapp/<slug>
+ *   platform   → platform/<slug>
+ *   agency     → agency/<slug>
+ */
+function deriveProjectPath(name: string, group: string): string {
+  const slug = slugify(name);
+  switch (group) {
+    case "open":
+      return pathJoin(WORKSPACE, "opensource", "opensourcedev", `open-${slug}`);
+    case "community":
+      return pathJoin(WORKSPACE, "community", slug);
+    case "internal":
+      return pathJoin(WORKSPACE, "internalapp", slug);
+    case "platform":
+      return pathJoin(WORKSPACE, "platform", slug);
+    case "agency":
+      return pathJoin(WORKSPACE, "agency", slug);
+    default:
+      return pathJoin(WORKSPACE, group, slug);
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerCreateCommand(cmd: Cmd) {
@@ -33,11 +64,96 @@ export function registerCreateCommand(cmd: Cmd) {
     .option("--no-integrations", "Skip auto-linking integrations (todos, mementos)")
     .option("--tmux", "Create a tmux window and launch takumi in it")
     .option("--publish", "Create a GitHub repo and push")
+    .option("--group <type>", "Smart scaffolding: derive path from group (open, community, internal, platform, agency), auto-create folders, GitHub repo, and tmux window")
     .action(async (opts) => {
       try {
         const config = getConfig();
 
-        // Resolve path with fallback to config default
+        // Smart scaffolding via --group flag
+        if (opts.group) {
+          const projectPath = deriveProjectPath(opts.name, opts.group);
+
+          // Check for existing project at this path
+          const existingAtPath = getProjectByPath(projectPath);
+          if (existingAtPath) {
+            console.error(chalk.red(`Error: A project already exists at path: ${projectPath}`));
+            console.error(chalk.dim(`  Name: ${existingAtPath.name} (slug: ${existingAtPath.slug})`));
+            process.exit(1);
+          }
+
+          // Check for slug conflicts
+          const existingBySlug = getProjectBySlug(slugify(opts.name));
+          if (existingBySlug) {
+            console.error(chalk.red(`Error: A project already exists with slug: ${slugify(opts.name)}`));
+            process.exit(1);
+          }
+
+          // Create folders
+          const dir = basename(projectPath);
+          const parentDir = projectPath.replace(new RegExp(`${dir}$`), "");
+          mkdirSync(parentDir, { recursive: true });
+
+          // Check GitHub repo availability
+          const org = config.default_github_org || "hasnaxyz";
+          const repoName = slugify(opts.name);
+          const fullName = `${org}/${repoName}`;
+          let ghAvailable = false;
+          try {
+            execSync(`gh repo view ${fullName}`, { stdio: "pipe", timeout: 3000 });
+          } catch {
+            ghAvailable = true; // Repo doesn't exist, we can create it
+          }
+
+          if (!ghAvailable && !wantsJsonOutput(opts)) {
+            console.log(chalk.yellow(`  ⚠ GitHub repo ${fullName} already exists`));
+          }
+
+          const project = createProject({
+            name: opts.name,
+            path: projectPath,
+            description: opts.description,
+            slug: slugify(opts.name),
+            tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
+            s3_bucket: opts.s3Bucket,
+            s3_prefix: opts.s3Prefix,
+            git_remote: opts.gitRemote,
+            git_init: opts.gitInit !== false,
+          });
+
+          // Create GitHub repo
+          if (ghAvailable) {
+            try {
+              const { publishProject } = await import("../../../lib/github.js");
+              const result = publishProject(repoName, projectPath, {
+                org,
+                private: config.default_repo_visibility === "private",
+                description: project.description ?? undefined,
+              });
+              console.log(chalk.green(`✓ Published: ${result.url}`));
+            } catch (err: unknown) {
+              console.log(chalk.yellow(`⚠ GitHub publish failed: ${err instanceof Error ? err.message : String(err)}`));
+            }
+          }
+
+          // Create tmux window
+          try {
+            const { createTmuxWindow } = await import("../../../lib/tmux.js");
+            createTmuxWindow(project);
+            console.log(chalk.green(`✓ tmux window created for ${project.name}`));
+          } catch {
+            console.log(chalk.yellow("⚠ tmux unavailable — run `project tmux create ${name}` manually"));
+          }
+
+          if (wantsJsonOutput(opts)) {
+            console.log(JSON.stringify(project, null, 2));
+            return;
+          }
+          console.log(chalk.green("✓ Project created with full scaffolding"));
+          printProject(project);
+          process.exit(0);
+        }
+
+        // Standard create flow
         const path = resolveProjectPath(opts.path);
 
         // Check for existing project at this path
@@ -282,4 +398,112 @@ export function registerTagCommands(cmd: Cmd) {
       if (wantsJsonOutput(opts)) { console.log(JSON.stringify(updated, null, 2)); return; }
       console.log(chalk.green(`✓ Tags: ${remaining.length ? remaining.join(", ") : "(none)"}`));
     });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function registerNewCommand(cmd: Cmd) {
+  cmd
+    .command("new [name]")
+    .description("Interactive wizard to create a project with full scaffolding")
+    .option("--name <name>", "Project name (skips prompt if provided)")
+    .option("--group <type>", "Project group (open, community, internal, platform, agency) — auto-derives path")
+    .option("--org <org>", "GitHub org (default: hasnaxyz)")
+    .option("--visibility <vis>", "GitHub visibility: private or public (default: private)")
+    .option("--tmux", "Create tmux window and launch takumi")
+    .option("-j, --json", "Output raw JSON")
+    .action(async (opts) => {
+      const config = getConfig();
+
+      // Collect inputs from flags or interactive prompts
+      const name = opts.name || await prompt("Project name: ");
+      if (!name) { console.error(chalk.red("Name is required.")); process.exit(1); }
+
+      const groups = ["open", "community", "internal", "platform", "agency"];
+      let group = opts.group;
+      if (!group) {
+        console.log(chalk.dim("Available groups:"));
+        for (const g of groups) console.log(chalk.dim(`  ${g}`));
+        group = await prompt("Group (e.g. open): ", "open");
+      }
+      if (!group || !groups.includes(group)) {
+        console.error(chalk.red(`Invalid group: ${group}. Must be one of: ${groups.join(", ")}`));
+        process.exit(1);
+      }
+
+      const org = opts.org || config.default_github_org || "hasnaxyz";
+
+      const visibility = opts.visibility || await prompt("GitHub visibility (private/public): ", "private");
+      const isPrivate = visibility !== "public";
+
+      const description = await prompt("Description (optional): ");
+
+      const projectPath = deriveProjectPath(name, group);
+      if (getProjectByPath(projectPath)) {
+        console.error(chalk.red(`Error: A project already exists at path: ${projectPath}`));
+        process.exit(1);
+      }
+
+      const finalSlug = slugify(name);
+      if (getProjectBySlug(finalSlug)) {
+        console.error(chalk.red(`Error: A project already exists with slug: ${finalSlug}`));
+        process.exit(1);
+      }
+
+      if (!wantsJsonOutput(opts)) {
+        console.log(chalk.green(`\n  Path: ${projectPath}`));
+        console.log(chalk.green(`  GitHub: ${org}/${finalSlug} (${visibility})`));
+        if (description) console.log(chalk.green(`  Desc: ${description}`));
+        console.log(chalk.dim("\n  Creating project...\n"));
+      }
+
+      const project = createProject({
+        name,
+        path: projectPath,
+        description: description || undefined,
+        slug: finalSlug,
+        tags: [],
+        git_init: true,
+      });
+
+      // Create GitHub repo
+      try {
+        const { publishProject } = await import("../../../lib/github.js");
+        const result = publishProject(finalSlug, projectPath, {
+          org,
+          private: isPrivate,
+          description: project.description ?? undefined,
+        });
+        console.log(chalk.green(`✓ GitHub repo: ${result.url}`));
+      } catch (err: unknown) {
+        console.log(chalk.yellow(`⚠ GitHub publish failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+
+      // Create tmux window
+      try {
+        const { createTmuxWindow } = await import("../../../lib/tmux.js");
+        createTmuxWindow(project);
+        console.log(chalk.green(`✓ tmux window created`));
+      } catch {
+        console.log(chalk.yellow("⚠ tmux unavailable"));
+      }
+
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify(project, null, 2));
+        return;
+      }
+      console.log(chalk.green("\n✓ Project created"));
+      printProject(project);
+      process.exit(0);
+    });
+}
+
+async function prompt(question: string, defaultValue?: string): Promise<string> {
+  const readline = await import("node:readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolve) => {
+    rl.question(question + (defaultValue ? chalk.dim(` [${defaultValue}]`) : ""), (answer: string) => {
+      rl.close();
+      resolve((answer || defaultValue || "").trim());
+    });
+  });
 }

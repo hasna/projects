@@ -487,16 +487,12 @@ describe("tmux", () => {
     test("open-* project does NOT create proj- prefixed duplicate", () => {
       if (!tmuxAvailable) return;
 
-      const slug = "todos";
-      const opensourcedevPath = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-todos";
+      const slug = `test-noproj-${Date.now()}`;
+      const opensourcedevPath = `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${slug}`;
       const expectedSession = `open-${slug}`;
       const wrongSession = `proj-${slug}`;
 
-      // Make sure the wrong session doesn't exist before
-      const hadWrongSession = sessionExists(wrongSession);
-
       trackSession(expectedSession);
-      if (!hadWrongSession) trackSession(wrongSession);
 
       const project = { name: slug, slug, path: opensourcedevPath } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);

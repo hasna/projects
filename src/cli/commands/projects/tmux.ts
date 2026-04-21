@@ -22,6 +22,7 @@ import {
 } from "../../../lib/tmux.js";
 import {
   wantsJsonOutput,
+  requireProject,
   type Command,
 } from "./shared.js";
 import { resolveProject, listProjects } from "../../../db/projects.js";
@@ -40,15 +41,9 @@ export function registerTmuxCommands(cmd: Command) {
     .option("-w, --window <name>", "Window name")
     .option("-c, --command <cmd>", "Initial command to run")
     .action((opts) => {
-      let project;
-      try {
-        project = resolveProject(opts.name);
-      } catch {
-        console.error(chalk.red("Could not resolve project from cwd. Use --name or specify a project name."));
-        process.exit(1);
-      }
+      let project = requireProject(opts.name);
       if (!project) {
-        console.error(chalk.red("Project not found"));
+        console.error(chalk.red("Project not found. Use --name or run from a project directory."));
         process.exit(1);
       }
       createTmuxWindow(project);

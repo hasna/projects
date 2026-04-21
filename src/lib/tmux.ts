@@ -233,11 +233,12 @@ export function createTmuxWindow(project: Project, overrideGroup?: string): void
   const config = getConfig();
 
   // For open-* projects in opensourcedev, use open- prefix; otherwise proj-
+  const raw = slug || name;
   const sessionName = path?.includes("opensourcedev")
-    ? `${slug || name}`.replace("proj-", "").startsWith("open-")
-      ? `${slug || name}`.replace("proj-", "")
-      : `open-${slug || name}`.replace("proj-", "")
-    : `proj-${slug || name}`;
+    ? raw.replace(/^proj-/, "").startsWith("open-")
+      ? raw.replace(/^proj-/, "")
+      : `open-${raw}`.replace(/^proj-/, "")
+    : `proj-${raw}`;
 
   // Group is the tmux master session this project belongs to
   const groupName = overrideGroup || getGroupForProject(name, path);
