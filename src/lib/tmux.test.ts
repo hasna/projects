@@ -130,6 +130,18 @@ describe("tmux", () => {
       expect(windows).toContain("mywindow");
     });
 
+    test("creates exactly one window (no duplicate default window)", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-one-win-${Date.now()}`;
+      trackSession(sessionName);
+
+      createSession(sessionName, "/tmp/test", "mywindow");
+
+      const count = windowCount(sessionName);
+      expect(count).toBe(1);
+    });
+
     test("sends cd command to window when path provided", () => {
       if (!tmuxAvailable) return;
 

@@ -111,16 +111,13 @@ export function listWindows(session?: string): TmuxWindow[] {
 export function createSession(name: string, projectPath?: string, windowName?: string): void {
   const win = windowName || name;
 
-  // Create standalone session (not linked to any group — avoids shared windows)
+  // Create standalone session with the desired window name directly (avoids duplicate default window)
   try {
-    run(`tmux new-session -d -s ${name}`);
+    run(`tmux new-session -d -s ${name} -n ${win}`);
   } catch {
     // Session already exists
     return;
   }
-
-  // Add a project-specific window to the session
-  run(`tmux new-window -t ${name} -n ${win}`);
 
   if (projectPath) {
     const winId = findWindowId(name, win);
@@ -154,15 +151,12 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
     // ignore if doesn't exist
   }
 
-  // Create standalone session (not linked to any group)
+  // Create standalone session with the desired window name directly
   try {
-    run(`tmux new-session -d -s ${name}`);
+    run(`tmux new-session -d -s ${name} -n ${win}`);
   } catch {
     return;
   }
-
-  // Add a project-specific window
-  run(`tmux new-window -t ${name} -n ${win}`);
 
   if (projectPath) {
     const winId = findWindowId(name, win);
@@ -238,9 +232,8 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
       // Add a new window to the existing standalone session
       run(`tmux new-window -t ${sessionName} -n ${winName}`);
     } else {
-      // Create standalone session (not linked to any group)
-      run(`tmux new-session -d -s ${sessionName}`);
-      run(`tmux new-window -t ${sessionName} -n ${winName}`);
+      // Create standalone session with the desired window name directly
+      run(`tmux new-session -d -s ${sessionName} -n ${winName}`);
     }
 
     if (config.launch_takumi !== false) {

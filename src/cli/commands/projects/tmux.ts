@@ -185,7 +185,8 @@ export function registerTmuxCommands(cmd: Command) {
       }
       createSession(name, undefined, opts.window);
       if (opts.command) {
-        createWindow(name, opts.window || "main", opts.command);
+        const winName = opts.window || name;
+        execInWindow(name, winName, opts.command);
       }
       console.log(chalk.green(`✓ Created session: ${name}`));
     });
