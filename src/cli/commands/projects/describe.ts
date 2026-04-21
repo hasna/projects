@@ -19,10 +19,15 @@ export function registerDescribeCommand(cmd: Command) {
       const project = resolveProjectOrExit(idOrSlug);
       const workdirs = listWorkdirs(project.id);
       const syncLogs = listSyncLogs(project.id, 5);
-      const sessions = listSessions();
-      const tmuxSession = sessions.find((s) =>
-        s.name.includes(project.slug) || s.name.includes(project.name.toLowerCase())
-      );
+      let tmuxSession = null;
+      try {
+        const sessions = listSessions();
+        tmuxSession = sessions.find((s) =>
+          s.name.includes(project.slug) || s.name.includes(project.name.toLowerCase())
+        ) || null;
+      } catch {
+        // tmux not available — ignore
+      }
 
       if (wantsJsonOutput(opts)) {
         console.log(JSON.stringify({

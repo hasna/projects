@@ -46,7 +46,7 @@ export function registerTmuxCommands(cmd: Command) {
         console.error(chalk.red("Project not found. Use --name or run from a project directory."));
         process.exit(1);
       }
-      createTmuxWindow(project);
+      createTmuxWindow(project, opts.window);
       console.log(chalk.green(`✓ Opened tmux window for ${project.name}`));
     });
 
@@ -176,7 +176,7 @@ export function registerTmuxCommands(cmd: Command) {
       try {
         const project = resolveProject(name);
         if (project) {
-          createTmuxWindow(project);
+          createTmuxWindow(project, opts.window);
           console.log(chalk.green(`✓ Created tmux window for ${project.name}`));
           return;
         }
