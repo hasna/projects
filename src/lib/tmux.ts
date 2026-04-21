@@ -205,13 +205,13 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
   const { name, path, slug } = project;
   const config = getConfig();
 
-  // For open-* projects in opensourcedev, use open- prefix; otherwise proj-
+  // For open-* projects in opensourcedev, use open- prefix; otherwise use raw slug/name
   const raw = slug || name;
   const sessionName = path?.includes("opensourcedev")
     ? raw.replace(/^proj-/, "").startsWith("open-")
       ? raw.replace(/^proj-/, "")
       : `open-${raw}`.replace(/^proj-/, "")
-    : `proj-${raw}`;
+    : raw;
 
   const winName = windowName || slug || name; // allow explicit window name override (e.g. iapp-takumi-01)
 

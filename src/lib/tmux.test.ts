@@ -203,28 +203,28 @@ describe("tmux", () => {
       if (!tmuxAvailable) return;
 
       const slug = `test-tmuxwin-${Date.now()}`;
-      trackSession(`proj-${slug}`);
+      trackSession(slug);
 
       const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionExists(`proj-${slug}`)).toBe(true);
+      expect(sessionExists(slug)).toBe(true);
       // Standalone session — group should be empty
-      expect(sessionGroup(`proj-${slug}`)).toBe("");
+      expect(sessionGroup(slug)).toBe("");
     });
 
     test("does not create duplicate windows", () => {
       if (!tmuxAvailable) return;
 
       const slug = `test-nodup-${Date.now()}`;
-      trackSession(`proj-${slug}`);
+      trackSession(slug);
 
       const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
 
       createTmuxWindow(project);
-      const countBefore = windowCount(`proj-${slug}`);
+      const countBefore = windowCount(slug);
       createTmuxWindow(project);
-      const countAfter = windowCount(`proj-${slug}`);
+      const countAfter = windowCount(slug);
 
       expect(countAfter).toBe(countBefore);
     });
@@ -234,8 +234,8 @@ describe("tmux", () => {
 
       const slugA = `test-isolate-a-${Date.now()}`;
       const slugB = `test-isolate-b-${Date.now()}`;
-      trackSession(`proj-${slugA}`);
-      trackSession(`proj-${slugB}`);
+      trackSession(slugA);
+      trackSession(slugB);
 
       const projectA = { name: slugA, slug: slugA, path: "/tmp/test-a" } as unknown as import("../types/index.js").Project;
       const projectB = { name: slugB, slug: slugB, path: "/tmp/test-b" } as unknown as import("../types/index.js").Project;
@@ -243,8 +243,8 @@ describe("tmux", () => {
       createTmuxWindow(projectA);
       createTmuxWindow(projectB);
 
-      const winsA = windowNamesInSession(`proj-${slugA}`);
-      const winsB = windowNamesInSession(`proj-${slugB}`);
+      const winsA = windowNamesInSession(slugA);
+      const winsB = windowNamesInSession(slugB);
 
       // Each session should only have its own window, not the other's
       expect(winsA).toContain(slugA);
@@ -477,18 +477,17 @@ describe("tmux", () => {
       expect(sessionGroup(sessionName)).toBe("");
     });
 
-    test("non-opensourcedev project gets proj- prefix session name", () => {
+    test("non-opensourcedev project uses raw slug as session name", () => {
       if (!tmuxAvailable) return;
 
       const slug = "iapp-takumi";
       const path = "/home/hasna/workspace/hasnaxyz/internalapp/iapp-takumi";
-      const expectedSession = `proj-${slug}`;
-      trackSession(expectedSession);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionExists(expectedSession)).toBe(true);
+      expect(sessionExists(slug)).toBe(true);
     });
 
     test("non-opensourcedev project session is standalone", () => {
@@ -496,22 +495,21 @@ describe("tmux", () => {
 
       const slug = "platform-alumia";
       const path = "/home/hasna/workspace/hasna/platform/platform-alumia";
-      const sessionName = `proj-${slug}`;
-      trackSession(sessionName);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionGroup(sessionName)).toBe("");
+      expect(sessionGroup(slug)).toBe("");
     });
 
-    test("open-* project does NOT create proj- prefixed duplicate", () => {
+    test("open-* project does NOT create raw slug duplicate", () => {
       if (!tmuxAvailable) return;
 
       const slug = `test-noproj-${Date.now()}`;
       const opensourcedevPath = `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${slug}`;
       const expectedSession = `open-${slug}`;
-      const wrongSession = `proj-${slug}`;
+      const wrongSession = slug;
       trackSession(expectedSession);
 
       const project = { name: slug, slug, path: opensourcedevPath } as unknown as import("../types/index.js").Project;
@@ -559,14 +557,13 @@ describe("tmux", () => {
 
       const slug = `test-win-override-${Date.now()}`;
       const path = "/tmp/test";
-      const sessionName = `proj-${slug}`;
       const customWindow = "iapp-takumi-01";
-      trackSession(sessionName);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project, customWindow);
 
-      const wins = windowNamesInSession(sessionName);
+      const wins = windowNamesInSession(slug);
       expect(wins).toContain(customWindow);
     });
 
@@ -575,15 +572,14 @@ describe("tmux", () => {
 
       const slug = `test-num-${Date.now()}`;
       const path = "/tmp/test";
-      const sessionName = `proj-${slug}`;
-      trackSession(sessionName);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
 
       createTmuxWindow(project, "iapp-takumi-01");
       createTmuxWindow(project, "iapp-takumi-02");
 
-      const wins = windowNamesInSession(sessionName);
+      const wins = windowNamesInSession(slug);
       expect(wins).toContain("iapp-takumi-01");
       expect(wins).toContain("iapp-takumi-02");
     });
@@ -593,16 +589,15 @@ describe("tmux", () => {
 
       const slug = `test-win-dedup-${Date.now()}`;
       const path = "/tmp/test";
-      const sessionName = `proj-${slug}`;
       const customWindow = "my-custom-window";
-      trackSession(sessionName);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
 
       createTmuxWindow(project, customWindow);
-      const countBefore = windowCount(sessionName);
+      const countBefore = windowCount(slug);
       createTmuxWindow(project, customWindow);
-      const countAfter = windowCount(sessionName);
+      const countAfter = windowCount(slug);
 
       expect(countAfter).toBe(countBefore);
     });
@@ -658,8 +653,8 @@ describe("tmux", () => {
       const slugB = "arch-proj-b";
       const pathA = `/home/hasna/workspace/hasna/platform/${slugA}`;
       const pathB = `/home/hasna/workspace/hasna/platform/${slugB}`;
-      const sessionA = `proj-${slugA}`;
-      const sessionB = `proj-${slugB}`;
+      const sessionA = slugA;
+      const sessionB = slugB;
       trackSession(sessionA);
       trackSession(sessionB);
 
@@ -755,14 +750,13 @@ describe("tmux", () => {
 
       const slug = `my-project-${Date.now()}`;
       const path = `/home/hasna/workspace/hasna/platform/${slug}`;
-      const sessionName = `proj-${slug}`;
-      trackSession(sessionName);
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionExists(sessionName)).toBe(true);
-      expect(sessionGroup(sessionName)).toBe("");
+      expect(sessionExists(slug)).toBe(true);
+      expect(sessionGroup(slug)).toBe("");
     });
 
     test("opensourcedev projects are standalone (not linked)", () => {
@@ -787,8 +781,8 @@ describe("tmux", () => {
       const grpB = `isolate-b-${Date.now()}`;
       const slugA = `proj-a-${Date.now()}`;
       const slugB = `proj-b-${Date.now()}`;
-      const sessionA = `proj-${slugA}`;
-      const sessionB = `proj-${slugB}`;
+      const sessionA = slugA;
+      const sessionB = slugB;
       trackSession(sessionA);
       trackSession(sessionB);
 
