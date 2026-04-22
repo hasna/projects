@@ -26,6 +26,15 @@ import {
   type Command,
 } from "./shared.js";
 import { resolveProject, listProjects } from "../../../db/projects.js";
+import {
+  createSavedGroup,
+  getSavedGroup,
+  listSavedGroups,
+  deleteSavedGroup,
+  addSessionToGroup,
+  updateSavedGroupDescription,
+} from "../../../db/tmux-groups.js";
+import { getDatabase } from "../../../db/database.js";
 import { execSync } from "node:child_process";
 
 export function registerTmuxCommands(cmd: Command) {
@@ -379,6 +388,102 @@ export function registerTmuxCommands(cmd: Command) {
     });
 
   groupCmd
+    .command("setup")
+    .description("Create a master session + one linked session per window (spark01 pattern)")
+    .argument("<name>", "Group/session name")
+    .option("-p, --project <slug>", "Project slug (creates windows for registered project)")
+    .option("-w, --windows <list>", "Comma-separated window names")
+    .action((name, opts) => {
+      const windows = opts.windows
+        ? opts.windows.split(",").map((w: string) => w.trim())
+        : [];
+
+      // If a project is specified, use its default window names
+      if (opts.project) {
+        const project = resolveProject(opts.project);
+        if (project) {
+          // Create the master session with project windows
+          const winNames = windows.length > 0 ? windows : [project.slug || project.name];
+          const safeMaster = shellEscape(name);
+
+          // Create master session
+          try {
+            run(`tmux new-session -d -s ${safeMaster} -n ${shellEscape(winNames[0]!)}`);
+            if (project.path) {
+              run(`tmux send-keys -t ${safeMaster} "cd ${shellEscape(project.path)}" Enter`);
+            }
+          } catch {
+            console.log(chalk.dim(`  Master session "${name}" already exists`));
+          }
+
+          // Add remaining windows
+          for (const wn of winNames.slice(1)) {
+            try {
+              run(`tmux new-window -t ${safeMaster} -n ${shellEscape(wn)}`);
+              if (project.path) {
+                run(`tmux send-keys -t ${safeMaster} "cd ${shellEscape(project.path)}" Enter`);
+              }
+            } catch { /* window may already exist */ }
+          }
+
+          // Create linked sessions — one per window, each focused on its window
+          for (const wn of winNames) {
+            const linkedName = `${name}-${wn}`;
+            const safeLinked = shellEscape(linkedName);
+            try {
+              run(`tmux new-session -d -s ${safeLinked} -t ${safeMaster}`);
+              run(`tmux select-window -t ${safeLinked}:${shellEscape(wn)}`);
+              console.log(chalk.green(`  ✓ Linked session: ${linkedName} (focused on ${wn})`));
+            } catch {
+              console.log(chalk.dim(`  Linked session "${linkedName}" already exists, skipping`));
+            }
+          }
+
+          console.log(chalk.green(`✓ Setup group "${name}" with ${winNames.length} window(s), ${winNames.length} linked session(s)`));
+          return;
+        }
+        console.error(chalk.red(`Project "${opts.project}" not found`));
+        return;
+      }
+
+      // Generic setup with explicit window names
+      if (windows.length === 0) {
+        console.error(chalk.red("Provide --windows <list> or --project <slug>"));
+        return;
+      }
+
+      const safeMaster = shellEscape(name);
+
+      // Create master session
+      try {
+        run(`tmux new-session -d -s ${safeMaster} -n ${shellEscape(windows[0]!)}`);
+      } catch {
+        console.log(chalk.dim(`  Master session "${name}" already exists`));
+      }
+
+      for (const wn of windows.slice(1)) {
+        try {
+          run(`tmux new-window -t ${safeMaster} -n ${shellEscape(wn)}`);
+        } catch { /* window may already exist */ }
+      }
+
+      // Create linked sessions
+      for (const wn of windows) {
+        const linkedName = `${name}-${wn}`;
+        const safeLinked = shellEscape(linkedName);
+        try {
+          run(`tmux new-session -d -s ${safeLinked} -t ${safeMaster}`);
+          run(`tmux select-window -t ${safeLinked}:${shellEscape(wn)}`);
+          console.log(chalk.green(`  ✓ Linked session: ${linkedName} (focused on ${wn})`));
+        } catch {
+          console.log(chalk.dim(`  Linked session "${linkedName}" already exists, skipping`));
+        }
+      }
+
+      console.log(chalk.green(`✓ Setup "${name}" with ${windows.length} window(s), ${windows.length} linked session(s)`));
+    });
+
+  groupCmd
     .command("destroy")
     .alias("rm")
     .description("Destroy a tmux group and all its sessions")
@@ -424,6 +529,147 @@ export function registerTmuxCommands(cmd: Command) {
         run(`tmux new-session -d -s ${safeSession}`);
       }
       console.log(chalk.green(`✓ Moved ${session} to group: ${group}`));
+    });
+
+  groupCmd
+    .command("save")
+    .alias("s")
+    .description("Save current live group definition for later restore")
+    .argument("<name>", "Group name")
+    .option("-d, --description <desc>", "Group description")
+    .action((name, opts) => {
+      const db = getDatabase();
+      const sessions = listSessions();
+      const groupSessions = sessions.filter((s) => s.group === name);
+      if (groupSessions.length === 0) {
+        console.error(chalk.red(`No live sessions in group "${name}". Create sessions first, or use "tmux group create"`));
+        return;
+      }
+
+      // Save the group definition
+      const group = createSavedGroup(name, opts.description, db);
+      for (const s of groupSessions) {
+        addSessionToGroup(group.id, s.name, undefined, db);
+      }
+      if (opts.description) {
+        updateSavedGroupDescription(name, opts.description, db);
+      }
+
+      console.log(chalk.green(`✓ Saved group "${name}" with ${groupSessions.length} session(s)`));
+      for (const s of groupSessions) {
+        console.log(`  - ${s.name} (${s.windows} windows)`);
+      }
+    });
+
+  groupCmd
+    .command("saved")
+    .alias("show")
+    .description("List all saved group definitions")
+    .option("-j, --json", "Output as JSON")
+    .action((opts) => {
+      const db = getDatabase();
+      const groups = listSavedGroups(db);
+      if (wantsJsonOutput(opts)) {
+        console.log(JSON.stringify(groups, null, 2));
+        return;
+      }
+      if (groups.length === 0) {
+        console.log(chalk.dim("No saved groups."));
+        return;
+      }
+      for (const g of groups) {
+        console.log(chalk.green(`  ${g.name}`));
+        if (g.description) console.log(chalk.dim(`    "${g.description}"`));
+        console.log(chalk.dim(`    ${g.sessions.length} session(s)`));
+      }
+    });
+
+  groupCmd
+    .command("start")
+    .description("Start a saved group — recreate all sessions and windows")
+    .argument("<name>", "Saved group name")
+    .action((name) => {
+      const db = getDatabase();
+      const group = getSavedGroup(name, db);
+      if (!group) {
+        console.error(chalk.red(`Saved group "${name}" not found.`));
+        return;
+      }
+
+      // Create the group anchor
+      try { createGroup(name); } catch { /* exists */ }
+
+      for (const s of group.sessions) {
+        const safeSession = shellEscape(s.session_name);
+        const safeGroup = shellEscape(name);
+        try {
+          run(`tmux new-session -d -s ${safeSession} -t ${safeGroup}`);
+        } catch {
+          // Session may already exist — skip
+          console.log(chalk.dim(`  Session "${s.session_name}" already exists, skipping`));
+        }
+      }
+
+      console.log(chalk.green(`✓ Started group "${name}" with ${group.sessions.length} session(s)`));
+    });
+
+  groupCmd
+    .command("restore")
+    .description("Start a saved group and open tmux windows for all associated projects")
+    .argument("<name>", "Saved group name")
+    .action((name) => {
+      const db = getDatabase();
+      const group = getSavedGroup(name, db);
+      if (!group) {
+        console.error(chalk.red(`Saved group "${name}" not found.`));
+        return;
+      }
+
+      // Create the group anchor
+      try { createGroup(name); } catch { /* exists */ }
+
+      let started = 0;
+      for (const s of group.sessions) {
+        if (s.project_id) {
+          // Restore a registered project
+          const project = resolveProject(s.project_id);
+          if (project) {
+            try {
+              createTmuxWindow(project);
+              started++;
+            } catch {
+              console.log(chalk.dim(`  Could not create window for ${project.name}, may already exist`));
+            }
+          }
+        } else {
+          // Generic session
+          const safeSession = shellEscape(s.session_name);
+          const safeGroup = shellEscape(name);
+          try {
+            run(`tmux new-session -d -s ${safeSession} -t ${safeGroup}`);
+            started++;
+          } catch {
+            console.log(chalk.dim(`  Session "${s.session_name}" already exists, skipping`));
+          }
+        }
+      }
+
+      console.log(chalk.green(`✓ Restored group "${name}" — ${started} session(s) started`));
+    });
+
+  groupCmd
+    .command("delete")
+    .description("Delete a saved group definition (does not kill live sessions)")
+    .argument("<name>", "Saved group name")
+    .action((name) => {
+      const db = getDatabase();
+      const group = getSavedGroup(name, db);
+      if (!group) {
+        console.error(chalk.red(`Saved group "${name}" not found.`));
+        return;
+      }
+      deleteSavedGroup(name, db);
+      console.log(chalk.green(`✓ Deleted saved group "${name}"`));
     });
 }
 

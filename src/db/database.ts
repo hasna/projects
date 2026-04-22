@@ -3,7 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runMigrations } from "./schema.js";
 
-function getDbPath(): string {
+export function getDbPath(): string {
   if (process.env["HASNA_PROJECTS_DB_PATH"]) {
     return process.env["HASNA_PROJECTS_DB_PATH"];
   }

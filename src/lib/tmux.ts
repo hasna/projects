@@ -121,7 +121,7 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t "${winId}" "cd ${projectPath}" Enter`);
+    run(`tmux send-keys -t "${winId}" "cd ${shellEscape(projectPath)}" Enter`);
   }
 }
 
@@ -129,7 +129,7 @@ export function createWindow(session: string, name: string, command?: string): v
   run(`tmux new-window -t ${session} -n ${name}`);
   if (command) {
     const winId = findWindowId(session, name);
-    run(`tmux send-keys -t "${winId}" "${command}" Enter`);
+    run(`tmux send-keys -t "${winId}" "${shellEscape(command)}" Enter`);
   }
 }
 
@@ -160,7 +160,7 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t "${winId}" "cd ${projectPath}" Enter`);
+    run(`tmux send-keys -t "${winId}" "cd ${shellEscape(projectPath)}" Enter`);
   }
   if (config.launch_takumi !== false && projectPath) {
     const winId = findWindowId(name, win);
@@ -188,10 +188,10 @@ export function reviveSession(name: string): boolean {
   return false;
 }
 
-export function findDeadSessions(): string[] {
-  const sessions = listSessions();
+export function findDeadSessions(sessions?: TmuxSession[]): string[] {
+  const list = sessions || listSessions();
   const dead: string[] = [];
-  for (const s of sessions) {
+  for (const s of list) {
     if (s.name === "master") continue;
     // Sessions with 0 windows are dead
     if (!s.attached && s.windows === 0) {
@@ -229,7 +229,13 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
         run(`tmux select-window -t ${sessionName}:${existingWindow.name}`);
         return;
       }
-      // Add a new window to the existing standalone session
+      // Session exists but with different windows — don't create duplicates
+      // Just select the existing session's first window
+      if (windows.length > 0) {
+        run(`tmux select-window -t ${sessionName}:${windows[0]!.name}`);
+        return;
+      }
+      // Session exists but has no windows (edge case) — add one
       run(`tmux new-window -t ${sessionName} -n ${winName}`);
     } else {
       // Create standalone session with the desired window name directly
@@ -238,7 +244,7 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
 
     if (config.launch_takumi !== false) {
       const winId = findWindowId(sessionName, winName);
-      run(`tmux send-keys -t "${winId}" "cd ${path} && takumi" Enter`);
+      run(`tmux send-keys -t "${winId}" "cd ${shellEscape(path)} && takumi" Enter`);
     }
   } catch {
     // Non-fatal — tmux may not be available
@@ -262,7 +268,7 @@ export function renameSession(oldName: string, newName: string): void {
 }
 
 function shellEscape(s: string): string {
-  return s.replace(/"/g, '\\"');
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 export function execInWindow(session: string, window: string, command: string): void {

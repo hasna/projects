@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runMigrations } from "./schema.js";
@@ -306,5 +306,66 @@ describe("resolveProject (v0.1.3 — name-based lookup)", () => {
     const resolved = resolveProject("backend", db);
     expect(resolved?.id).toBe(p.id);
     rmSync(dir, { recursive: true });
+  });
+
+  test("returns null when no close match", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    createProject({ name: "app-one", path: dir, git_init: false }, db);
+    const resolved = resolveProject("totally-different", db);
+    expect(resolved).toBeNull();
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("setIntegrations file write", () => {
+  test("updates .project.json when it exists", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    writeFileSync(join(dir, ".project.json"), JSON.stringify({ name: "integ-test" }));
+    const p = createProject({ name: "integ-test", path: dir, git_init: false }, db);
+    setIntegrations(p.id, { github: "myorg/myrepo" }, db);
+    const json = JSON.parse(readFileSync(join(dir, ".project.json"), "utf-8"));
+    expect(json.integrations).toEqual({ github: "myorg/myrepo" });
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("updateProject integrations field", () => {
+  test("sets integrations on project row", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "integ-update", path: dir, git_init: false }, db);
+    const updated = updateProject(p.id, { integrations: { github: "org/repo" } }, db);
+    expect(updated.integrations).toEqual({ github: "org/repo" });
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("scaffoldProject creates directories", () => {
+  test("scaffold dirs created for non-existent path", () => {
+    const db = makeDb();
+    const dir = join(tmpdir(), `scaffold-${Date.now()}`);
+    expect(existsSync(dir)).toBe(false);
+    const p = createProject({ name: "ScaffoldTest", path: dir, git_init: false }, db);
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, "data"))).toBe(true);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("ensureUniqueSlug suffix incrementing", () => {
+  test("increments suffix when multiple conflicts exist", () => {
+    const db = makeDb();
+    const d1 = tmpDir();
+    const d2 = tmpDir();
+    const d3 = tmpDir();
+    createProject({ name: "slug", path: d1, git_init: false }, db);
+    createProject({ name: "slug-2", path: d2, git_init: false }, db);
+    const p3 = createProject({ name: "slug", path: d3, git_init: false }, db);
+    expect(p3.slug).toBe("slug-3");
+    rmSync(d1, { recursive: true });
+    rmSync(d2, { recursive: true });
+    rmSync(d3, { recursive: true });
   });
 });

@@ -84,6 +84,29 @@ export const MIGRATIONS: string[] = [
 
   INSERT OR IGNORE INTO _migrations (id) VALUES (3);
   `,
+
+  // Migration 4: Saved tmux groups
+  `
+  CREATE TABLE IF NOT EXISTS tmux_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS tmux_group_sessions (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES tmux_groups(id) ON DELETE CASCADE,
+    session_name TEXT NOT NULL,
+    project_id TEXT,
+    UNIQUE(group_id, session_name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tgs_group ON tmux_group_sessions(group_id);
+  CREATE INDEX IF NOT EXISTS idx_tgs_project ON tmux_group_sessions(project_id);
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (4);
+  `,
 ];
 
 export function runMigrations(db: Database): void {

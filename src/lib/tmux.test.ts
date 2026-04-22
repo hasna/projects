@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -21,6 +21,9 @@ import {
   listGroups,
   createGroup,
   destroyGroup,
+  createWindow,
+  reviveSession,
+  TmuxSession,
 } from "./tmux";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -154,7 +157,7 @@ describe("tmux", () => {
       const line = allWindows.split("\n").find((l) => l.endsWith(":mywindow"));
       const winId = line?.split(":")[0] || "";
       const output = safeRun(`tmux capture-pane -t "${winId}" -p`);
-      expect(output).toContain("cd /tmp");
+      expect(output).toContain("cd '/tmp'");
     });
 
     test("is idempotent — does not create duplicate windows", () => {
@@ -577,11 +580,28 @@ describe("tmux", () => {
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
 
       createTmuxWindow(project, "iapp-takumi-01");
-      createTmuxWindow(project, "iapp-takumi-02");
 
       const wins = windowNamesInSession(slug);
       expect(wins).toContain("iapp-takumi-01");
-      expect(wins).toContain("iapp-takumi-02");
+    });
+
+    test("createTmuxWindow does not accumulate windows on repeated calls", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `test-accum-${Date.now()}`;
+      const path = "/tmp/test";
+      trackSession(slug);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+
+      createTmuxWindow(project, "iapp-takumi-01");
+      createTmuxWindow(project, "iapp-takumi-02");
+      createTmuxWindow(project, "iapp-takumi-03");
+
+      const wins = windowNamesInSession(slug);
+      // Only the first window should exist — no duplicates
+      expect(wins).toContain("iapp-takumi-01");
+      expect(wins.length).toBe(1);
     });
 
     test("explicit window name does not duplicate existing window", () => {
@@ -818,6 +838,98 @@ describe("tmux", () => {
       expect(wins1).not.toContain("win2");
       expect(wins2).toContain("win2");
       expect(wins2).not.toContain("win1");
+    });
+  });
+
+  describe("createWindow", () => {
+    test("creates a window with a name", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-createwin-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName}`);
+
+      createWindow(sessionName, "newwin");
+      const wins = windowNamesInSession(sessionName);
+      expect(wins).toContain("newwin");
+    });
+
+    test("creates a window and sends a command", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-createwin-cmd-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName}`);
+
+      createWindow(sessionName, "cmdwin", "echo test-cmd-output");
+      const allWindows = safeRun(`tmux list-windows -t ${sessionName} -F '#{window_id}:#{window_name}'`);
+      const line = allWindows.split("\n").find((l) => l.endsWith(":cmdwin"));
+      const winId = line?.split(":")[0] || "";
+      const output = safeRun(`tmux capture-pane -t "${winId}" -p`);
+      expect(output).toContain("echo test-cmd-output");
+    });
+  });
+
+  describe("createSession with spaced paths", () => {
+    test("correctly escapes paths with spaces", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-spaced-${Date.now()}`;
+      trackSession(sessionName);
+      const spacedPath = "/tmp/My Projects/foo bar";
+      mkdirSync(spacedPath, { recursive: true });
+
+      createSession(sessionName, spacedPath, "mywindow");
+
+      const allWindows = safeRun(`tmux list-windows -t ${sessionName} -F '#{window_id}:#{window_name}'`);
+      const line = allWindows.split("\n").find((l) => l.endsWith(":mywindow"));
+      const winId = line?.split(":")[0] || "";
+      const output = safeRun(`tmux capture-pane -t "${winId}" -p`);
+      // Should see the escaped path with single quotes
+      expect(output).toContain("cd '");
+      expect(output).toContain("My Projects");
+      rmSync("/tmp/My Projects", { recursive: true });
+    });
+  });
+
+  describe("reviveSession", () => {
+    test("returns false for non-existent session", () => {
+      if (!tmuxAvailable) return;
+      expect(reviveSession("non-existent-session-xyz")).toBe(false);
+    });
+
+    test("returns true for session with active takumi", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName}`);
+      safeTmux(`new-window -t ${sessionName} -n takumiwin`);
+      // Send "takumi" so the session appears alive
+      safeTmux(`send-keys -t ${sessionName}:takumiwin "takumi" Enter`);
+
+      const alive = reviveSession(sessionName);
+      expect(alive).toBe(true);
+    });
+  });
+
+  describe("findDeadSessions", () => {
+    test("identifies unattached session with 0 windows as dead", () => {
+      const fakeSessions: TmuxSession[] = [
+        { name: "master", group: "", windows: 3, attached: false },
+        { name: "alive-session", group: "", windows: 2, attached: true },
+        { name: "dead-session", group: "", windows: 0, attached: false },
+      ];
+      const dead = findDeadSessions(fakeSessions);
+      expect(dead).toContain("dead-session");
+      expect(dead).not.toContain("master");
+      expect(dead).not.toContain("alive-session");
+    });
+
+    test("returns real dead sessions when called with no args", () => {
+      // At minimum, no crash — function should work against real tmux
+      const dead = findDeadSessions();
+      expect(Array.isArray(dead)).toBe(true);
     });
   });
 });
