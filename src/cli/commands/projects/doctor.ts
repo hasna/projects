@@ -10,23 +10,31 @@ export function registerDoctorCommands(cmd: Command) {
     .command("doctor [id-or-slug]")
     .description("Health-check all registered projects")
     .option("--fix", "Auto-repair what can be fixed")
+    .option("--dry-run", "Preview repairs without writing")
     .option("--json", "Output raw JSON")
-    .action(async (idOrSlug?: string, opts?: { fix?: boolean; json?: boolean }) => {
+    .action(async (idOrSlug?: string, opts?: { fix?: boolean; dryRun?: boolean; json?: boolean }) => {
       const target = idOrSlug ? resolveProject(idOrSlug) : null;
       if (idOrSlug && !target) exitProjectNotFound(idOrSlug);
       const results = target ? [await doctorProject(target)] : await doctorAll();
-      if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(results, null, 2)); return; }
+      const fixedResults = results.map((result) => ({
+        ...result,
+        fixes: opts?.fix ? fixProject(result.project, { dryRun: opts.dryRun === true }) : [],
+      }));
+      if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(fixedResults, null, 2)); return; }
       let hasError = false;
-      for (const r of results) {
+      for (const r of fixedResults) {
         console.log(`\n${chalk.bold(r.project.name)} ${chalk.dim(r.project.slug)}`);
         for (const c of r.checks) {
           const icon = c.status === "ok" ? chalk.green("✓") : c.status === "warn" ? chalk.yellow("⚠") : chalk.red("✗");
-          console.log(`  ${icon} ${c.name.padEnd(14)} ${c.message}`);
+          const code = c.fixable ? chalk.cyan(` [${c.code}]`) : chalk.dim(` [${c.code}]`);
+          console.log(`  ${icon} ${c.name.padEnd(14)} ${c.message}${code}`);
           if (c.status === "error") hasError = true;
         }
-        if (opts?.fix) {
-          const fixes = fixProject(r.project);
-          fixes.forEach((f) => console.log(chalk.cyan(`  → fixed: ${f}`)));
+        if (r.fixes.length) {
+          r.fixes.forEach((f) => {
+            const prefix = f.dryRun ? "would fix" : "fixed";
+            console.log(chalk.cyan(`  → ${prefix}: ${f.message}`));
+          });
         }
       }
       if (hasError) process.exit(1);

@@ -24,6 +24,7 @@ import { registerDescribeCommand } from "./describe.js";
 import { registerSummaryCommand } from "./stats.js";
 import { registerShellCommand } from "./shell.js";
 import { registerInitCommand } from "./init.js";
+import { registerQolCommands } from "./qol.js";
 
 export function registerProjectCommands(program: Command): void {
   const cmd = program;
@@ -47,6 +48,7 @@ export function registerProjectCommands(program: Command): void {
   registerDoctorCommands(cmd);
   registerSyncLogCommand(cmd);
   registerSummaryCommand(cmd);
+  registerQolCommands(cmd);
 
   // Sync & storage
   registerSyncCommands(cmd);

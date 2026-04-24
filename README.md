@@ -26,9 +26,15 @@ projects get my-app                                   # auto-detects from cwd
 projects get my-app --json
 projects status                                       # all projects at a glance
 projects status my-app                                # single project detail
+projects context my-app                               # full agent handoff context
+projects where my-app                                 # paths/workdirs across machines
 projects recent                                       # recently opened (with relative times)
 projects doctor                                       # health-check all projects
+projects doctor my-app --fix --dry-run                # preview safe repairs with issue codes
 projects doctor my-app --fix                          # auto-repair what can be fixed
+projects stale                                        # stale paths, workdirs, tmux sessions/windows
+projects cleanup --dry-run                            # preview safe stale-record cleanup
+projects setup-machine                                # check Bun/tmux/git/gh/aws/config readiness
 projects stats                                        # disk / sync totals
 projects stats my-app
 
@@ -76,6 +82,13 @@ projects schedule remove
 projects cloud status
 projects cloud pull
 projects cloud push
+
+# tmux
+projects tmux open --name my-app
+projects tmux window-status my-app my-app --json      # alive/dead/missing window health
+projects tmux dead-windows my-app                     # exited panes / dead windows
+projects tmux revive-window my-app my-app             # recreates only missing/dead windows
+projects tmux revive-window my-app my-app --force     # explicit live-window restart
 
 # Publish to GitHub
 projects publish my-app --org hasnaxyz
@@ -129,6 +142,14 @@ Add to your Claude config:
 | `projects_cloud_status` | Show RDS connection health |
 | `projects_cloud_pull` | Pull from cloud PostgreSQL to local SQLite |
 | `projects_cloud_push` | Push local SQLite to cloud PostgreSQL |
+| `projects_context` | Full agent handoff context for one project |
+| `projects_where` | Workdir locations across machines with existence flags |
+| `projects_setup_machine` | Machine readiness checks for Bun, tmux, git, gh, AWS, paths |
+| `projects_stale` | Find stale paths, workdirs, orphan tmux sessions, and dead windows |
+| `projects_cleanup` | Preview/apply safe stale workdir cleanup |
+| `projects_tmux_window_status` | Check tmux window alive/dead/missing state |
+| `projects_tmux_dead_windows` | List dead tmux windows |
+| `projects_tmux_revive_window` | Safely recreate missing/dead tmux windows |
 
 ### projects_create response
 
@@ -166,6 +187,9 @@ src/
 ├── lib/
 │   ├── git.ts                # git init, .gitignore, passthrough
 │   ├── sync.ts               # S3 incremental sync
+│   ├── project-context.ts    # Agent handoff context
+│   ├── setup-machine.ts      # Machine readiness checks
+│   ├── stale.ts              # Stale project/workdir/tmux findings
 │   ├── import.ts             # Import existing projects
 │   ├── github.ts             # GitHub publish via gh CLI
 │   └── scheduler.ts          # Cron auto-sync

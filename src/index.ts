@@ -22,3 +22,6 @@ export { syncProject } from "./lib/sync.js";
 export { importProject, importBulk } from "./lib/import.js";
 export { publishProject, unpublishProject, getGitHubUrl } from "./lib/github.js";
 export { syncAll, getScheduleConfig, saveScheduleConfig } from "./lib/scheduler.js";
+export { buildProjectContext, getProjectLocations } from "./lib/project-context.js";
+export { setupMachineReport } from "./lib/setup-machine.js";
+export { findStaleIssues, cleanupStaleIssues } from "./lib/stale.js";

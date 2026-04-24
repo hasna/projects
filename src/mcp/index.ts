@@ -53,7 +53,10 @@ import { registerCloudSyncTools } from "./tools/cloud.js";
 import { addWorkdir, listWorkdirs, removeWorkdir } from "../db/workdirs.js";
 import { touchLastOpened } from "../lib/status.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../lib/generate.js";
-import { listSessions, listWindows, createSession, killSession, restartSession, reviveSession, findDeadSessions } from "../lib/tmux.js";
+import { buildProjectContext, getProjectLocations } from "../lib/project-context.js";
+import { cleanupStaleIssues, findStaleIssues } from "../lib/stale.js";
+import { setupMachineReport } from "../lib/setup-machine.js";
+import { listSessions, listWindows, createSession, killSession, restartSession, reviveSession, findDeadSessions, getWindowHealth, listWindowHealth, findDeadWindows, reviveWindow, execInWindow } from "../lib/tmux.js";
 
 const server = new McpServer({
   name: "projects",
@@ -595,9 +598,7 @@ server.tool(
       createSession(input.name, input.path, input.window);
       if (input.command) {
         const win = input.window || input.name;
-        const escaped = input.command.replace(/'/g, "'\\''");
-        const { execSync } = await import("node:child_process");
-        execSync(`tmux send-keys -t ${input.name}:${win} "${escaped}" Enter`);
+        execInWindow(input.name, win, input.command);
       }
       return { content: [{ type: "text" as const, text: `✓ Created session: ${input.name}` }] };
     } catch (err: unknown) {
@@ -649,6 +650,111 @@ server.tool(
     } catch (err: unknown) {
       return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
     }
+  },
+);
+
+server.tool(
+  "projects_tmux_window_status",
+  "Check whether one tmux window or all windows in a session are alive, dead, or missing",
+  {
+    session: z.string().describe("Session name"),
+    window: z.string().optional().describe("Window name or index. Omit to inspect all windows in the session."),
+  },
+  async (input) => {
+    try {
+      const result = input.window ? getWindowHealth(input.session, input.window) : listWindowHealth(input.session);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_dead_windows",
+  "List tmux windows whose panes have exited",
+  { session: z.string().optional().describe("Session name. Omit to scan all sessions.") },
+  async (input) => {
+    try {
+      const dead = findDeadWindows(input.session);
+      return { content: [{ type: "text" as const, text: JSON.stringify(dead, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_tmux_revive_window",
+  "Safely recreate a missing/dead tmux window. Alive windows are left alone unless force=true.",
+  {
+    session: z.string().describe("Session name"),
+    window: z.string().describe("Window name or index"),
+    command: z.string().optional().describe("Initial command to send after recreating"),
+    force: z.boolean().optional().describe("Recreate even if the window is alive"),
+  },
+  async (input) => {
+    try {
+      const result = reviveWindow(input.session, input.window, { command: input.command, force: input.force });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "projects_context",
+  "Return a complete agent handoff context for a project: path, git, tmux, workdirs, sync, integrations, and next commands.",
+  { id: z.string().describe("Project ID or slug") },
+  async (input) => {
+    const project = resolveProject(input.id);
+    if (!project) return { content: [{ type: "text" as const, text: `Project not found: ${input.id}` }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(buildProjectContext(project), null, 2) }] };
+  },
+);
+
+server.tool(
+  "projects_where",
+  "Show where a project lives across machines and which paths exist on the current machine.",
+  { id: z.string().describe("Project ID or slug") },
+  async (input) => {
+    const project = resolveProject(input.id);
+    if (!project) return { content: [{ type: "text" as const, text: `Project not found: ${input.id}` }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify({ project, locations: getProjectLocations(project) }, null, 2) }] };
+  },
+);
+
+server.tool(
+  "projects_setup_machine",
+  "Preflight this machine for open-projects usage.",
+  {
+    fix: z.boolean().optional().describe("Create safe missing directories"),
+    dry_run: z.boolean().optional().describe("Preview fixes without writing"),
+  },
+  async (input) => {
+    const report = setupMachineReport({ fix: input.fix, dryRun: input.fix ? input.dry_run !== false : true });
+    return { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }] };
+  },
+);
+
+server.tool(
+  "projects_stale",
+  "Find stale project records, missing local workdirs, orphan tmux sessions, and dead tmux windows.",
+  { id: z.string().optional().describe("Project ID or slug. Omit to scan all projects.") },
+  async (input) => {
+    const project = input.id ? resolveProject(input.id) : null;
+    if (input.id && !project) return { content: [{ type: "text" as const, text: `Project not found: ${input.id}` }], isError: true };
+    return { content: [{ type: "text" as const, text: JSON.stringify(findStaleIssues(project ?? undefined), null, 2) }] };
+  },
+);
+
+server.tool(
+  "projects_cleanup",
+  "Preview or apply safe stale-record cleanup.",
+  { apply: z.boolean().optional().describe("Apply safe cleanup actions. Defaults to dry-run.") },
+  async (input) => {
+    return { content: [{ type: "text" as const, text: JSON.stringify(cleanupStaleIssues({ apply: input.apply }), null, 2) }] };
   },
 );
 

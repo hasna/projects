@@ -1,7 +1,8 @@
 import chalk from "chalk";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { resolveProjectOrExit, type Command } from "./shared.js";
-import { addWorkdir, listWorkdirs, removeWorkdir } from "../../../db/workdirs.js";
+import { addWorkdir, getMachineId, listWorkdirs, removeWorkdir } from "../../../db/workdirs.js";
 import { generateForWorkdir, generateAllWorkdirs } from "../../../lib/generate.js";
 
 export function registerWorkdirCommands(cmd: Command) {
@@ -32,14 +33,21 @@ export function registerWorkdirCommands(cmd: Command) {
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts?: { json?: boolean }) => {
       const project = resolveProjectOrExit(idOrSlug);
-      const workdirs = listWorkdirs(project.id);
+      const currentMachine = getMachineId();
+      const workdirs = listWorkdirs(project.id).map((workdir) => ({
+        ...workdir,
+        exists: existsSync(workdir.path),
+        currentMachine: workdir.machine_id === currentMachine,
+      }));
       if (opts?.json || process.env["PROJECTS_JSON"]) { console.log(JSON.stringify(workdirs, null, 2)); return; }
       if (!workdirs.length) { console.log(chalk.dim("No workdirs registered.")); return; }
       for (const w of workdirs) {
         const primary = w.is_primary ? chalk.cyan(" [primary]") : "";
         const gen = w.claude_md_generated ? chalk.dim(" ✓ CLAUDE.md") : "";
-        console.log(`${chalk.bold(w.label)}${primary}  ${chalk.dim(w.path)}${gen}`);
-        console.log(`  ${chalk.dim("machine:")} ${w.machine_id}`);
+        const exists = w.exists ? chalk.green("exists") : chalk.red("missing");
+        const machine = w.currentMachine ? chalk.cyan(w.machine_id) : w.machine_id;
+        console.log(`${chalk.bold(w.label)}${primary}  ${exists} ${chalk.dim(w.path)}${gen}`);
+        console.log(`  ${chalk.dim("machine:")} ${machine}`);
       }
     });
 
