@@ -18,11 +18,14 @@ import {
   execInWindow,
   cleanupDeadSessions,
   findDeadSessions,
+  findDeadWindows,
+  getWindowHealth,
   listGroups,
   createGroup,
   destroyGroup,
   createWindow,
   reviveSession,
+  reviveWindow,
   TmuxSession,
 } from "./tmux";
 
@@ -324,6 +327,72 @@ describe("tmux", () => {
       killWindow(sessionName, "testkill");
       expect(windowNamesInSession(sessionName)).not.toContain("testkill");
       trackSession(sessionName);
+    });
+  });
+
+  describe("window health and reviveWindow", () => {
+    test("reports a killed window as missing and recreates it in the same session", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-win-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+
+      createWindow(sessionName, "worker", "echo worker-started");
+      expect(windowNamesInSession(sessionName)).toContain("worker");
+
+      killWindow(sessionName, "worker");
+      const missing = getWindowHealth(sessionName, "worker");
+      expect(missing.exists).toBe(false);
+      expect(missing.dead).toBe(true);
+      expect(missing.reason).toBe("missing");
+
+      const result = reviveWindow(sessionName, "worker", { command: "echo worker-revived" });
+      expect(result.action).toBe("created");
+      expect(result.after.exists).toBe(true);
+      expect(result.after.dead).toBe(false);
+      expect(windowNamesInSession(sessionName)).toContain("worker");
+    });
+
+    test("detects a dead window whose pane exited and recreates it safely", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-dead-pane-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`new-window -d -t ${sessionName} -n deadpane "sh -c 'exit 7'"`);
+      safeRun("sleep 0.3");
+
+      const before = getWindowHealth(sessionName, "deadpane");
+      expect(before.exists).toBe(true);
+      expect(before.dead).toBe(true);
+      expect(before.reason).toBe("all-panes-dead");
+      expect(before.panes[0]?.deadStatus).toBe(7);
+
+      const dead = findDeadWindows(sessionName);
+      expect(dead.map((window) => window.name)).toContain("deadpane");
+
+      const result = reviveWindow(sessionName, "deadpane", { command: "echo deadpane-revived" });
+      expect(result.action).toBe("recreated");
+      expect(result.after.exists).toBe(true);
+      expect(result.after.dead).toBe(false);
+    });
+
+    test("does not recreate a live window unless forced", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-live-${Date.now()}`;
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`new-window -t ${sessionName} -n livewin`);
+
+      const before = getWindowHealth(sessionName, "livewin");
+      const result = reviveWindow(sessionName, "livewin");
+
+      expect(before.dead).toBe(false);
+      expect(result.action).toBe("alive");
+      expect(result.after.dead).toBe(false);
+      expect(windowNamesInSession(sessionName)).toContain("livewin");
     });
   });
 

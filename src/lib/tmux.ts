@@ -8,7 +8,7 @@ function run(cmd: string): string {
 
 function findWindowId(session: string, windowName: string): string {
   const output = run(
-    `tmux list-windows -t ${session} -F '#{window_id}:#{window_name}'`,
+    `tmux list-windows -t ${shellEscape(session)} -F '#{window_id}:#{window_name}'`,
   );
   for (const line of output.split("\n").filter(Boolean)) {
     const colonPos = line.indexOf(":");
@@ -32,6 +32,38 @@ export interface TmuxWindow {
   index: number;
   name: string;
   active: boolean;
+}
+
+export type TmuxWindowDeadReason = "alive" | "missing" | "no-panes" | "all-panes-dead";
+
+export interface TmuxPaneStatus {
+  session: string;
+  windowIndex: number;
+  windowName: string;
+  paneIndex: number;
+  command: string;
+  currentPath: string;
+  dead: boolean;
+  deadStatus: number | null;
+  active: boolean;
+}
+
+export interface TmuxWindowHealth extends TmuxWindow {
+  exists: boolean;
+  panes: TmuxPaneStatus[];
+  dead: boolean;
+  reason: TmuxWindowDeadReason;
+}
+
+export interface ReviveWindowOptions {
+  command?: string;
+  force?: boolean;
+}
+
+export interface ReviveWindowResult {
+  action: "alive" | "created" | "recreated";
+  before: TmuxWindowHealth;
+  after: TmuxWindowHealth;
 }
 
 export interface TmuxGroup {
@@ -99,7 +131,7 @@ export function listSessions(): TmuxSession[] {
 }
 
 export function listWindows(session?: string): TmuxWindow[] {
-  const target = session ? `-t ${session}` : "";
+  const target = session ? `-t ${shellEscape(session)}` : "-a";
   const output = run(
     `tmux list-windows ${target} -F '#{session_name}:#{window_index}:#{window_name}:#{window_active}'`,
   );
@@ -110,6 +142,48 @@ export function listWindows(session?: string): TmuxWindow[] {
       const [s, i, name, active] = line.split(":");
       return { session: s || "", index: parseInt(i || "0", 10), name: name || "", active: (parseInt(active || "0", 10)) > 0 };
     });
+}
+
+export function getWindowHealth(session: string, window: string): TmuxWindowHealth {
+  let windows: TmuxWindow[] = [];
+  try {
+    windows = listWindows(session);
+  } catch {
+    return missingWindowHealth(session, window);
+  }
+
+  const target = windows.find((w) => w.name === window || String(w.index) === window);
+  if (!target) return missingWindowHealth(session, window);
+
+  let panes: TmuxPaneStatus[] = [];
+  try {
+    panes = listPanes(target.session, target.index);
+  } catch {
+    return missingWindowHealth(session, window);
+  }
+  if (panes.length === 0) {
+    return { ...target, exists: true, panes, dead: true, reason: "no-panes" };
+  }
+
+  const allPanesDead = panes.every((pane) => pane.dead);
+  return {
+    ...target,
+    exists: true,
+    panes,
+    dead: allPanesDead,
+    reason: allPanesDead ? "all-panes-dead" : "alive",
+  };
+}
+
+export function listWindowHealth(session: string): TmuxWindowHealth[] {
+  return listWindows(session).map((window) => getWindowHealth(window.session, String(window.index)));
+}
+
+export function findDeadWindows(session?: string): TmuxWindowHealth[] {
+  const windows = listWindows(session);
+  return windows
+    .map((window) => getWindowHealth(window.session, String(window.index)))
+    .filter((window) => window.dead);
 }
 
 export function createSession(name: string, projectPath?: string, windowName?: string): void {
@@ -130,7 +204,7 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 }
 
 export function createWindow(session: string, name: string, command?: string): void {
-  run(`tmux new-window -t ${session} -n ${name}`);
+  run(`tmux new-window -t ${shellEscape(session)} -n ${shellEscape(name)}`);
   if (command) {
     const winId = findWindowId(session, name);
     run(`tmux send-keys -t "${winId}" "${shellEscape(command)}" Enter`);
@@ -142,7 +216,30 @@ export function killSession(name: string): void {
 }
 
 export function killWindow(session: string, name: string): void {
-  run(`tmux kill-window -t ${session}:${name}`);
+  run(`tmux kill-window -t ${shellEscape(`${session}:${name}`)}`);
+}
+
+export function reviveWindow(session: string, window: string, options: ReviveWindowOptions = {}): ReviveWindowResult {
+  const before = getWindowHealth(session, window);
+  const windowName = before.exists ? before.name : window;
+  let action: ReviveWindowResult["action"] = "alive";
+
+  if (!before.exists) {
+    createWindow(session, windowName, options.command);
+    action = "created";
+  } else if (before.dead || options.force === true) {
+    killWindow(session, before.name);
+    createWindow(session, windowName, options.command);
+    action = "recreated";
+  } else {
+    focusWindow(session, before.name);
+  }
+
+  return {
+    action,
+    before,
+    after: getWindowHealth(session, windowName),
+  };
 }
 
 export function restartSession(name: string, projectPath?: string, windowName?: string): void {
@@ -276,6 +373,56 @@ export function renameSession(oldName: string, newName: string): void {
 
 function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function missingWindowHealth(session: string, window: string): TmuxWindowHealth {
+  return {
+    session,
+    index: -1,
+    name: window,
+    active: false,
+    exists: false,
+    panes: [],
+    dead: true,
+    reason: "missing",
+  };
+}
+
+function listPanes(session: string, windowIndex: number): TmuxPaneStatus[] {
+  const delimiter = "\t";
+  const format = [
+    "#{session_name}",
+    "#{window_index}",
+    "#{window_name}",
+    "#{pane_index}",
+    "#{pane_current_command}",
+    "#{pane_current_path}",
+    "#{pane_dead}",
+    "#{pane_dead_status}",
+    "#{pane_active}",
+  ].join(delimiter);
+  const output = run(
+    `tmux list-panes -t ${shellEscape(`${session}:${windowIndex}`)} -F ${shellEscape(format)}`,
+  );
+
+  return output
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [paneSession, paneWindowIndex, paneWindowName, paneIndex, command, currentPath, dead, deadStatus, active] = line.split(delimiter);
+      const parsedDeadStatus = deadStatus ? parseInt(deadStatus, 10) : null;
+      return {
+        session: paneSession || "",
+        windowIndex: parseInt(paneWindowIndex || "0", 10),
+        windowName: paneWindowName || "",
+        paneIndex: parseInt(paneIndex || "0", 10),
+        command: command || "",
+        currentPath: currentPath || "",
+        dead: dead === "1",
+        deadStatus: Number.isNaN(parsedDeadStatus) ? null : parsedDeadStatus,
+        active: active === "1",
+      };
+    });
 }
 
 export function execInWindow(session: string, window: string, command: string): void {

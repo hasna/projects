@@ -9,6 +9,10 @@ import {
   restartSession,
   reviveSession,
   findDeadSessions,
+  findDeadWindows,
+  getWindowHealth,
+  listWindowHealth,
+  reviveWindow,
   createTmuxWindow,
   attachSession,
   focusWindow,
@@ -21,6 +25,7 @@ import {
   destroyGroup,
   getTmuxSessionName,
 } from "../../../lib/tmux.js";
+import type { TmuxWindowHealth } from "../../../lib/tmux.js";
 import {
   wantsJsonOutput,
   requireProject,
@@ -181,6 +186,102 @@ export function registerTmuxCommands(cmd: Command) {
         const active = w.active ? chalk.green("▶") : " ";
         const label = w.session !== currentSession ? `${w.session}:` : "";
         console.log(`  ${active} ${label}${w.index} ${w.name}`);
+      }
+    });
+
+  tmuxCmd
+    .command("window-status")
+    .alias("ws")
+    .description("Check whether a tmux window is alive, dead, or missing")
+    .argument("<session>", "Session name")
+    .argument("[window]", "Window name or index (all windows if omitted)")
+    .option("-j, --json", "Output as JSON")
+    .action((session, window, opts) => {
+      try {
+        const result = window
+          ? getWindowHealth(session, window)
+          : listWindowHealth(session);
+
+        if (wantsJsonOutput(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          if (Array.isArray(result) ? result.some((w) => w.dead) : result.dead) {
+            process.exitCode = 1;
+          }
+          return;
+        }
+
+        const healthList = Array.isArray(result) ? result : [result];
+        for (const health of healthList) {
+          printWindowHealth(health);
+        }
+        if (healthList.some((health) => health.dead)) {
+          process.exitCode = 1;
+        }
+      } catch (err: unknown) {
+        console.error(chalk.red(`Unable to inspect tmux window(s): ${(err as Error).message}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("dead-windows")
+    .alias("dead")
+    .description("List tmux windows whose panes have exited")
+    .argument("[session]", "Session name (all sessions if omitted)")
+    .option("-j, --json", "Output as JSON")
+    .action((session, opts) => {
+      try {
+        const dead = findDeadWindows(session);
+        if (wantsJsonOutput(opts)) {
+          console.log(JSON.stringify(dead, null, 2));
+          if (dead.length > 0) process.exitCode = 1;
+          return;
+        }
+        if (dead.length === 0) {
+          console.log(chalk.green("✓ No dead tmux windows found"));
+          return;
+        }
+        console.log(chalk.yellow(`Dead tmux windows: ${dead.length}`));
+        for (const health of dead) {
+          printWindowHealth(health);
+        }
+        console.log(chalk.dim("  Run: projects tmux revive-window <session> <window>"));
+        process.exitCode = 1;
+      } catch (err: unknown) {
+        console.error(chalk.red(`Unable to inspect dead windows: ${(err as Error).message}`));
+        process.exit(1);
+      }
+    });
+
+  tmuxCmd
+    .command("revive-window")
+    .alias("rw")
+    .description("Safely recreate a missing/dead tmux window in a specific session")
+    .argument("<session>", "Session name")
+    .argument("<window>", "Window name or index")
+    .option("-c, --command <cmd>", "Initial command to send after recreating")
+    .option("--force", "Recreate even if the window is alive")
+    .option("-j, --json", "Output as JSON")
+    .action((session, window, opts) => {
+      try {
+        const result = reviveWindow(session, window, {
+          command: opts.command,
+          force: opts.force === true,
+        });
+        if (wantsJsonOutput(opts)) {
+          console.log(JSON.stringify(result, null, 2));
+          return;
+        }
+        if (result.action === "alive") {
+          console.log(chalk.green(`✓ ${session}:${result.after.name} is alive; no restart needed`));
+          return;
+        }
+        const verb = result.action === "created" ? "Created" : "Recreated";
+        console.log(chalk.green(`✓ ${verb} ${session}:${result.after.name}`));
+        printWindowHealth(result.after);
+      } catch (err: unknown) {
+        console.error(chalk.red(`Unable to revive tmux window: ${(err as Error).message}`));
+        process.exit(1);
       }
     });
 
@@ -687,6 +788,18 @@ export function registerTmuxCommands(cmd: Command) {
       deleteSavedGroup(name, db);
       console.log(chalk.green(`✓ Deleted saved group "${name}"`));
     });
+}
+
+function printWindowHealth(health: TmuxWindowHealth): void {
+  const state = health.dead
+    ? chalk.yellow(`dead (${health.reason})`)
+    : chalk.green("alive");
+  const paneSummary = health.exists
+    ? `${health.panes.length} pane${health.panes.length === 1 ? "" : "s"}`
+    : "missing";
+  const target = `${health.session}:${health.name}`;
+  const index = health.index >= 0 ? chalk.dim(` #${health.index}`) : "";
+  console.log(`  ${target}${index} ${state} ${chalk.dim(`(${paneSummary})`)}`);
 }
 
 // Helper for move command
