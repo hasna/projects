@@ -40,9 +40,13 @@ export interface TmuxGroup {
   windows: number;
 }
 
-function getGroupForProject(name: string, path?: string): string {
-  if (path?.includes("opensourcedev")) return "open";
-  return name;
+export function getTmuxSessionName(project: Pick<Project, "name" | "path" | "slug">): string {
+  const raw = project.slug || project.name;
+  if (project.path?.includes("opensourcedev")) {
+    const normalized = raw.replace(/^proj-/, "");
+    return normalized.startsWith("open-") ? normalized : `open-${normalized}`;
+  }
+  return raw;
 }
 
 export function listGroups(): TmuxGroup[] {
@@ -201,18 +205,11 @@ export function findDeadSessions(sessions?: TmuxSession[]): string[] {
   return dead;
 }
 
-export function createTmuxWindow(project: Project, windowName?: string): void {
+export function createTmuxWindow(project: Project, windowName?: string): boolean {
   const { name, path, slug } = project;
   const config = getConfig();
 
-  // For open-* projects in opensourcedev, use open- prefix; otherwise use raw slug/name
-  const raw = slug || name;
-  const sessionName = path?.includes("opensourcedev")
-    ? raw.replace(/^proj-/, "").startsWith("open-")
-      ? raw.replace(/^proj-/, "")
-      : `open-${raw}`.replace(/^proj-/, "")
-    : raw;
-
+  const sessionName = getTmuxSessionName(project);
   const winName = windowName || slug || name; // allow explicit window name override (e.g. iapp-takumi-01)
 
   try {
@@ -227,18 +224,19 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
       if (existingWindow) {
         // Window already exists — just select it
         run(`tmux select-window -t ${sessionName}:${existingWindow.name}`);
-        return;
+        return true;
       }
       // Session exists but with different windows — don't create duplicates
       // Just select the existing session's first window
       if (windows.length > 0) {
         run(`tmux select-window -t ${sessionName}:${windows[0]!.name}`);
-        return;
+        return true;
       }
       // Session exists but has no windows (edge case) — add one
       run(`tmux new-window -t ${sessionName} -n ${winName}`);
     } else {
-      // Create standalone session with the desired window name directly
+      // Create standalone session with the desired window name directly.
+      // Project isolation is intentional; linked groups share windows across sessions.
       run(`tmux new-session -d -s ${sessionName} -n ${winName}`);
     }
 
@@ -246,8 +244,10 @@ export function createTmuxWindow(project: Project, windowName?: string): void {
       const winId = findWindowId(sessionName, winName);
       run(`tmux send-keys -t "${winId}" "cd ${shellEscape(path)} && takumi" Enter`);
     }
+    return true;
   } catch {
     // Non-fatal — tmux may not be available
+    return false;
   }
 }
 

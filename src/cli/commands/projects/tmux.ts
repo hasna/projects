@@ -19,6 +19,7 @@ import {
   listGroups,
   createGroup,
   destroyGroup,
+  getTmuxSessionName,
 } from "../../../lib/tmux.js";
 import {
   wantsJsonOutput,
@@ -55,7 +56,10 @@ export function registerTmuxCommands(cmd: Command) {
         console.error(chalk.red("Project not found. Use --name or run from a project directory."));
         process.exit(1);
       }
-      createTmuxWindow(project, opts.window);
+      if (!createTmuxWindow(project, opts.window)) {
+        console.error(chalk.red("tmux unavailable or failed to create the project session."));
+        process.exit(1);
+      }
       console.log(chalk.green(`✓ Opened tmux window for ${project.name}`));
     });
 
@@ -71,8 +75,12 @@ export function registerTmuxCommands(cmd: Command) {
       const errors: string[] = [];
       for (const p of projects) {
         try {
-          createTmuxWindow(p);
-          created++;
+          if (createTmuxWindow(p)) {
+            created++;
+          } else {
+            skipped++;
+            errors.push(`${p.name}: tmux unavailable or failed`);
+          }
         } catch (err: unknown) {
           skipped++;
           errors.push(`${p.name}: ${(err as Error).message}`);
@@ -109,10 +117,12 @@ export function registerTmuxCommands(cmd: Command) {
         windowMap.get(w.session)!.push(w.name);
       }
       const results = projects.map((p) => {
-        const hasSession = sessionNames.has(p.name);
-        const session = sessions.find((s) => s.name === p.name);
+        const sessionName = getTmuxSessionName(p);
+        const hasSession = sessionNames.has(sessionName);
+        const session = sessions.find((s) => s.name === sessionName);
         return {
           name: p.name,
+          session: sessionName,
           hasWindow: hasSession,
           windows: session?.windows || 0,
           attached: session?.attached || false,
@@ -185,7 +195,10 @@ export function registerTmuxCommands(cmd: Command) {
       try {
         const project = resolveProject(name);
         if (project) {
-          createTmuxWindow(project, opts.window);
+          if (!createTmuxWindow(project, opts.window)) {
+            console.error(chalk.red("tmux unavailable or failed to create the project session."));
+            process.exit(1);
+          }
           console.log(chalk.green(`✓ Created tmux window for ${project.name}`));
           return;
         }
@@ -635,8 +648,11 @@ export function registerTmuxCommands(cmd: Command) {
           const project = resolveProject(s.project_id);
           if (project) {
             try {
-              createTmuxWindow(project);
-              started++;
+              if (createTmuxWindow(project)) {
+                started++;
+              } else {
+                console.log(chalk.dim(`  Could not create window for ${project.name}, tmux may be unavailable`));
+              }
             } catch {
               console.log(chalk.dim(`  Could not create window for ${project.name}, may already exist`));
             }

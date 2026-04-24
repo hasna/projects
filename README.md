@@ -12,82 +12,82 @@ bun install -g @hasna/projects
 
 ```bash
 # Register a project
-project create --name my-app --path /path/to/my-app
-project create --name my-app                          # uses cwd as path
+projects create --name my-app --path /path/to/my-app
+projects create --name my-app                         # uses cwd as path
 
 # List / search
-project list
-project list --status archived
-project list --tags web,ts                            # AND filter
-project list --json | jq '.[].path'                  # machine-readable
+projects list
+projects list --status archived
+projects list --tags web,ts                           # AND filter
+projects list --json | jq '.[].path'                 # machine-readable
 
 # Get / status
-project get my-app                                    # auto-detects from cwd
-project get my-app --json
-project status                                        # all projects at a glance
-project status my-app                                 # single project detail
-project recent                                        # recently opened (with relative times)
-project doctor                                        # health-check all projects
-project doctor my-app --fix                           # auto-repair what can be fixed
-project stats                                         # disk / sync totals
-project stats my-app
+projects get my-app                                   # auto-detects from cwd
+projects get my-app --json
+projects status                                       # all projects at a glance
+projects status my-app                                # single project detail
+projects recent                                       # recently opened (with relative times)
+projects doctor                                       # health-check all projects
+projects doctor my-app --fix                          # auto-repair what can be fixed
+projects stats                                        # disk / sync totals
+projects stats my-app
 
 # Modify
-project update my-app --description "My app" --tags "web,ts"
-project rename my-app my-app-v2                       # updates slug + .project.json
-project tag my-app infra cloud                        # add tags
-project untag my-app cloud                            # remove a tag
-project archive my-app
-project unarchive my-app
+projects update my-app --description "My app" --tags "web,ts"
+projects rename my-app my-app-v2                      # updates slug + .project.json
+projects tag my-app infra cloud                       # add tags
+projects untag my-app cloud                           # remove a tag
+projects archive my-app
+projects unarchive my-app
 
 # Open (cd into it)
-cd $(project open my-app)                             # print path; auto-detects cwd
+cd $(projects open my-app)                            # print path; auto-detects cwd
 workon my-app                                         # shell function — actually cd's
 penv my-app                                           # load project .env into shell
-project env my-app                                    # print export statements (eval)
-project env my-app --list                             # list keys only
+projects env my-app                                   # print export statements (eval)
+projects env my-app --list                            # list keys only
 
 # Working directories (multi-machine / multi-repo)
-project workdir add my-app /path/to/dir --label backend
-project workdir list my-app
-project workdir generate my-app                       # write CLAUDE.md + AGENTS.md
-project workdir generate my-app --dry-run
-project workdir remove my-app /path/to/dir
+projects workdir add my-app /path/to/dir --label backend
+projects workdir list my-app
+projects workdir generate my-app                      # write CLAUDE.md + AGENTS.md
+projects workdir generate my-app --dry-run
+projects workdir remove my-app /path/to/dir
 
 # Import existing directories
-project import /path/to/existing-project
-project import-bulk /path/to/workspace                # imports all subdirs
-project clone my-app /new/local/path                  # pull from S3 to new machine path
+projects import /path/to/existing-project
+projects import-bulk /path/to/workspace               # imports all subdirs
+projects clone my-app /new/local/path                 # pull from S3 to new machine path
 
 # Sync to/from S3
-project update my-app --s3-bucket my-bucket
-project sync my-app
-project sync my-app --direction push
-project sync-all                                      # sync all projects with S3 configured
-project watch my-app                                  # push changes live as you edit
-project sync-log my-app                               # show sync history
+projects update my-app --s3-bucket my-bucket
+projects sync my-app
+projects sync my-app --direction push
+projects sync-all                                     # sync all projects with S3 configured
+projects watch my-app                                 # push changes live as you edit
+projects sync-log my-app                              # show sync history
 
 # Schedule auto-sync
-project schedule set --interval daily --direction both
-project schedule status
-project schedule remove
+projects schedule set --interval daily --direction both
+projects schedule status
+projects schedule remove
 
 # Cloud sync (SQLite ↔ RDS PostgreSQL)
-project cloud status
-project cloud pull
-project cloud push
+projects cloud status
+projects cloud pull
+projects cloud push
 
 # Publish to GitHub
-project publish my-app --org hasnaxyz
-project unpublish my-app
+projects publish my-app --org hasnaxyz
+projects unpublish my-app
 
 # Git passthrough
-project git my-app status
-project git my-app log --oneline -10
+projects git my-app status
+projects git my-app log --oneline -10
 
 # Shell completion (includes workon + penv functions)
-eval "$(project completion)"                          # bash
-eval "$(project completion --shell zsh)"              # zsh
+eval "$(projects completion)"                         # bash
+eval "$(projects completion --shell zsh)"             # zsh
 ```
 
 ## MCP Server
@@ -98,7 +98,7 @@ Add to your Claude config:
 {
   "mcpServers": {
     "open-projects": {
-      "command": "project-mcp"
+      "command": "projects-mcp"
     }
   }
 }

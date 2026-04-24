@@ -686,6 +686,28 @@ describe("tmux", () => {
       expect(sessionGroup(sessionA)).toBe("");
       expect(sessionGroup(sessionB)).toBe("");
     });
+
+    test("hasnaxyz project sessions stay standalone instead of joining shared groups", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `project-isolate-${Date.now()}`;
+      const path = `/home/hasna/workspace/hasnaxyz/project/${slug}`;
+      const hadProjectAnchor = sessionExists("project");
+
+      try {
+        const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+        createTmuxWindow(project);
+
+        expect(sessionExists(slug)).toBe(true);
+        expect(sessionGroup(slug)).toBe("");
+        expect(windowNamesInSession(slug)).toContain(slug);
+      } finally {
+        try { killSession(slug); } catch { /* ignore */ }
+        if (!hadProjectAnchor) {
+          try { killSession("project"); } catch { /* ignore */ }
+        }
+      }
+    });
   });
 
   describe("group management", () => {

@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { isGitRepo } from "./git.js";
 import type { Project } from "../types/index.js";
 
@@ -14,8 +14,8 @@ export interface PublishResult {
   pushed: boolean;
 }
 
-function gh(args: string, cwd?: string): string {
-  return execSync(`gh ${args}`, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
+function gh(args: string[], cwd?: string): string {
+  return execFileSync("gh", args, { cwd, stdio: "pipe", encoding: "utf-8", env: process.env }).trim();
 }
 
 export function publishProject(
@@ -30,11 +30,10 @@ export function publishProject(
 
   // Create GitHub repo
   const visibilityFlag = isPrivate ? "--private" : "--public";
-  const descFlag = options.description
-    ? `--description ${JSON.stringify(options.description)}`
-    : "";
+  const args = ["repo", "create", fullName, visibilityFlag];
+  if (options.description) args.push("--description", options.description);
 
-  gh(`repo create ${fullName} ${visibilityFlag} ${descFlag}`);
+  gh(args);
 
   const remote = `https://github.com/${fullName}.git`;
 
@@ -43,13 +42,13 @@ export function publishProject(
   if (isGitRepo(path)) {
     try {
       // Check if origin already set
-      const remotes = execSync("git remote", { cwd: path, stdio: "pipe", encoding: "utf-8" });
+      const remotes = execFileSync("git", ["remote"], { cwd: path, stdio: "pipe", encoding: "utf-8", env: process.env });
       if (remotes.includes("origin")) {
-        execSync("git remote set-url origin " + remote, { cwd: path, stdio: "pipe" });
+        execFileSync("git", ["remote", "set-url", "origin", remote], { cwd: path, stdio: "pipe", env: process.env });
       } else {
-        execSync("git remote add origin " + remote, { cwd: path, stdio: "pipe" });
+        execFileSync("git", ["remote", "add", "origin", remote], { cwd: path, stdio: "pipe", env: process.env });
       }
-      execSync("git push -u origin main --quiet", { cwd: path, stdio: "pipe" });
+      execFileSync("git", ["push", "-u", "origin", "main", "--quiet"], { cwd: path, stdio: "pipe", env: process.env });
       pushed = true;
     } catch {
       // Push failed — repo created but not pushed
@@ -62,7 +61,7 @@ export function publishProject(
 export function unpublishProject(path: string): void {
   if (!isGitRepo(path)) return;
   try {
-    execSync("git remote remove origin", { cwd: path, stdio: "pipe" });
+    execFileSync("git", ["remote", "remove", "origin"], { cwd: path, stdio: "pipe", env: process.env });
   } catch {
     // No remote to remove
   }
@@ -71,19 +70,20 @@ export function unpublishProject(path: string): void {
 export function createGithubRepo(project: Project, org = "hasnaxyz"): string | null {
   const slug = project.slug || project.name.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
   const fullName = `${org}/${slug}`;
-  const desc = project.description ? `--description ${JSON.stringify(project.description)}` : "";
+  const args = ["repo", "create", fullName, "--private"];
+  if (project.description) args.push("--description", project.description);
 
-  execSync(`gh repo create ${fullName} --private ${desc}`, { stdio: "pipe" });
+  execFileSync("gh", args, { stdio: "pipe", env: process.env });
 
   const remote = `git@github.com:${fullName}.git`;
 
   if (isGitRepo(project.path)) {
     try {
-      const remotes = execSync("git remote", { cwd: project.path, stdio: "pipe", encoding: "utf-8" });
+      const remotes = execFileSync("git", ["remote"], { cwd: project.path, stdio: "pipe", encoding: "utf-8", env: process.env });
       if (remotes.includes("origin")) {
-        execSync(`git remote set-url origin ${remote}`, { cwd: project.path, stdio: "pipe" });
+        execFileSync("git", ["remote", "set-url", "origin", remote], { cwd: project.path, stdio: "pipe", env: process.env });
       } else {
-        execSync(`git remote add origin ${remote}`, { cwd: project.path, stdio: "pipe" });
+        execFileSync("git", ["remote", "add", "origin", remote], { cwd: project.path, stdio: "pipe", env: process.env });
       }
     } catch {
       // ignore
@@ -96,7 +96,7 @@ export function createGithubRepo(project: Project, org = "hasnaxyz"): string | n
 export function getGitHubUrl(path: string): string | null {
   if (!isGitRepo(path)) return null;
   try {
-    const remote = execSync("git remote get-url origin", { cwd: path, stdio: "pipe", encoding: "utf-8" }).trim();
+    const remote = execFileSync("git", ["remote", "get-url", "origin"], { cwd: path, stdio: "pipe", encoding: "utf-8", env: process.env }).trim();
     if (remote.includes("github.com")) return remote.replace(/\.git$/, "").replace("git@github.com:", "https://github.com/");
     return null;
   } catch {

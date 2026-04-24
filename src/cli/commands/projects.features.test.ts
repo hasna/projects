@@ -277,6 +277,19 @@ describe("projects alias command", () => {
   });
 });
 
+describe("projects completion command", () => {
+  test("emits shell helpers that call the projects binary", () => {
+    const result = runProject(["completion"]);
+    expect(result.exitCode).toBe(0);
+    const out = output(result);
+    expect(out).toContain("complete -F _project_completion projects");
+    expect(out).toContain("projects list");
+    expect(out).toContain("projects open");
+    expect(out).toContain("projects env");
+    expect(out).not.toContain("$(project ");
+  });
+});
+
 describe("projects init command", () => {
   const tempDirs: string[] = [];
 

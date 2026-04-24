@@ -1,6 +1,6 @@
-import { resolve, join, basename } from "node:path";
+import { resolve, join, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createProject, updateProject, archiveProject, unarchiveProject, resolveProject, getProjectByPath, getProjectBySlug } from "../../../db/projects.js";
 import { setIntegrations } from "../../../db/projects.js";
@@ -18,6 +18,31 @@ import { getConfig, resolveProjectPath, resolveProjectName } from "../../../lib/
 import { slugify } from "../../../db/projects.js";
 
 const WORKSPACE = process.env.HASNA_WORKSPACE || "/home/hasna/workspace/hasna";
+const WORKSPACE_ROOT = process.env.HASNA_WORKSPACE_ROOT || dirname(WORKSPACE);
+
+function prefixOnce(value: string, prefix: string): string {
+  return value.startsWith(prefix) ? value : `${prefix}${value}`;
+}
+
+function normalizeGroupSlug(name: string, group: string, customSlug?: string): string {
+  const slug = customSlug || slugify(name);
+  if (group === "project") return prefixOnce(slug, "project-");
+  return slug;
+}
+
+function logForOutputMode(opts: { json?: boolean } | undefined, message: string): void {
+  if (wantsJsonOutput(opts)) console.error(message);
+  else console.log(message);
+}
+
+function ghCliAvailable(): boolean {
+  try {
+    execFileSync("gh", ["--version"], { stdio: "pipe", timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Derive the project path from the group type.
@@ -27,12 +52,13 @@ const WORKSPACE = process.env.HASNA_WORKSPACE || "/home/hasna/workspace/hasna";
  *   internal   → internalapp/<slug>
  *   platform   → platform/<slug>
  *   agency     → agency/<slug>
+ *   project    → hasnaxyz/project/project-<slug>
  */
-function deriveProjectPath(name: string, group: string): string {
-  const slug = slugify(name);
+function deriveProjectPath(name: string, group: string, customSlug?: string): string {
+  const slug = normalizeGroupSlug(name, group, customSlug);
   switch (group) {
     case "open":
-      return pathJoin(WORKSPACE, "opensource", "opensourcedev", `open-${slug}`);
+      return pathJoin(WORKSPACE, "opensource", "opensourcedev", prefixOnce(slug, "open-"));
     case "community":
       return pathJoin(WORKSPACE, "community", slug);
     case "internal":
@@ -41,6 +67,8 @@ function deriveProjectPath(name: string, group: string): string {
       return pathJoin(WORKSPACE, "platform", slug);
     case "agency":
       return pathJoin(WORKSPACE, "agency", slug);
+    case "project":
+      return pathJoin(WORKSPACE_ROOT, "hasnaxyz", "project", slug);
     default:
       return pathJoin(WORKSPACE, group, slug);
   }
@@ -71,7 +99,8 @@ export function registerCreateCommand(cmd: Cmd) {
 
         // Smart scaffolding via --group flag
         if (opts.group) {
-          const projectPath = deriveProjectPath(opts.name, opts.group);
+          const customSlug = normalizeGroupSlug(opts.name, opts.group, opts.slug);
+          const projectPath = deriveProjectPath(opts.name, opts.group, opts.slug);
 
           // Check for existing project at this path
           const existingAtPath = getProjectByPath(projectPath);
@@ -82,9 +111,9 @@ export function registerCreateCommand(cmd: Cmd) {
           }
 
           // Check for slug conflicts
-          const existingBySlug = getProjectBySlug(slugify(opts.name));
+          const existingBySlug = getProjectBySlug(customSlug);
           if (existingBySlug) {
-            console.error(chalk.red(`Error: A project already exists with slug: ${slugify(opts.name)}`));
+            console.error(chalk.red(`Error: A project already exists with slug: ${customSlug}`));
             process.exit(1);
           }
 
@@ -95,13 +124,17 @@ export function registerCreateCommand(cmd: Cmd) {
 
           // Check GitHub repo availability
           const org = config.default_github_org || "hasnaxyz";
-          const repoName = slugify(opts.name);
+          const repoName = customSlug;
           const fullName = `${org}/${repoName}`;
           let ghAvailable = false;
-          try {
-            execSync(`gh repo view ${fullName}`, { stdio: "pipe", timeout: 3000 });
-          } catch {
-            ghAvailable = true; // Repo doesn't exist, we can create it
+          if (ghCliAvailable()) {
+            try {
+              execFileSync("gh", ["repo", "view", fullName], { stdio: "pipe", timeout: 3000 });
+            } catch {
+              ghAvailable = true; // Repo doesn't exist, we can create it
+            }
+          } else if (!wantsJsonOutput(opts)) {
+            console.log(chalk.yellow("  ⚠ GitHub CLI unavailable — skipping repository creation"));
           }
 
           if (!ghAvailable && !wantsJsonOutput(opts)) {
@@ -112,7 +145,7 @@ export function registerCreateCommand(cmd: Cmd) {
             name: opts.name,
             path: projectPath,
             description: opts.description,
-            slug: slugify(opts.name),
+            slug: customSlug,
             tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : [],
             s3_bucket: opts.s3Bucket,
             s3_prefix: opts.s3Prefix,
@@ -129,19 +162,23 @@ export function registerCreateCommand(cmd: Cmd) {
                 private: config.default_repo_visibility === "private",
                 description: project.description ?? undefined,
               });
-              console.log(chalk.green(`✓ Published: ${result.url}`));
+              logForOutputMode(opts, chalk.green(`✓ Published: ${result.url}`));
             } catch (err: unknown) {
-              console.log(chalk.yellow(`⚠ GitHub publish failed: ${err instanceof Error ? err.message : String(err)}`));
+              logForOutputMode(opts, chalk.yellow(`⚠ GitHub publish failed: ${err instanceof Error ? err.message : String(err)}`));
             }
           }
 
           // Create tmux window
           try {
             const { createTmuxWindow } = await import("../../../lib/tmux.js");
-            createTmuxWindow(project);
-            console.log(chalk.green(`✓ tmux window created for ${project.name}`));
+            const opened = createTmuxWindow(project);
+            if (opened) {
+              logForOutputMode(opts, chalk.green(`✓ tmux window created for ${project.name}`));
+            } else {
+              logForOutputMode(opts, chalk.yellow(`⚠ tmux unavailable — run \`projects tmux create ${project.slug}\` manually`));
+            }
           } catch {
-            console.log(chalk.yellow("⚠ tmux unavailable — run `project tmux create ${name}` manually"));
+            logForOutputMode(opts, chalk.yellow(`⚠ tmux unavailable — run \`projects tmux create ${project.slug}\` manually`));
           }
 
           if (wantsJsonOutput(opts)) {
@@ -213,10 +250,14 @@ export function registerCreateCommand(cmd: Cmd) {
         if (opts.tmux) {
           try {
             const { createTmuxWindow } = await import("../../../lib/tmux.js");
-            createTmuxWindow(project);
-            console.log(chalk.green(`✓ tmux window created for ${project.name}`));
+            const opened = createTmuxWindow(project);
+            if (opened) {
+              console.log(chalk.green(`✓ tmux window created for ${project.name}`));
+            } else {
+              console.log(chalk.yellow(`⚠ tmux unavailable — run \`projects tmux create ${project.slug}\` manually`));
+            }
           } catch {
-            console.log(chalk.yellow("⚠ tmux unavailable — run `project tmux create ${name}` manually"));
+            console.log(chalk.yellow(`⚠ tmux unavailable — run \`projects tmux create ${project.slug}\` manually`));
           }
         }
 

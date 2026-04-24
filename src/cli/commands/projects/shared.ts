@@ -75,7 +75,7 @@ export function exitProjectNotFound(idOrSlug: string): never {
       console.error(chalk.dim(`  - ${project.slug} (${project.id})`));
     }
   } else {
-    console.error(chalk.dim("Hint: run `project list --limit 20` to see available project IDs/slugs."));
+    console.error(chalk.dim("Hint: run `projects list --limit 20` to see available project IDs/slugs."));
   }
 
   process.exit(1);

@@ -28,6 +28,6 @@ describe("project CLI not-found hints", () => {
     expect(missing.exitCode).toBe(1);
     const stderr = Buffer.from(missing.stderr).toString("utf-8");
     expect(stderr).toContain("Project not found: gamma");
-    expect(stderr).toContain("Hint: run `project list --limit 20` to see available project IDs/slugs.");
+    expect(stderr).toContain("Hint: run `projects list --limit 20` to see available project IDs/slugs.");
   });
 });

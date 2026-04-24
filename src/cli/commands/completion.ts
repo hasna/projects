@@ -16,7 +16,7 @@ _project_completion() {
     get|update|archive|unarchive|open|sync|sync-log|git|publish|unpublish)
       # Complete with project slugs
       local slugs
-      slugs=$(project list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
+      slugs=$(projects list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
       COMPREPLY=( $(compgen -W "$slugs" -- "$cur") )
       return 0
       ;;
@@ -40,7 +40,7 @@ _project_completion() {
 
   COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
 }
-complete -F _project_completion project
+complete -F _project_completion projects
 `;
 
 const ZSH_COMPLETION = `
@@ -70,7 +70,7 @@ _project() {
   _describe 'command' commands
 }
 
-compdef _project project
+compdef _project projects
 `;
 
 const WORKON_FUNCTION = [
@@ -81,20 +81,20 @@ const WORKON_FUNCTION = [
   '  if [ -z "$1" ]; then',
   "    if command -v fzf >/dev/null 2>&1; then",
   "      local slug",
-  '      slug=$(project list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
-  '      [ -n "$slug" ] && cd "$(project open "$slug")"',
+  '      slug=$(projects list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
+  '      [ -n "$slug" ] && cd "$(projects open "$slug")"',
   "    else",
-  "      project list",
+  "      projects list",
   "    fi",
   "  else",
-  '    cd "$(project open "$1")"',
+  '    cd "$(projects open "$1")"',
   "  fi",
   "}",
   "",
   "# penv — load a project's .env into current shell",
   "# Usage: penv [slug]",
   "penv() {",
-  '  eval "$(project env "${1}")"',
+  '  eval "$(projects env "${1}")"',
   "}",
 ].join("\n");
 

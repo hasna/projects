@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -13,6 +13,13 @@ function runProject(args: string[], env: Record<string, string>) {
 }
 
 describe("project CLI JSON output", () => {
+  function bunOnlyPath(root: string): string {
+    const binDir = join(root, "bin");
+    mkdirSync(binDir);
+    symlinkSync(process.execPath, join(binDir, "bun"));
+    return binDir;
+  }
+
   test("create and rename support --json", () => {
     const root = mkdtempSync(join(tmpdir(), "project-json-create-"));
     const projectDir = join(root, "repo");
@@ -58,5 +65,33 @@ describe("project CLI JSON output", () => {
     expect(syncLogRes.exitCode).toBe(0);
     const logs = JSON.parse(Buffer.from(syncLogRes.stdout).toString("utf-8")) as unknown[];
     expect(Array.isArray(logs)).toBe(true);
+  });
+
+  test("group project create returns pure JSON and normalizes project-prefixed slugs", () => {
+    const root = mkdtempSync(join(tmpdir(), "project-json-group-"));
+    const workspace = join(root, "workspace", "hasna");
+    mkdirSync(workspace, { recursive: true });
+    const dbPath = join(root, "projects.db");
+    const env = {
+      HASNA_PROJECTS_DB_PATH: dbPath,
+      HASNA_WORKSPACE: workspace,
+      PATH: bunOnlyPath(root),
+    };
+
+    const createRes = runProject(
+      ["create", "--name", "Alpha Tool", "--group", "project", "--slug", "project-alpha-tool", "--no-git-init", "--json"],
+      env,
+    );
+
+    expect(createRes.exitCode).toBe(0);
+    const stdout = Buffer.from(createRes.stdout).toString("utf-8");
+    const created = JSON.parse(stdout) as { slug: string; path: string };
+    expect(created.slug).toBe("project-alpha-tool");
+    expect(created.path).toBe(join(root, "workspace", "hasnaxyz", "project", "project-alpha-tool"));
+    expect(created.path).not.toContain("project-project-alpha-tool");
+
+    const stderr = Buffer.from(createRes.stderr).toString("utf-8");
+    expect(stderr).toContain("tmux unavailable");
+    expect(stderr).not.toContain("tmux window created");
   });
 });

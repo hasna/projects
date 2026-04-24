@@ -118,7 +118,7 @@ export async function syncProject(
   const log = options.onProgress ?? (() => {});
 
   if (!project.s3_bucket) {
-    throw new Error(`Project "${project.name}" has no s3_bucket configured. Run: project update ${project.slug} --s3-bucket <bucket>`);
+    throw new Error(`Project "${project.name}" has no s3_bucket configured. Run: projects update ${project.slug} --s3-bucket <bucket>`);
   }
 
   const client = makeS3Client(region);
