@@ -55,8 +55,15 @@ export interface TmuxWindowHealth extends TmuxWindow {
   reason: TmuxWindowDeadReason;
 }
 
+export interface CreateWindowOptions {
+  cwd?: string;
+  detached?: boolean;
+  index?: number;
+}
+
 export interface ReviveWindowOptions {
   command?: string;
+  cwd?: string;
   force?: boolean;
 }
 
@@ -195,12 +202,12 @@ export function createSession(name: string, projectPath?: string, windowName?: s
   }
 }
 
-export function createWindow(session: string, name: string, command?: string): void {
-  run(`tmux new-window -t ${shellEscape(session)} -n ${shellEscape(name)}`);
-  if (command) {
-    const winId = findWindowId(session, name);
-    run(`tmux send-keys -t ${shellEscape(winId)} "${shellEscape(command)}" Enter`);
-  }
+export function createWindow(session: string, name: string, command?: string, options: CreateWindowOptions = {}): void {
+  const target = typeof options.index === "number" ? `${session}:${options.index}` : session;
+  const detached = options.detached === true ? " -d" : "";
+  const cwd = options.cwd ? ` -c ${shellEscape(options.cwd)}` : "";
+  const initialCommand = command ? ` ${shellEscape(wrapInteractiveCommand(command))}` : "";
+  run(`tmux new-window${detached} -t ${shellEscape(target)} -n ${shellEscape(name)}${cwd}${initialCommand}`);
 }
 
 export function killSession(name: string): void {
@@ -214,23 +221,56 @@ export function killWindow(session: string, name: string): void {
 export function reviveWindow(session: string, window: string, options: ReviveWindowOptions = {}): ReviveWindowResult {
   const before = getWindowHealth(session, window);
   const windowName = before.exists ? before.name : window;
+  const targetIndex = before.exists && before.index >= 0 ? before.index : parseWindowIndex(window);
+  const cwd = options.cwd || firstPanePath(before);
   let action: ReviveWindowResult["action"] = "alive";
 
   if (!before.exists) {
-    createWindow(session, windowName, options.command);
+    createWindow(session, windowName, options.command, {
+      cwd,
+      detached: true,
+      index: targetIndex,
+    });
     action = "created";
   } else if (before.dead || options.force === true) {
-    killWindow(session, before.name);
-    createWindow(session, windowName, options.command);
+    const windows = listWindows(session);
+    if (windows.length <= 1) {
+      const tmpName = `projects-revive-${Date.now()}`;
+      createWindow(session, tmpName, undefined, { cwd, detached: true });
+      killWindow(session, before.name);
+      createWindow(session, windowName, options.command, {
+        cwd,
+        detached: true,
+        index: targetIndex,
+      });
+      killWindow(session, tmpName);
+    } else {
+      selectFallbackWindow(session, before.index);
+      killWindow(session, before.name);
+      createWindow(session, windowName, options.command, {
+        cwd,
+        detached: true,
+        index: targetIndex,
+      });
+    }
     action = "recreated";
   } else {
     focusWindow(session, before.name);
   }
 
+  const after = getWindowHealth(session, windowName);
+  if (after.exists && !after.dead) {
+    try {
+      focusWindow(session, after.name);
+    } catch {
+      // Non-fatal: the window was revived even if focus cannot be changed.
+    }
+  }
+
   return {
     action,
     before,
-    after: getWindowHealth(session, windowName),
+    after,
   };
 }
 
@@ -465,8 +505,33 @@ function addGroupedPane(grouped: Map<string, TmuxPaneStatus[]>, key: string, pan
   grouped.get(key)!.push(pane);
 }
 
+function parseWindowIndex(window: string): number | undefined {
+  if (!/^\d+$/.test(window)) return undefined;
+  return parseInt(window, 10);
+}
+
+function firstPanePath(health: TmuxWindowHealth): string | undefined {
+  return health.panes.find((pane) => pane.currentPath)?.currentPath;
+}
+
+function selectFallbackWindow(session: string, excludedIndex: number): void {
+  const fallback = listWindows(session).find((window) => window.index !== excludedIndex);
+  if (fallback) {
+    run(`tmux select-window -t ${shellEscape(`${session}:${fallback.index}`)}`);
+  }
+}
+
+function sendKeys(target: string, command: string): void {
+  run(`tmux send-keys -t ${shellEscape(target)} ${shellEscape(command)} Enter`);
+}
+
+function wrapInteractiveCommand(command: string): string {
+  const fallbackShell = process.env.SHELL || "/bin/bash";
+  return `sh -lc ${shellEscape(`${command}; exec ${shellEscape(fallbackShell)} -l`)}`;
+}
+
 export function execInWindow(session: string, window: string, command: string): void {
-  run(`tmux send-keys -t ${shellEscape(`${session}:${window}`)} "${shellEscape(command)}" Enter`);
+  sendKeys(`${session}:${window}`, command);
 }
 
 export function cleanupDeadSessions(): string[] {

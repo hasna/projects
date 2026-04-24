@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execSync } from "node:child_process";
-import { readFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -378,6 +379,30 @@ describe("tmux", () => {
       expect(result.after.dead).toBe(false);
     });
 
+    test("preserves window index and cwd when recreating a dead window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-index-${Date.now()}`;
+      const root = mkdtempSync(join(tmpdir(), "projects-revive-index-"));
+      const marker = join(root, "revived.txt");
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`new-window -d -t ${sessionName}:5 -n deadpane -c ${root} "sh -c 'exit 7'"`);
+      safeRun("sleep 0.3");
+
+      const result = reviveWindow(sessionName, "deadpane", {
+        command: "pwd > revived.txt",
+        cwd: root,
+      });
+      safeRun("sleep 0.3");
+
+      expect(result.action).toBe("recreated");
+      expect(result.after.index).toBe(5);
+      expect(result.after.dead).toBe(false);
+      expect(result.after.panes[0]?.currentPath).toBe(root);
+      expect(readFileSync(marker, "utf-8").trim()).toBe(root);
+    });
+
     test("does not recreate a live window unless forced", () => {
       if (!tmuxAvailable) return;
 
@@ -393,6 +418,30 @@ describe("tmux", () => {
       expect(result.action).toBe("alive");
       expect(result.after.dead).toBe(false);
       expect(windowNamesInSession(sessionName)).toContain("livewin");
+    });
+
+    test("force recreates a live window and sends multi-word commands correctly", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-force-${Date.now()}`;
+      const root = mkdtempSync(join(tmpdir(), "projects-revive-force-"));
+      const marker = join(root, "forced.txt");
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`new-window -d -t ${sessionName}:8 -n livewin -c ${root}`);
+
+      const result = reviveWindow(sessionName, "livewin", {
+        command: "printf forced-ok > forced.txt",
+        cwd: root,
+        force: true,
+      });
+      safeRun("sleep 0.3");
+
+      expect(result.action).toBe("recreated");
+      expect(result.after.index).toBe(8);
+      expect(result.after.dead).toBe(false);
+      expect(existsSync(marker)).toBe(true);
+      expect(readFileSync(marker, "utf-8")).toBe("forced-ok");
     });
   });
 
@@ -976,15 +1025,15 @@ describe("tmux", () => {
       if (!tmuxAvailable) return;
 
       const sessionName = `test-createwin-cmd-${Date.now()}`;
+      const root = mkdtempSync(join(tmpdir(), "projects-create-window-"));
+      const marker = join(root, "cmd-output.txt");
       trackSession(sessionName);
       safeTmux(`new-session -d -s ${sessionName}`);
 
-      createWindow(sessionName, "cmdwin", "echo test-cmd-output");
-      const allWindows = safeRun(`tmux list-windows -t ${sessionName} -F '#{window_id}:#{window_name}'`);
-      const line = allWindows.split("\n").find((l) => l.endsWith(":cmdwin"));
-      const winId = line?.split(":")[0] || "";
-      const output = safeRun(`tmux capture-pane -t "${winId}" -p`);
-      expect(output).toContain("echo test-cmd-output");
+      createWindow(sessionName, "cmdwin", "printf test-cmd-output > cmd-output.txt", { cwd: root });
+      safeRun("sleep 0.3");
+
+      expect(readFileSync(marker, "utf-8")).toBe("test-cmd-output");
     });
   });
 

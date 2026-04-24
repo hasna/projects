@@ -260,12 +260,14 @@ export function registerTmuxCommands(cmd: Command) {
     .argument("<session>", "Session name")
     .argument("<window>", "Window name or index")
     .option("-c, --command <cmd>", "Initial command to send after recreating")
+    .option("--cwd <path>", "Working directory for the recreated window")
     .option("--force", "Recreate even if the window is alive")
     .option("-j, --json", "Output as JSON")
     .action((session, window, opts) => {
       try {
         const result = reviveWindow(session, window, {
           command: opts.command,
+          cwd: opts.cwd,
           force: opts.force === true,
         });
         if (wantsJsonOutput(opts)) {

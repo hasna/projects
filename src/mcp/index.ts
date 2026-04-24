@@ -691,11 +691,12 @@ server.tool(
     session: z.string().describe("Session name"),
     window: z.string().describe("Window name or index"),
     command: z.string().optional().describe("Initial command to send after recreating"),
+    cwd: z.string().optional().describe("Working directory for the recreated window"),
     force: z.boolean().optional().describe("Recreate even if the window is alive"),
   },
   async (input) => {
     try {
-      const result = reviveWindow(input.session, input.window, { command: input.command, force: input.force });
+      const result = reviveWindow(input.session, input.window, { command: input.command, cwd: input.cwd, force: input.force });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err: unknown) {
       return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };

@@ -89,6 +89,7 @@ projects tmux window-status my-app my-app --json      # alive/dead/missing windo
 projects tmux dead-windows my-app                     # exited panes / dead windows
 projects tmux revive-window my-app my-app             # recreates only missing/dead windows
 projects tmux revive-window my-app my-app --force     # explicit live-window restart
+projects tmux revive-window my-app my-app --force --cwd "$PWD" --command "claude"
 
 # Publish to GitHub
 projects publish my-app --org hasnaxyz
