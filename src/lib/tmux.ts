@@ -214,10 +214,17 @@ export function createTmuxWindow(project: Project, windowName?: string): boolean
 
   try {
     // Check if session already exists
-    const sessions = run("tmux list-sessions -F '#{session_name}'");
-    const sessionExists = sessions.split("\n").filter(Boolean).includes(sessionName);
+    const sessions = listSessions();
+    const existingSession = sessions.find((session) => session.name === sessionName);
+    const sessionExists = Boolean(existingSession);
 
-    if (sessionExists) {
+    if (existingSession?.group) {
+      // Older versions linked project sessions into shared groups, causing attach
+      // to show unrelated windows. Recreate those sessions as isolated projects.
+      killSession(sessionName);
+    }
+
+    if (sessionExists && !existingSession?.group) {
       // Check if a window with this name already exists
       const windows = listWindows(sessionName);
       const existingWindow = windows.find((w) => w.name === winName);

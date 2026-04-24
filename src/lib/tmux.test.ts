@@ -708,6 +708,33 @@ describe("tmux", () => {
         }
       }
     });
+
+    test("repairs stale linked project sessions into standalone sessions", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `stale-project-group-${Date.now()}`;
+      const slug = `project-stale-linked-${Date.now()}`;
+      const wrongWindow = "project-wrong-window";
+      const path = `/home/hasna/workspace/hasnaxyz/project/${slug}`;
+
+      try {
+        safeTmux(`new-session -d -s ${groupName} -n ${wrongWindow}`);
+        safeTmux(`new-session -d -s ${slug} -t ${groupName}`);
+
+        expect(sessionGroup(slug)).toBe(groupName);
+        expect(windowNamesInSession(slug)).toContain(wrongWindow);
+
+        const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+        createTmuxWindow(project);
+
+        expect(sessionExists(slug)).toBe(true);
+        expect(sessionGroup(slug)).toBe("");
+        expect(windowNamesInSession(slug)).toEqual([slug]);
+      } finally {
+        try { killSession(slug); } catch { /* ignore */ }
+        try { killSession(groupName); } catch { /* ignore */ }
+      }
+    });
   });
 
   describe("group management", () => {
