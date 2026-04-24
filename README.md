@@ -90,6 +90,7 @@ projects tmux dead-windows my-app                     # exited panes / dead wind
 projects tmux revive-window my-app my-app             # recreates only missing/dead windows
 projects tmux revive-window my-app my-app --force     # explicit live-window restart
 projects tmux revive-window my-app my-app --force --cwd "$PWD" --command "claude"
+projects tmux revive-window master worker             # preserves master's active window while reviving worker
 
 # Publish to GitHub
 projects publish my-app --org hasnaxyz

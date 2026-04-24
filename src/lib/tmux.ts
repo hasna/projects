@@ -220,6 +220,7 @@ export function killWindow(session: string, name: string): void {
 
 export function reviveWindow(session: string, window: string, options: ReviveWindowOptions = {}): ReviveWindowResult {
   const before = getWindowHealth(session, window);
+  const activeBefore = findActiveWindow(session);
   const windowName = before.exists ? before.name : window;
   const targetIndex = before.exists && before.index >= 0 ? before.index : parseWindowIndex(window);
   const cwd = options.cwd || firstPanePath(before);
@@ -260,10 +261,17 @@ export function reviveWindow(session: string, window: string, options: ReviveWin
 
   const after = getWindowHealth(session, windowName);
   if (after.exists && !after.dead) {
+    const focusTarget = activeBefore && !sameWindow(activeBefore, before)
+      ? activeBefore.name
+      : after.name;
     try {
-      focusWindow(session, after.name);
+      focusWindow(session, focusTarget);
     } catch {
-      // Non-fatal: the window was revived even if focus cannot be changed.
+      try {
+        focusWindow(session, after.name);
+      } catch {
+        // Non-fatal: the window was revived even if focus cannot be changed.
+      }
     }
   }
 
@@ -519,6 +527,18 @@ function selectFallbackWindow(session: string, excludedIndex: number): void {
   if (fallback) {
     run(`tmux select-window -t ${shellEscape(`${session}:${fallback.index}`)}`);
   }
+}
+
+function findActiveWindow(session: string): TmuxWindow | undefined {
+  try {
+    return listWindows(session).find((window) => window.active);
+  } catch {
+    return undefined;
+  }
+}
+
+function sameWindow(window: TmuxWindow, health: TmuxWindowHealth): boolean {
+  return window.session === health.session && window.index === health.index;
 }
 
 function sendKeys(target: string, command: string): void {

@@ -78,6 +78,10 @@ function windowNamesInSession(session: string): string[] {
   }
 }
 
+function currentWindowName(session: string): string {
+  return safeRun(`tmux display-message -p -t ${session} '#{window_name}'`);
+}
+
 function sessionGroup(name: string): string {
   const output = safeRun(`tmux list-sessions -F '#{session_name}:#{session_group}'`);
   const line = output.split("\n").find((l) => l.startsWith(name + ":"));
@@ -109,7 +113,7 @@ describe("tmux", () => {
         /* ignore */
       }
     }
-  });
+  }, 30000);
 
   describe("createSession", () => {
     test("creates standalone session", () => {
@@ -401,6 +405,29 @@ describe("tmux", () => {
       expect(result.after.dead).toBe(false);
       expect(result.after.panes[0]?.currentPath).toBe(root);
       expect(readFileSync(marker, "utf-8").trim()).toBe(root);
+    });
+
+    test("preserves caller session focus when reviving a non-active window", () => {
+      if (!tmuxAvailable) return;
+
+      const sessionName = `test-revive-focus-${Date.now()}`;
+      const root = mkdtempSync(join(tmpdir(), "projects-revive-focus-"));
+      trackSession(sessionName);
+      safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`new-window -d -t ${sessionName}:5 -n deadpane -c ${root} "sh -c 'exit 7'"`);
+      safeTmux(`select-window -t ${sessionName}:main`);
+      safeRun("sleep 0.3");
+
+      const result = reviveWindow(sessionName, "deadpane", {
+        command: "printf focus-ok > revived.txt",
+        cwd: root,
+      });
+      safeRun("sleep 0.3");
+
+      expect(result.action).toBe("recreated");
+      expect(result.after.name).toBe("deadpane");
+      expect(result.after.dead).toBe(false);
+      expect(currentWindowName(sessionName)).toBe("main");
     });
 
     test("does not recreate a live window unless forced", () => {
