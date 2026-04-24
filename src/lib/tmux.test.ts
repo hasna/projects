@@ -430,6 +430,52 @@ describe("tmux", () => {
       expect(currentWindowName(sessionName)).toBe("main");
     });
 
+    test("restores every linked session focus after reviving grouped windows", () => {
+      if (!tmuxAvailable) return;
+
+      const base = `test-linked-revive-${Date.now()}`;
+      const representative = `${base}-01`;
+      const worker = `${base}-05`;
+      const stuck = `${base}-08`;
+      const root = mkdtempSync(join(tmpdir(), "projects-linked-revive-"));
+      trackSession(representative);
+      trackSession(worker);
+      trackSession(stuck);
+
+      safeTmux(`new-session -d -s ${representative} -n ${representative} -c ${root}`);
+      safeTmux(`new-window -d -t ${representative}:5 -n ${worker} -c ${root} "sh -c 'exit 7'"`);
+      safeTmux(`new-window -d -t ${representative}:8 -n ${stuck} -c ${root}`);
+      safeTmux(`new-session -d -s ${worker} -t ${representative}`);
+      safeTmux(`new-session -d -s ${stuck} -t ${representative}`);
+      safeTmux(`select-window -t ${representative}:${representative}`);
+      safeTmux(`select-window -t ${worker}:${worker}`);
+      safeTmux(`select-window -t ${stuck}:${stuck}`);
+      safeRun("sleep 0.3");
+
+      expect(currentWindowName(representative)).toBe(representative);
+      expect(currentWindowName(worker)).toBe(worker);
+      expect(currentWindowName(stuck)).toBe(stuck);
+
+      const revived = reviveWindow(representative, worker, {
+        command: "printf revived > worker.txt",
+        cwd: root,
+      });
+      const restarted = reviveWindow(representative, stuck, {
+        command: "printf restarted > stuck.txt",
+        cwd: root,
+        force: true,
+      });
+      safeRun("sleep 0.5");
+
+      expect(revived.action).toBe("recreated");
+      expect(restarted.action).toBe("recreated");
+      expect(currentWindowName(representative)).toBe(representative);
+      expect(currentWindowName(worker)).toBe(worker);
+      expect(currentWindowName(stuck)).toBe(stuck);
+      expect(readFileSync(join(root, "worker.txt"), "utf-8")).toBe("revived");
+      expect(readFileSync(join(root, "stuck.txt"), "utf-8")).toBe("restarted");
+    });
+
     test("does not recreate a live window unless forced", () => {
       if (!tmuxAvailable) return;
 

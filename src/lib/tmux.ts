@@ -220,7 +220,7 @@ export function killWindow(session: string, name: string): void {
 
 export function reviveWindow(session: string, window: string, options: ReviveWindowOptions = {}): ReviveWindowResult {
   const before = getWindowHealth(session, window);
-  const activeBefore = findActiveWindow(session);
+  const focusBefore = captureLinkedSessionFocus(session);
   const windowName = before.exists ? before.name : window;
   const targetIndex = before.exists && before.index >= 0 ? before.index : parseWindowIndex(window);
   const cwd = options.cwd || firstPanePath(before);
@@ -260,19 +260,8 @@ export function reviveWindow(session: string, window: string, options: ReviveWin
   }
 
   const after = getWindowHealth(session, windowName);
-  if (after.exists && !after.dead) {
-    const focusTarget = activeBefore && !sameWindow(activeBefore, before)
-      ? activeBefore.name
-      : after.name;
-    try {
-      focusWindow(session, focusTarget);
-    } catch {
-      try {
-        focusWindow(session, after.name);
-      } catch {
-        // Non-fatal: the window was revived even if focus cannot be changed.
-      }
-    }
+  if (action !== "alive" && after.exists && !after.dead) {
+    restoreLinkedSessionFocus(focusBefore);
   }
 
   return {
@@ -529,16 +518,56 @@ function selectFallbackWindow(session: string, excludedIndex: number): void {
   }
 }
 
-function findActiveWindow(session: string): TmuxWindow | undefined {
-  try {
-    return listWindows(session).find((window) => window.active);
-  } catch {
-    return undefined;
+interface SessionFocus {
+  session: string;
+  windowName: string;
+  windowIndex: number;
+}
+
+function captureLinkedSessionFocus(session: string): SessionFocus[] {
+  const sessions = relatedTmuxSessions(session);
+  const focus: SessionFocus[] = [];
+  for (const related of sessions) {
+    try {
+      const active = listWindows(related.name).find((window) => window.active);
+      if (active) {
+        focus.push({
+          session: related.name,
+          windowName: active.name,
+          windowIndex: active.index,
+        });
+      }
+    } catch {
+      // Session may disappear during external tmux changes.
+    }
+  }
+  return focus;
+}
+
+function restoreLinkedSessionFocus(focus: SessionFocus[]): void {
+  for (const entry of focus) {
+    try {
+      focusWindow(entry.session, entry.windowName);
+    } catch {
+      try {
+        focusWindow(entry.session, String(entry.windowIndex));
+      } catch {
+        // Non-fatal: the window was revived even if one linked session focus cannot be restored.
+      }
+    }
   }
 }
 
-function sameWindow(window: TmuxWindow, health: TmuxWindowHealth): boolean {
-  return window.session === health.session && window.index === health.index;
+function relatedTmuxSessions(session: string): TmuxSession[] {
+  try {
+    const sessions = listSessions();
+    const current = sessions.find((candidate) => candidate.name === session);
+    if (!current) return [{ name: session, group: "", windows: 0, attached: false }];
+    const group = current.group || current.name;
+    return sessions.filter((candidate) => (candidate.group || candidate.name) === group);
+  } catch {
+    return [{ name: session, group: "", windows: 0, attached: false }];
+  }
 }
 
 function sendKeys(target: string, command: string): void {
