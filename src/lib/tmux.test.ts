@@ -37,6 +37,7 @@ function readSourceFile(name: string): string {
 
 const TEST_SESSIONS: string[] = [];
 let tmuxAvailable = false;
+let originalRemainOnExit = "";
 
 function checkTmux(): boolean {
   try {
@@ -103,12 +104,23 @@ function trackSession(name: string) {
 describe("tmux", () => {
   beforeAll(() => {
     tmuxAvailable = checkTmux();
+    if (tmuxAvailable) {
+      originalRemainOnExit = safeRun("tmux show-option -gv remain-on-exit 2>/dev/null || true");
+      safeTmux("set-option -g remain-on-exit on");
+    }
   });
 
   afterAll(() => {
     for (const name of TEST_SESSIONS) {
       try {
         killSession(name);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (tmuxAvailable) {
+      try {
+        safeTmux(`set-option -g remain-on-exit ${originalRemainOnExit || "off"}`);
       } catch {
         /* ignore */
       }
@@ -365,6 +377,7 @@ describe("tmux", () => {
       const sessionName = `test-dead-pane-${Date.now()}`;
       trackSession(sessionName);
       safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`set-window-option -t ${sessionName} remain-on-exit on`);
       safeTmux(`new-window -d -t ${sessionName} -n deadpane "sh -c 'exit 7'"`);
       safeRun("sleep 0.3");
 
@@ -391,6 +404,7 @@ describe("tmux", () => {
       const marker = join(root, "revived.txt");
       trackSession(sessionName);
       safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`set-window-option -t ${sessionName} remain-on-exit on`);
       safeTmux(`new-window -d -t ${sessionName}:5 -n deadpane -c ${root} "sh -c 'exit 7'"`);
       safeRun("sleep 0.3");
 
@@ -414,6 +428,7 @@ describe("tmux", () => {
       const root = mkdtempSync(join(tmpdir(), "projects-revive-focus-"));
       trackSession(sessionName);
       safeTmux(`new-session -d -s ${sessionName} -n main`);
+      safeTmux(`set-window-option -t ${sessionName} remain-on-exit on`);
       safeTmux(`new-window -d -t ${sessionName}:5 -n deadpane -c ${root} "sh -c 'exit 7'"`);
       safeTmux(`select-window -t ${sessionName}:main`);
       safeRun("sleep 0.3");
@@ -443,6 +458,7 @@ describe("tmux", () => {
       trackSession(stuck);
 
       safeTmux(`new-session -d -s ${representative} -n ${representative} -c ${root}`);
+      safeTmux(`set-window-option -t ${representative} remain-on-exit on`);
       safeTmux(`new-window -d -t ${representative}:5 -n ${worker} -c ${root} "sh -c 'exit 7'"`);
       safeTmux(`new-window -d -t ${representative}:8 -n ${stuck} -c ${root}`);
       safeTmux(`new-session -d -s ${worker} -t ${representative}`);
@@ -1003,6 +1019,26 @@ describe("tmux", () => {
       expect(testGroup).toBeDefined();
       expect(testGroup!.sessions).toContain(s1);
       expect(testGroup!.sessions).toContain(s2);
+    });
+
+    test("CLI group setup keeps prefixed window names as exact linked session names and focuses each window", () => {
+      if (!tmuxAvailable) return;
+
+      const groupName = `test-setup-${Date.now()}`;
+      const windows = [`${groupName}-01`, `${groupName}-02`, `${groupName}-03`, `${groupName}-04`];
+      trackSession(groupName);
+      for (const window of windows) trackSession(window);
+
+      safeRun(`bun run src/cli/index.ts tmux group setup ${groupName} --windows ${windows.join(",")}`);
+
+      for (const [idx, window] of windows.entries()) {
+        expect(sessionExists(window)).toBe(true);
+        expect(sessionGroup(window)).toBe(groupName);
+        expect(currentWindowName(window)).toBe(window);
+        const currentIndex = safeRun(`tmux display-message -p -t ${window} '#{window_index}'`);
+        expect(currentIndex).toBe(String(idx + 1));
+      }
+      expect(sessionExists(`${groupName}-${windows[0]}`)).toBe(false);
     });
 
     test("createTmuxWindow creates standalone session for non-opensourcedev projects", () => {

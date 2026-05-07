@@ -120,9 +120,16 @@ export function destroyGroup(name: string): void {
 }
 
 export function listSessions(): TmuxSession[] {
-  const output = run(
-    "tmux list-sessions -F '#{session_name}:#{session_group}:#{session_windows}:#{session_attached}'",
-  );
+  let output = "";
+  try {
+    output = run(
+      "tmux list-sessions -F '#{session_name}:#{session_group}:#{session_windows}:#{session_attached}'",
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("no server running")) return [];
+    throw err;
+  }
   return output
     .split("\n")
     .filter(Boolean)

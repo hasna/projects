@@ -24,6 +24,13 @@ export interface SavedGroupSession {
 
 export function createSavedGroup(name: string, description?: string, db?: Database): TmuxGroupRow {
   const d = db || getDatabase();
+  const existing = d.query("SELECT * FROM tmux_groups WHERE name = ?").get(name) as TmuxGroupRow | null;
+  if (existing) {
+    d.run("UPDATE tmux_groups SET description = ? WHERE id = ?", [description || null, existing.id]);
+    d.run("DELETE FROM tmux_group_sessions WHERE group_id = ?", [existing.id]);
+    return d.query("SELECT * FROM tmux_groups WHERE id = ?").get(existing.id) as TmuxGroupRow;
+  }
+
   const id = uuid();
   const ts = now();
   d.run(

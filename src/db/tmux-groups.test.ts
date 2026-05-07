@@ -103,10 +103,17 @@ describe("tmux-groups CRUD", () => {
     expect(group!.description).toBe("New desc");
   });
 
-  test("prevents duplicate group names (UNIQUE constraint)", () => {
+  test("replaces duplicate group definitions", () => {
     const db = createTestDb();
-    createSavedGroup("unique-name", undefined, db);
-    expect(() => createSavedGroup("unique-name", undefined, db)).toThrow();
+    const first = createSavedGroup("unique-name", "old", db);
+    addSessionToGroup(first.id, "stale-session", undefined, db);
+
+    const second = createSavedGroup("unique-name", "new", db);
+    expect(second.id).toBe(first.id);
+    expect(second.description).toBe("new");
+
+    const saved = getSavedGroup("unique-name", db);
+    expect(saved!.sessions).toHaveLength(0);
   });
 
   test("cascade deletes sessions when group is deleted", () => {

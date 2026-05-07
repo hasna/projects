@@ -520,40 +520,8 @@ export function registerTmuxCommands(cmd: Command) {
         if (project) {
           // Create the master session with project windows
           const winNames = windows.length > 0 ? windows : [project.slug || project.name];
-          const safeMaster = shellEscape(name);
 
-          // Create master session
-          try {
-            run(`tmux new-session -d -s ${safeMaster} -n ${shellEscape(winNames[0]!)}`);
-            if (project.path) {
-              run(`tmux send-keys -t ${safeMaster} "cd ${shellEscape(project.path)}" Enter`);
-            }
-          } catch {
-            console.log(chalk.dim(`  Master session "${name}" already exists`));
-          }
-
-          // Add remaining windows
-          for (const wn of winNames.slice(1)) {
-            try {
-              run(`tmux new-window -t ${safeMaster} -n ${shellEscape(wn)}`);
-              if (project.path) {
-                run(`tmux send-keys -t ${safeMaster} "cd ${shellEscape(project.path)}" Enter`);
-              }
-            } catch { /* window may already exist */ }
-          }
-
-          // Create linked sessions — one per window, each focused on its window
-          for (const wn of winNames) {
-            const linkedName = `${name}-${wn}`;
-            const safeLinked = shellEscape(linkedName);
-            try {
-              run(`tmux new-session -d -s ${safeLinked} -t ${safeMaster}`);
-              run(`tmux select-window -t ${safeLinked}:${shellEscape(wn)}`);
-              console.log(chalk.green(`  ✓ Linked session: ${linkedName} (focused on ${wn})`));
-            } catch {
-              console.log(chalk.dim(`  Linked session "${linkedName}" already exists, skipping`));
-            }
-          }
+          setupLiveGroup(name, winNames, project.path || undefined);
 
           console.log(chalk.green(`✓ Setup group "${name}" with ${winNames.length} window(s), ${winNames.length} linked session(s)`));
           return;
@@ -568,33 +536,7 @@ export function registerTmuxCommands(cmd: Command) {
         return;
       }
 
-      const safeMaster = shellEscape(name);
-
-      // Create master session
-      try {
-        run(`tmux new-session -d -s ${safeMaster} -n ${shellEscape(windows[0]!)}`);
-      } catch {
-        console.log(chalk.dim(`  Master session "${name}" already exists`));
-      }
-
-      for (const wn of windows.slice(1)) {
-        try {
-          run(`tmux new-window -t ${safeMaster} -n ${shellEscape(wn)}`);
-        } catch { /* window may already exist */ }
-      }
-
-      // Create linked sessions
-      for (const wn of windows) {
-        const linkedName = `${name}-${wn}`;
-        const safeLinked = shellEscape(linkedName);
-        try {
-          run(`tmux new-session -d -s ${safeLinked} -t ${safeMaster}`);
-          run(`tmux select-window -t ${safeLinked}:${shellEscape(wn)}`);
-          console.log(chalk.green(`  ✓ Linked session: ${linkedName} (focused on ${wn})`));
-        } catch {
-          console.log(chalk.dim(`  Linked session "${linkedName}" already exists, skipping`));
-        }
-      }
+      setupLiveGroup(name, windows);
 
       console.log(chalk.green(`✓ Setup "${name}" with ${windows.length} window(s), ${windows.length} linked session(s)`));
     });
@@ -811,4 +753,51 @@ function run(cmd: string): string {
 
 function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function setupLiveGroup(name: string, windows: string[], projectPath?: string): void {
+  const safeMaster = shellEscape(name);
+
+  try {
+    const cwd = projectPath ? ` -c ${shellEscape(projectPath)}` : "";
+    run(`tmux new-session -d -s ${safeMaster} -n ${shellEscape(windows[0]!)}${cwd}`);
+  } catch {
+    console.log(chalk.dim(`  Master session "${name}" already exists`));
+  }
+
+  const existing = new Set(listWindows(name).map((w) => w.name));
+  for (const [offset, winName] of windows.entries()) {
+    if (offset === 0 || existing.has(winName)) continue;
+    const index = offset + 1;
+    const cwd = projectPath ? ` -c ${shellEscape(projectPath)}` : "";
+    try {
+      run(`tmux new-window -t ${shellEscape(`${name}:${index}`)} -n ${shellEscape(winName)}${cwd}`);
+    } catch {
+      try {
+        run(`tmux new-window -t ${safeMaster} -n ${shellEscape(winName)}${cwd}`);
+      } catch { /* window may already exist */ }
+    }
+  }
+
+  const windowsByName = new Map(listWindows(name).map((w) => [w.name, w.index]));
+  for (const winName of windows) {
+    const linkedName = linkedSessionName(name, winName);
+    const index = windowsByName.get(winName);
+    if (index === undefined) {
+      console.log(chalk.dim(`  Window "${winName}" missing, skipping linked session`));
+      continue;
+    }
+    const safeLinked = shellEscape(linkedName);
+    try {
+      run(`tmux new-session -d -s ${safeLinked} -t ${safeMaster}`);
+    } catch {
+      console.log(chalk.dim(`  Linked session "${linkedName}" already exists, focusing`));
+    }
+    run(`tmux select-window -t ${shellEscape(`${linkedName}:${index}`)}`);
+    console.log(chalk.green(`  ✓ Linked session: ${linkedName} (focused on ${winName})`));
+  }
+}
+
+function linkedSessionName(groupName: string, windowName: string): string {
+  return windowName.startsWith(`${groupName}-`) ? windowName : `${groupName}-${windowName}`;
 }
