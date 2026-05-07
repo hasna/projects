@@ -1,6 +1,6 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "description": "Project management CLI + MCP server for AI agents — register, sync, and open projects across machines",
   "type": "module",
   "main": "dist/index.js",
@@ -45,7 +45,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/hasna/projects.git"
+    "url": "git+https://github.com/hasna/projects.git"
   },
   "homepage": "https://github.com/hasna/projects",
   "bugs": {
