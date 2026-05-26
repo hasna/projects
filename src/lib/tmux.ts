@@ -80,12 +80,10 @@ export interface TmuxGroup {
 }
 
 export function getTmuxSessionName(project: Pick<Project, "name" | "path" | "slug">): string {
-  const raw = project.slug || project.name;
-  if (project.path?.includes("opensourcedev")) {
-    const normalized = raw.replace(/^proj-/, "");
-    return normalized.startsWith("open-") ? normalized : `open-${normalized}`;
-  }
-  return raw;
+  // The session is named exactly after the project's repo/folder (its slug).
+  // One standalone session per project — no master group, no linked sessions,
+  // and the window name always matches the session name (see createTmuxWindow).
+  return project.slug || project.name;
 }
 
 export function listGroups(): TmuxGroup[] {
@@ -339,11 +337,13 @@ export function findDeadSessions(sessions?: TmuxSession[]): string[] {
 }
 
 export function createTmuxWindow(project: Project, windowName?: string): boolean {
-  const { name, path, slug } = project;
+  const { path } = project;
   const config = getConfig();
 
   const sessionName = getTmuxSessionName(project);
-  const winName = windowName || slug || name; // allow explicit window name override (e.g. iapp-takumi-01)
+  // The window name always matches the session/folder name unless explicitly
+  // overridden (e.g. iapp-takumi-01). One session, one window, same name.
+  const winName = windowName || sessionName;
 
   try {
     // Check if session already exists

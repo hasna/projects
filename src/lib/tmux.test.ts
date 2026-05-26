@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   createSession,
   createTmuxWindow,
+  getTmuxSessionName,
   restartSession,
   killSession,
   killWindow,
@@ -250,6 +251,38 @@ describe("tmux", () => {
       const countAfter = windowCount(slug);
 
       expect(countAfter).toBe(countBefore);
+    });
+
+    test("window name matches the session/folder name", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = `test-winmatch-${Date.now()}`;
+      trackSession(slug);
+
+      const project = { name: slug, slug, path: "/tmp/test" } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      // Standalone session named after the folder, and its window has the same name
+      expect(sessionExists(slug)).toBe(true);
+      expect(sessionGroup(slug)).toBe("");
+      expect(windowNamesInSession(slug)).toContain(slug);
+    });
+
+    test("getTmuxSessionName does not transform opensourcedev names", () => {
+      // No surprising open-/proj- rewriting — session name is exactly the slug.
+      const project = {
+        name: "open-todos",
+        slug: "open-todos",
+        path: "hasna/opensource/opensourcedev/open-todos",
+      } as unknown as import("../types/index.js").Project;
+      expect(getTmuxSessionName(project)).toBe("open-todos");
+
+      const odd = {
+        name: "thing",
+        slug: "proj-thing",
+        path: "/x/opensourcedev/proj-thing",
+      } as unknown as import("../types/index.js").Project;
+      expect(getTmuxSessionName(odd)).toBe("proj-thing");
     });
 
     test("multiple projects do not share windows", () => {
@@ -657,41 +690,39 @@ describe("tmux", () => {
     });
   });
 
-  describe("open-* project naming — opensourcedev sessions use open- prefix", () => {
-    test("project in opensourcedev gets open- prefix session name", () => {
+  describe("project session naming — session name equals slug (no transform)", () => {
+    test("opensource project session name equals its slug (folder name)", () => {
       if (!tmuxAvailable) return;
 
-      const slug = "analytics";
-      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-analytics";
-      const expectedSession = `open-${slug}`;
-      trackSession(expectedSession);
+      const slug = "open-analytics";
+      const path = "hasna/opensource/open-analytics";
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionExists(expectedSession)).toBe(true);
+      expect(sessionExists(slug)).toBe(true);
     });
 
-    test("project in opensourcedev session is standalone (not linked)", () => {
+    test("opensource project session is standalone (not linked)", () => {
       if (!tmuxAvailable) return;
 
-      const slug = "contacts";
-      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-contacts";
-      const sessionName = `open-${slug}`;
-      trackSession(sessionName);
+      const slug = "open-contacts";
+      const path = "hasna/opensource/open-contacts";
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
       // Standalone session — group should be empty
-      expect(sessionGroup(sessionName)).toBe("");
+      expect(sessionGroup(slug)).toBe("");
     });
 
     test("non-opensourcedev project uses raw slug as session name", () => {
       if (!tmuxAvailable) return;
 
       const slug = "iapp-takumi";
-      const path = "/home/hasna/workspace/hasnaxyz/internalapp/iapp-takumi";
+      const path = "hasnaxyz/internalapp/iapp-takumi";
       trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
@@ -704,7 +735,7 @@ describe("tmux", () => {
       if (!tmuxAvailable) return;
 
       const slug = "platform-alumia";
-      const path = "/home/hasna/workspace/hasna/platform/platform-alumia";
+      const path = "hasna/platform/platform-alumia";
       trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
@@ -713,43 +744,39 @@ describe("tmux", () => {
       expect(sessionGroup(slug)).toBe("");
     });
 
-    test("open-* project does NOT create raw slug duplicate", () => {
+    test("opensource project creates exactly one session named after its slug", () => {
       if (!tmuxAvailable) return;
 
-      const slug = `test-noproj-${Date.now()}`;
-      const opensourcedevPath = `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${slug}`;
-      const expectedSession = `open-${slug}`;
-      const wrongSession = slug;
-      trackSession(expectedSession);
-
-      const project = { name: slug, slug, path: opensourcedevPath } as unknown as import("../types/index.js").Project;
-      createTmuxWindow(project);
-
-      expect(sessionExists(expectedSession)).toBe(true);
-      expect(sessionExists(wrongSession)).toBe(false);
-    });
-
-    test("already open- prefixed slug does not double-prefix", () => {
-      if (!tmuxAvailable) return;
-
-      const slug = "open-banking";
-      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-banking";
-      const expectedSession = "open-banking";
-      trackSession(expectedSession);
+      const slug = `open-test-noproj-${Date.now()}`;
+      const path = `hasna/opensource/${slug}`;
+      trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
       createTmuxWindow(project);
 
-      expect(sessionExists(expectedSession)).toBe(true);
+      expect(sessionExists(slug)).toBe(true);
+    });
+
+    test("session name is the slug verbatim — no open- double-prefixing", () => {
+      if (!tmuxAvailable) return;
+
+      const slug = "open-banking";
+      const path = "hasna/opensource/open-banking";
+      trackSession(slug);
+
+      const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
+      createTmuxWindow(project);
+
+      expect(sessionExists("open-banking")).toBe(true);
       expect(sessionExists("open-open-banking")).toBe(false);
     });
 
     test("does not create duplicate windows on repeated calls", () => {
       if (!tmuxAvailable) return;
 
-      const slug = "sessions";
-      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-sessions";
-      const sessionName = `open-${slug}`;
+      const slug = "open-sessions";
+      const path = "hasna/opensource/open-sessions";
+      const sessionName = slug;
       trackSession(sessionName);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
@@ -831,12 +858,12 @@ describe("tmux", () => {
   });
 
   describe("standalone architecture — projects are isolated", () => {
-    test("new open-* session is standalone", () => {
+    test("new opensource session is standalone", () => {
       if (!tmuxAvailable) return;
 
-      const slug = "test-arch-open";
-      const path = "/home/hasna/workspace/hasna/opensource/opensourcedev/open-test-arch";
-      const sessionName = `open-${slug}`;
+      const slug = "open-test-arch";
+      const path = "hasna/opensource/open-test-arch";
+      const sessionName = slug;
       trackSession(sessionName);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
@@ -846,12 +873,12 @@ describe("tmux", () => {
       expect(sessionGroup(sessionName)).toBe("");
     });
 
-    test("multiple open-* sessions do not share windows", () => {
+    test("multiple opensource sessions do not share windows", () => {
       if (!tmuxAvailable) return;
 
-      const slugs = ["test-a", "test-b"];
-      const sessionNames = slugs.map((s) => `open-${s}`);
-      const paths = slugs.map((s) => `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${s}`);
+      const slugs = ["open-test-a", "open-test-b"];
+      const sessionNames = slugs; // session name == slug == folder name
+      const paths = slugs.map((s) => `hasna/opensource/${s}`);
 
       for (const sn of sessionNames) trackSession(sn);
 
@@ -864,7 +891,7 @@ describe("tmux", () => {
         expect(sessionGroup(sn)).toBe("");
       }
 
-      // Each session should only have its own window
+      // Each session should only have its own window (named after its slug)
       const winsA = windowNamesInSession(sessionNames[0]);
       const winsB = windowNamesInSession(sessionNames[1]);
       expect(winsA).toContain(slugs[0]);
@@ -878,8 +905,8 @@ describe("tmux", () => {
 
       const slugA = "arch-proj-a";
       const slugB = "arch-proj-b";
-      const pathA = `/home/hasna/workspace/hasna/platform/${slugA}`;
-      const pathB = `/home/hasna/workspace/hasna/platform/${slugB}`;
+      const pathA = `hasna/platform/${slugA}`;
+      const pathB = `hasna/platform/${slugB}`;
       const sessionA = slugA;
       const sessionB = slugB;
       trackSession(sessionA);
@@ -898,7 +925,7 @@ describe("tmux", () => {
       if (!tmuxAvailable) return;
 
       const slug = `project-isolate-${Date.now()}`;
-      const path = `/home/hasna/workspace/hasnaxyz/project/${slug}`;
+      const path = `hasnaxyz/project/${slug}`;
       const hadProjectAnchor = sessionExists("project");
 
       try {
@@ -922,7 +949,7 @@ describe("tmux", () => {
       const groupName = `stale-project-group-${Date.now()}`;
       const slug = `project-stale-linked-${Date.now()}`;
       const wrongWindow = "project-wrong-window";
-      const path = `/home/hasna/workspace/hasnaxyz/project/${slug}`;
+      const path = `hasnaxyz/project/${slug}`;
 
       try {
         safeTmux(`new-session -d -s ${groupName} -n ${wrongWindow}`);
@@ -1045,7 +1072,7 @@ describe("tmux", () => {
       if (!tmuxAvailable) return;
 
       const slug = `my-project-${Date.now()}`;
-      const path = `/home/hasna/workspace/hasna/platform/${slug}`;
+      const path = `hasna/platform/${slug}`;
       trackSession(slug);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
@@ -1055,12 +1082,12 @@ describe("tmux", () => {
       expect(sessionGroup(slug)).toBe("");
     });
 
-    test("opensourcedev projects are standalone (not linked)", () => {
+    test("opensource projects are standalone (not linked)", () => {
       if (!tmuxAvailable) return;
 
-      const slug = `grp-test-${Date.now()}`;
-      const path = `/home/hasna/workspace/hasna/opensource/opensourcedev/open-${slug}`;
-      const sessionName = `open-${slug}`;
+      const slug = `open-grp-test-${Date.now()}`;
+      const path = `hasna/opensource/${slug}`;
+      const sessionName = slug;
       trackSession(sessionName);
 
       const project = { name: slug, slug, path } as unknown as import("../types/index.js").Project;
