@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { isGitRepo } from "./git.js";
+import { getCurrentBranch, isGitRepo } from "./git.js";
 import type { Project } from "../types/index.js";
 
 export interface PublishOptions {
@@ -48,7 +48,8 @@ export function publishProject(
       } else {
         execFileSync("git", ["remote", "add", "origin", remote], { cwd: path, stdio: "pipe", env: process.env });
       }
-      execFileSync("git", ["push", "-u", "origin", "main", "--quiet"], { cwd: path, stdio: "pipe", env: process.env });
+      const branch = getCurrentBranch(path);
+      execFileSync("git", ["push", "-u", "origin", branch, "--quiet"], { cwd: path, stdio: "pipe", env: process.env });
       pushed = true;
     } catch {
       // Push failed — repo created but not pushed

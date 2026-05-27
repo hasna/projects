@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runMigrations } from "./schema.js";
@@ -350,6 +351,34 @@ describe("scaffoldProject creates directories", () => {
     const p = createProject({ name: "ScaffoldTest", path: dir, git_init: false }, db);
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(join(dir, "data"))).toBe(true);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("scaffold dirs created even when project path already exists", () => {
+    const db = makeDb();
+    const dir = join(tmpdir(), `scaffold-existing-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const p = createProject({ name: "ScaffoldExisting", path: dir, git_init: false }, db);
+    expect(existsSync(join(dir, "docs"))).toBe(true);
+    rmSync(dir, { recursive: true });
+  });
+
+  test("git init commits generated CLAUDE.md and AGENTS.md", () => {
+    const db = makeDb();
+    const dir = join(tmpdir(), `scaffold-git-${Date.now()}`);
+    const p = createProject(
+      { name: "Scaffold Git", path: dir, description: "Generated agent context", git_init: true },
+      db,
+    );
+    expect(existsSync(join(dir, "CLAUDE.md"))).toBe(true);
+    expect(existsSync(join(dir, "AGENTS.md"))).toBe(true);
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf-8")).toContain("Generated agent context");
+    const committed = execFileSync("git", ["ls-tree", "--name-only", "-r", "HEAD"], {
+      cwd: dir,
+      encoding: "utf-8",
+    });
+    expect(committed).toContain("CLAUDE.md");
+    expect(committed).toContain("AGENTS.md");
     rmSync(dir, { recursive: true });
   });
 });

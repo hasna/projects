@@ -20,6 +20,7 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { gitInit, isGitRepo } from "../lib/git.js";
+import { generateAllWorkdirs } from "../lib/generate.js";
 import { getConfig } from "../lib/config.js";
 import { addWorkdir, getMachineId } from "./workdirs.js";
 
@@ -37,7 +38,6 @@ export function slugify(name: string): string {
 }
 
 function scaffoldProject(path: string): void {
-  if (existsSync(path)) return;
   mkdirSync(path, { recursive: true });
   const config = getConfig();
   for (const dir of config.scaffold_dirs || ["data", "scripts", "assets", "docs"]) {
@@ -107,6 +107,13 @@ export function createProject(input: CreateProjectInput, db?: Database): Project
   // Auto-register primary workdir for this machine
   try {
     addWorkdir({ project_id: id, path: input.path, label: "main", is_primary: true }, d);
+  } catch {
+    // Non-fatal
+  }
+
+  // Generate CLAUDE.md + AGENTS.md before the initial commit
+  try {
+    generateAllWorkdirs(project, { db: d });
   } catch {
     // Non-fatal
   }

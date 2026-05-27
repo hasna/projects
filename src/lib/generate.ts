@@ -1,5 +1,6 @@
 import { writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Database } from "bun:sqlite";
 import { listWorkdirs, markWorkdirGenerated, getMachineId } from "../db/workdirs.js";
 import type { Project, ProjectWorkdir } from "../types/index.js";
 
@@ -8,6 +9,12 @@ export interface GenerateResult {
   claude_md: string;
   agents_md: string;
   written: boolean; // false on dry-run
+}
+
+export interface GenerateOptions {
+  dryRun?: boolean;
+  force?: boolean;
+  db?: Database;
 }
 
 function buildWorkdirList(workdirs: ProjectWorkdir[], currentPath: string): string {
@@ -127,7 +134,7 @@ export function generateForWorkdir(
   project: Project,
   workdir: ProjectWorkdir,
   allWorkdirs: ProjectWorkdir[],
-  options: { dryRun?: boolean; force?: boolean } = {},
+  options: GenerateOptions = {},
 ): GenerateResult {
   const claudeMd = claudeMdContent(project, workdir, allWorkdirs);
   const agentsMd = agentsMdContent(project, workdir, allWorkdirs);
@@ -161,7 +168,7 @@ export function generateForWorkdir(
     }
 
     writeFileSync(agentsPath, agentsMd, "utf-8");
-    markWorkdirGenerated(project.id, workdir.path);
+    markWorkdirGenerated(project.id, workdir.path, options.db);
     written = true;
   }
 
@@ -170,8 +177,8 @@ export function generateForWorkdir(
 
 export function generateAllWorkdirs(
   project: Project,
-  options: { dryRun?: boolean; force?: boolean } = {},
+  options: GenerateOptions = {},
 ): GenerateResult[] {
-  const workdirs = listWorkdirs(project.id);
+  const workdirs = listWorkdirs(project.id, options.db);
   return workdirs.map((w) => generateForWorkdir(project, w, workdirs, options));
 }

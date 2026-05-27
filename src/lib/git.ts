@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execSync, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { Project } from "../types/index.js";
 
 const GITIGNORE_TEMPLATE = `# Dependencies
@@ -49,14 +49,38 @@ export function isGitRepo(path: string): boolean {
   return existsSync(join(path, ".git"));
 }
 
+export function getCurrentBranch(path: string): string {
+  return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+    cwd: path,
+    stdio: "pipe",
+    encoding: "utf-8",
+    env: process.env,
+  }).trim();
+}
+
+const BOOTSTRAP_PATHS = [
+  ".gitignore",
+  ".project.json",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "README.md",
+  "docs",
+  "data",
+  "scripts",
+  "assets",
+];
+
+function bootstrapPathsToStage(path: string): string[] {
+  return BOOTSTRAP_PATHS.filter((entry) => existsSync(join(path, entry)));
+}
+
 export function gitInit(project: Project): void {
   const { path, name, id, slug } = project;
 
   // Skip if already a git repo
   if (isGitRepo(path)) return;
 
-  // git init
-  execSync("git init", { cwd: path, stdio: "pipe" });
+  execFileSync("git", ["init", "-b", "main"], { cwd: path, stdio: "pipe", env: process.env });
 
   // Write .gitignore if it doesn't exist
   const gitignorePath = join(path, ".gitignore");
@@ -74,9 +98,11 @@ export function gitInit(project: Project): void {
   };
   writeFileSync(join(path, ".project.json"), JSON.stringify(projectJson, null, 2) + "\n", "utf-8");
 
-  // Initial commit
-  execSync("git add .gitignore .project.json", { cwd: path, stdio: "pipe" });
-  execSync(`git commit -m "chore: init project ${name}"`, {
+  const staged = bootstrapPathsToStage(path);
+  if (staged.length === 0) return;
+
+  execFileSync("git", ["add", ...staged], { cwd: path, stdio: "pipe", env: process.env });
+  execFileSync("git", ["commit", "-m", `chore: init project ${name}`], {
     cwd: path,
     stdio: "pipe",
     env: { ...process.env, GIT_AUTHOR_NAME: "open-projects", GIT_COMMITTER_NAME: "open-projects" },
