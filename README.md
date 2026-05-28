@@ -119,6 +119,17 @@ Add to your Claude config:
 }
 ```
 
+## HTTP mode
+
+Long-lived Streamable HTTP transport (stateless, `127.0.0.1` only):
+
+```bash
+projects-mcp --http              # default port 8827
+MCP_HTTP=1 MCP_HTTP_PORT=8827 projects-mcp
+```
+
+Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/GET /mcp`.
+
 ### Available tools
 
 | Tool | Description |

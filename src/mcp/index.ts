@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { isHttpMode, startMcpHttpServer, resolveMcpHttpPort } from "./http.js";
 import { z } from "zod";
 import { resolve, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -16,9 +17,11 @@ function getPkgVersion(): string {
 function printHelp(): void {
   console.log(`Usage: projects-mcp [options]
 
-MCP server for project management tools (stdio transport)
+MCP server for project management tools (stdio transport by default)
 
 Options:
+  --http         serve MCP over Streamable HTTP on 127.0.0.1 (also MCP_HTTP=1)
+  --port <n>     HTTP port (default 8827, or MCP_HTTP_PORT)
   -V, --version  output the version number
   -h, --help     display help for command`);
 }
@@ -58,6 +61,7 @@ import { cleanupStaleIssues, findStaleIssues } from "../lib/stale.js";
 import { setupMachineReport } from "../lib/setup-machine.js";
 import { listSessions, listWindows, createSession, killSession, restartSession, reviveSession, findDeadSessions, getWindowHealth, listWindowHealth, findDeadWindows, reviveWindow, execInWindow } from "../lib/tmux.js";
 
+export function buildServer(): McpServer {
 const server = new McpServer({
   name: "projects",
   version: getPkgVersion(),
@@ -759,6 +763,19 @@ server.tool(
   },
 );
 
-// ── Start server ──────────────────────────────────────────────────────────────
-const transport = new StdioServerTransport();
-await server.connect(transport);
+return server;
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  if (isHttpMode(args)) {
+    startMcpHttpServer({ name: "projects", port: resolveMcpHttpPort(args), buildServer });
+    return;
+  }
+  const transport = new StdioServerTransport();
+  await buildServer().connect(transport);
+}
+
+if (import.meta.main) {
+  await main();
+}
