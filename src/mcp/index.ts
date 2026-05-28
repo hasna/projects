@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { isHttpMode, startMcpHttpServer, resolveMcpHttpPort } from "./http.js";
+import { isStdioMode, startMcpHttpServer, resolveMcpHttpPort } from "./http.js";
 import { z } from "zod";
 import { resolve, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -768,12 +768,13 @@ return server;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  if (isHttpMode(args)) {
-    startMcpHttpServer({ name: "projects", port: resolveMcpHttpPort(args), buildServer });
+  if (isStdioMode(args)) {
+    const transport = new StdioServerTransport();
+    await buildServer().connect(transport);
     return;
   }
-  const transport = new StdioServerTransport();
-  await buildServer().connect(transport);
+  // Default: shared Streamable HTTP server (one process per MCP, many agents).
+  startMcpHttpServer({ name: "projects", port: resolveMcpHttpPort(args), buildServer });
 }
 
 if (import.meta.main) {

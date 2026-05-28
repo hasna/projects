@@ -30,9 +30,9 @@ describe("projects MCP HTTP transport", () => {
     httpServer.stop();
   });
 
-  test("default port is 8827", () => {
-    expect(DEFAULT_MCP_HTTP_PORT).toBe(8827);
-    expect(resolveMcpHttpPort([])).toBe(8827);
+  test("default port is 8871", () => {
+    expect(DEFAULT_MCP_HTTP_PORT).toBe(8871);
+    expect(resolveMcpHttpPort([])).toBe(8871);
     expect(resolveMcpHttpPort(["--port", "9001"])).toBe(9001);
   });
 
