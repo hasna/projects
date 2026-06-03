@@ -205,7 +205,18 @@ export function updateProject(
     params.push(newSlug);
   }
   if (input.description !== undefined) { sets.push("description = ?"); params.push(input.description); }
-  if (input.path !== undefined) { sets.push("path = ?"); params.push(input.path); }
+  if (input.path !== undefined) {
+    // Guard the UNIQUE(path) constraint: a raw SQLite error here crashes every
+    // caller (CLI `projects update --path`, MCP). Surface a typed, actionable
+    // error instead. Note getProjectByPath sees all statuses, so this also
+    // catches an archived project that owns the path but is hidden from `list`.
+    const conflict = d
+      .query("SELECT id FROM projects WHERE path = ?")
+      .get(input.path) as { id: string } | null;
+    if (conflict && conflict.id !== id) throw new ProjectPathConflictError(input.path);
+    sets.push("path = ?");
+    params.push(input.path);
+  }
   if (input.tags !== undefined) { sets.push("tags = ?"); params.push(JSON.stringify(input.tags)); }
   if ("s3_bucket" in input) { sets.push("s3_bucket = ?"); params.push(input.s3_bucket ?? null); }
   if ("s3_prefix" in input) { sets.push("s3_prefix = ?"); params.push(input.s3_prefix ?? null); }

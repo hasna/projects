@@ -20,6 +20,7 @@ import {
   completeSyncLog,
   listSyncLogs,
 } from "./projects.js";
+import { ProjectPathConflictError } from "../types/index.js";
 
 function makeDb(): Database {
   const db = new Database(":memory:");
@@ -79,6 +80,30 @@ describe("createProject", () => {
     const dir = tmpDir();
     const p = createProject({ name: "A", path: dir, tags: ["foo", "bar"], git_init: false }, db);
     expect(p.tags).toEqual(["foo", "bar"]);
+    rmSync(dir, { recursive: true });
+  });
+});
+
+describe("updateProject path conflict", () => {
+  // Regression: updating a project's path to one already owned by another
+  // project hit the UNIQUE(path) constraint and crashed the CLI with a raw
+  // SQLiteError. It must throw a typed ProjectPathConflictError instead.
+  test("throws ProjectPathConflictError instead of crashing on UNIQUE(path)", () => {
+    const db = makeDb();
+    const dir1 = tmpDir();
+    const dir2 = tmpDir();
+    const p1 = createProject({ name: "A", path: dir1, git_init: false }, db);
+    createProject({ name: "B", path: dir2, git_init: false }, db);
+    expect(() => updateProject(p1.id, { path: dir2 }, db)).toThrow(ProjectPathConflictError);
+    rmSync(dir1, { recursive: true });
+    rmSync(dir2, { recursive: true });
+  });
+
+  test("allows updating a project's path to its own current path (no-op)", () => {
+    const db = makeDb();
+    const dir = tmpDir();
+    const p = createProject({ name: "Self", path: dir, git_init: false }, db);
+    expect(() => updateProject(p.id, { path: dir }, db)).not.toThrow();
     rmSync(dir, { recursive: true });
   });
 });

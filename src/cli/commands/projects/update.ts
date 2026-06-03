@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { updateProject } from "../../../db/projects.js";
+import { updateProject, getProjectByPath } from "../../../db/projects.js";
 import {
   resolveProjectOrExit,
   printProject,
@@ -22,10 +22,22 @@ export function registerUpdateCommand(cmd: Command) {
     .option("-j, --json", "Output raw JSON")
     .action((idOrSlug, opts) => {
       const project = resolveProjectOrExit(idOrSlug);
+      const newPath = opts.path ? resolve(opts.path) : undefined;
+      if (newPath) {
+        const existingAtPath = getProjectByPath(newPath);
+        if (existingAtPath && existingAtPath.id !== project.id) {
+          console.error(chalk.red(`Error: A project already exists at path: ${newPath}`));
+          console.error(
+            chalk.dim(`  Name: ${existingAtPath.name} (slug: ${existingAtPath.slug}, status: ${existingAtPath.status})`),
+          );
+          console.error(chalk.dim(`  Archive or delete it first, or choose a different path.`));
+          process.exit(1);
+        }
+      }
       const updated = updateProject(project.id, {
         name: opts.name,
         description: opts.description,
-        path: opts.path ? resolve(opts.path) : undefined,
+        path: newPath,
         tags: opts.tags ? opts.tags.split(",").map((t: string) => t.trim()) : undefined,
         s3_bucket: opts.s3Bucket,
         s3_prefix: opts.s3Prefix,
