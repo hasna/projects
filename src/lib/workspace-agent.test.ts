@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildWorkspaceAgentSystemPrompt } from "./workspace-agent.js";
+import { buildWorkspaceAgentSystemPrompt, shouldRunWorkspaceCreateFallback } from "./workspace-agent.js";
 
 describe("workspace agent system prompt", () => {
   test("includes recorded workspace inventory and metadata for duplicate checks", () => {
@@ -30,5 +30,19 @@ describe("workspace agent system prompt", () => {
     expect(system).toContain("hasnafamily-security");
     expect(system).toContain("home security planning and purchasing");
     expect(system).toContain("security cameras");
+  });
+
+  test("does not append create fallback after showing an existing workspace", () => {
+    expect(shouldRunWorkspaceCreateFallback([
+      {
+        name: "workspace_show",
+        success: true,
+        output: {
+          id: "wks_family",
+          slug: "hasnafamily-security",
+          name: "Hasnafamily Security",
+        },
+      },
+    ], "create a hasnafamily family security project")).toBe(false);
   });
 });

@@ -349,6 +349,23 @@ function hasMutationToolCall(toolCalls: JsonObject[]): boolean {
   return toolCalls.some((call) => typeof call["name"] === "string" && mutationTools.has(call["name"]));
 }
 
+function hasExistingWorkspaceInspection(toolCalls: JsonObject[]): boolean {
+  return toolCalls.some((call) => {
+    if (call["name"] !== "workspace_show" || call["success"] !== true) return false;
+    const output = call["output"];
+    if (!output || typeof output !== "object" || Array.isArray(output)) return false;
+    const record = output as Record<string, unknown>;
+    return typeof record["id"] === "string" && typeof record["slug"] === "string" && !record["error"];
+  });
+}
+
+export function shouldRunWorkspaceCreateFallback(toolCalls: JsonObject[], prompt: string): boolean {
+  return isCreateIntent(prompt)
+    && !hasMutationToolCall(toolCalls)
+    && !hasToolCall(toolCalls, "workspace_plan_create")
+    && !hasExistingWorkspaceInspection(toolCalls);
+}
+
 function isRollbackAction(value: unknown): value is WorkspaceCreationPlanAction {
   if (!value || typeof value !== "object") return false;
   const action = value as Record<string, unknown>;
@@ -1270,16 +1287,16 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
     });
 
     const toolCalls = observedToolCalls.length > 0 ? observedToolCalls : extractToolCalls(result);
-    const fallback = hasMutationToolCall(toolCalls) || hasToolCall(toolCalls, "workspace_plan_create")
-      ? null
-      : fallbackWorkspaceCreate(actorAgent, {
+    const fallback = shouldRunWorkspaceCreateFallback(toolCalls, options.prompt)
+      ? fallbackWorkspaceCreate(actorAgent, {
         prompt: options.prompt,
         dryRun,
         approve,
         root_id: forcedRootId,
         recipe_id: forcedRecipeId,
         command,
-      });
+      })
+      : null;
     if (fallback) {
       toolCalls.push(fallback.call);
       if (fallback.workspace) createdWorkspaces.push(fallback.workspace);
