@@ -1,0 +1,225 @@
+import type { Database } from "bun:sqlite";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  acquireWorkspaceLock,
+  createWorkspace,
+  getWorkspaceByPath,
+  inferWorkspaceKind,
+  listRoots,
+  matchRootForPath,
+  releaseWorkspaceLock,
+  workspaceSlugify,
+} from "../db/workspaces.js";
+import type { Root, Workspace, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
+
+export interface WorkspaceImportPreview {
+  name: string;
+  slug: string;
+  path: string;
+  kind: WorkspaceKind;
+  root_id?: string;
+  tags: string[];
+  git_remote?: string;
+  confidence: number;
+  signals: string[];
+}
+
+export interface ImportWorkspaceOptions {
+  dryRun?: boolean;
+  tags?: string[];
+  agent_id?: string;
+  db?: Database;
+}
+
+export interface ImportWorkspaceResult {
+  workspace?: Workspace;
+  preview?: WorkspaceImportPreview;
+  skipped?: string;
+  error?: string;
+}
+
+export interface ImportWorkspaceBulkResult {
+  imported: Workspace[];
+  previews: WorkspaceImportPreview[];
+  skipped: Array<{ path: string; reason: string }>;
+  errors: Array<{ path: string; error: string }>;
+}
+
+export interface ImportRegisteredRootsResult {
+  dry_run: boolean;
+  roots: Array<{ root: Root; result: ImportWorkspaceBulkResult }>;
+  imported: Workspace[];
+  previews: WorkspaceImportPreview[];
+  skipped: Array<{ path: string; reason: string }>;
+  errors: Array<{ path: string; error: string }>;
+}
+
+function readJson(path: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function packageName(path: string): string | null {
+  const pkg = readJson(join(path, "package.json"));
+  return typeof pkg?.["name"] === "string" ? pkg["name"] : null;
+}
+
+function markerName(path: string): string | null {
+  const workspace = readJson(join(path, ".workspace.json"));
+  if (typeof workspace?.["name"] === "string") return workspace["name"];
+  const project = readJson(join(path, ".project.json"));
+  if (typeof project?.["name"] === "string") return project["name"];
+  return null;
+}
+
+function gitRemote(path: string): string | null {
+  if (!existsSync(join(path, ".git"))) return null;
+  try {
+    return execFileSync("git", ["remote", "get-url", "origin"], { cwd: path, encoding: "utf-8", stdio: "pipe" }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function importLocks(preview: WorkspaceImportPreview): Array<{ key: string; reason: string }> {
+  const locks = [
+    { key: `workspace-slug:${preview.slug}`, reason: `Reserve imported workspace slug ${preview.slug}` },
+    { key: `workspace-path:${preview.path}`, reason: `Reserve imported workspace path ${preview.path}` },
+  ];
+  if (preview.root_id) locks.push({ key: `root-path:${preview.root_id}:${preview.slug}`, reason: `Reserve imported root segment ${preview.slug}` });
+  return locks;
+}
+
+function releaseLocks(locks: WorkspaceLock[], db?: Database): void {
+  for (const lock of locks.slice().reverse()) releaseWorkspaceLock(lock.lock_key, db);
+}
+
+export function planWorkspaceImport(path: string, options: ImportWorkspaceOptions = {}): WorkspaceImportPreview {
+  const absPath = resolve(path);
+  if (!existsSync(absPath)) throw new Error(`Path does not exist: ${absPath}`);
+  if (!statSync(absPath).isDirectory()) throw new Error(`Path is not a directory: ${absPath}`);
+
+  const signals: string[] = [];
+  const name = markerName(absPath) ?? packageName(absPath) ?? basename(absPath);
+  if (existsSync(join(absPath, ".workspace.json"))) signals.push("workspace-marker");
+  if (existsSync(join(absPath, ".project.json"))) signals.push("legacy-project-marker");
+  if (existsSync(join(absPath, "package.json"))) signals.push("package-json");
+  if (existsSync(join(absPath, ".git"))) signals.push("git");
+  for (const dir of ["data", "scripts", "assets", "docs"]) {
+    if (existsSync(join(absPath, dir))) signals.push(`scaffold-dir:${dir}`);
+  }
+
+  const tags = [...new Set(options.tags ?? [])];
+  const slug = workspaceSlugify(name);
+  const kind = inferWorkspaceKind(slug, absPath, tags);
+  const root = matchRootForPath(absPath, options.db);
+  if (root) signals.push(`root:${root.slug}`);
+  const remote = gitRemote(absPath) ?? undefined;
+  if (remote) signals.push("git-remote");
+
+  return {
+    name,
+    slug,
+    path: absPath,
+    kind,
+    root_id: root?.id,
+    tags,
+    git_remote: remote,
+    confidence: Math.min(1, 0.45 + signals.length * 0.12),
+    signals,
+  };
+}
+
+export async function importWorkspace(path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceResult> {
+  try {
+    const preview = planWorkspaceImport(path, options);
+    if (getWorkspaceByPath(preview.path, options.db)) {
+      return { skipped: "already-registered", preview };
+    }
+    if (options.dryRun) {
+      return { skipped: "dry-run", preview };
+    }
+    const locks: WorkspaceLock[] = [];
+    try {
+      for (const lock of importLocks(preview)) {
+        locks.push(acquireWorkspaceLock({
+          lock_key: lock.key,
+          agent_id: options.agent_id,
+          reason: lock.reason,
+          ttl_seconds: 600,
+        }, options.db));
+      }
+      const workspace = createWorkspace({
+        name: preview.name,
+        slug: preview.slug,
+        kind: preview.kind,
+        root_id: preview.root_id,
+        primary_path: preview.path,
+        git_remote: preview.git_remote,
+        tags: preview.tags,
+        metadata: { import_signals: preview.signals, import_confidence: preview.confidence },
+        agent_id: options.agent_id,
+        source: "cli",
+        command: "workspaces import",
+      }, options.db);
+      return { workspace, preview };
+    } finally {
+      releaseLocks(locks, options.db);
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function importWorkspaceBulk(path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceBulkResult> {
+  const absPath = resolve(path);
+  const result: ImportWorkspaceBulkResult = { imported: [], previews: [], skipped: [], errors: [] };
+  if (!existsSync(absPath) || !statSync(absPath).isDirectory()) {
+    result.errors.push({ path: absPath, error: `Path is not a directory: ${absPath}` });
+    return result;
+  }
+  for (const entry of readdirSync(absPath)) {
+    if (entry.startsWith(".")) continue;
+    const child = join(absPath, entry);
+    if (!statSync(child).isDirectory()) continue;
+    const imported = await importWorkspace(child, options);
+    if (imported.workspace) result.imported.push(imported.workspace);
+    if (imported.preview) result.previews.push(imported.preview);
+    if (imported.skipped) result.skipped.push({ path: child, reason: imported.skipped });
+    if (imported.error) result.errors.push({ path: child, error: imported.error });
+  }
+  return result;
+}
+
+export async function importRegisteredRoots(options: ImportWorkspaceOptions = {}): Promise<ImportRegisteredRootsResult> {
+  const result: ImportRegisteredRootsResult = {
+    dry_run: options.dryRun !== false,
+    roots: [],
+    imported: [],
+    previews: [],
+    skipped: [],
+    errors: [],
+  };
+  for (const root of listRoots(options.db)) {
+    if (!existsSync(root.base_path)) {
+      result.errors.push({ path: root.base_path, error: "Root path does not exist" });
+      continue;
+    }
+    const rootResult = await importWorkspaceBulk(root.base_path, {
+      ...options,
+      dryRun: options.dryRun !== false,
+      tags: [...new Set([...(options.tags ?? []), ...root.tags])],
+    });
+    result.roots.push({ root, result: rootResult });
+    result.imported.push(...rootResult.imported);
+    result.previews.push(...rootResult.previews);
+    result.skipped.push(...rootResult.skipped);
+    result.errors.push(...rootResult.errors);
+  }
+  return result;
+}

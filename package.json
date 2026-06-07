@@ -1,7 +1,7 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.49",
-  "description": "Project management CLI + MCP server for AI agents \u2014 register, sync, and open projects across machines",
+  "version": "0.1.52",
+  "description": "Generic workspace orchestration CLI, MCP server, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,23 +21,24 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.ts",
     "dev:mcp": "bun run src/mcp/index.ts",
     "prepublishOnly": "bun run build",
-    "postinstall": "mkdir -p $HOME/.hasna/projects 2>/dev/null || true"
+    "postinstall": "mkdir -p $HOME/.hasna/workspaces 2>/dev/null || true"
   },
   "keywords": [
-    "projects",
+    "workspaces",
     "mcp",
     "ai",
     "coding-agent",
-    "claude",
+    "agentic",
+    "openrouter",
+    "ai-sdk",
     "cli",
-    "sync",
-    "s3"
+    "tmux"
   ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -57,13 +58,13 @@
   "author": "Andrei Hasna <andrei@hasna.com>",
   "license": "Apache-2.0",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1018.0",
-    "@hasna/cloud": "^0.1.28",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
+    "ai": "^6.0.197",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "nanoid": "^5.0.9",
-    "zod": "^3.24.2"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bun": "^1.2.4",

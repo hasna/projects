@@ -1,6 +1,6 @@
 # open-projects
 
-Project management CLI + MCP server for AI agents. Register projects once, open them anywhere, sync to S3, auto-init git, and wire into the `hasna` ecosystem (todos, mementos, conversations).
+Generic workspace orchestration CLI, MCP server, and SDK for AI coding agents. A workspace can be any repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder. The app tracks roots, recipes, agents, tmux profiles, immutable workspace events, and prompt-driven AI agent runs.
 
 ## Install
 
@@ -10,104 +10,75 @@ bun install -g @hasna/projects
 
 ## CLI
 
+The binary is still named `projects`, but the command surface is workspace-first.
+
 ```bash
-# Register a project
-projects create --name my-app --path /path/to/my-app
-projects create --name my-app                         # uses cwd as path
+# Prompt mode through AI SDK + OpenRouter
+projects --dry-run --json "Plan a new open source workspace named Log Tools in /tmp/log-tools with tmux"
+projects --yes "Create a docs workspace in /home/me/docs/new-docs and write a marker"
+projects --model openai/gpt-4o-mini --max-steps 8 "Import this folder as a workspace"
 
-# List / search
-projects list
-projects list --status archived
-projects list --tags web,ts                           # AND filter
-projects list --json | jq '.[].path'                 # machine-readable
+# Roots
+projects roots add --name "Open Source" --path /home/me/opensource --kind open-source --path-template "{slug}"
+projects roots list --json
+projects roots match --path /home/me/opensource/my-app --json
+projects roots update open-source --github-org hasna --visibility public
 
-# Get / status
-projects get my-app                                   # auto-detects from cwd
-projects get my-app --json
-projects status                                       # all projects at a glance
-projects status my-app                                # single project detail
-projects context my-app                               # full agent handoff context
-projects where my-app                                 # paths/workdirs across machines
-projects recent                                       # recently opened (with relative times)
-projects doctor                                       # health-check all projects
-projects doctor my-app --fix --dry-run                # preview safe repairs with issue codes
-projects doctor my-app --fix                          # auto-repair what can be fixed
-projects stale                                        # stale paths, workdirs, tmux sessions/windows
-projects cleanup --dry-run                            # preview safe stale-record cleanup
-projects setup-machine                                # check Bun/tmux/git/gh/aws/config readiness
-projects stats                                        # disk / sync totals
-projects stats my-app
+# Recipes
+projects recipes add --name "TypeScript Library" --kind open-source --tags typescript,library
+projects recipes list
+projects recipes built-ins
+projects recipes seed-defaults --json
 
-# Modify
-projects update my-app --description "My app" --tags "web,ts"
-projects rename my-app my-app-v2                      # updates slug + .project.json
-projects tag my-app infra cloud                       # add tags
-projects untag my-app cloud                           # remove a tag
-projects archive my-app
-projects unarchive my-app
+# Agents
+projects agents add --name "Codex" --kind ai --provider openrouter --model openai/gpt-4o-mini
+projects agents list
 
-# Open (cd into it)
-cd $(projects open my-app)                            # print path; auto-detects cwd
-workon my-app                                         # shell function — actually cd's
-penv my-app                                           # load project .env into shell
-projects env my-app                                   # print export statements (eval)
-projects env my-app --list                            # list keys only
+# Tmux profiles
+projects tmux-profiles add --name "Dev" --slug dev --session-template "{slug}-dev" \
+  --windows-json '[{"name":"editor"},{"name":"server","command":"bun run dev"}]'
+projects tmux-profiles apply dev my-workspace --dry-run --json
 
-# Working directories (multi-machine / multi-repo)
-projects workdir add my-app /path/to/dir --label backend
-projects workdir list my-app
-projects workdir generate my-app                      # write CLAUDE.md + AGENTS.md
-projects workdir generate my-app --dry-run
-projects workdir remove my-app /path/to/dir
+# Workspaces
+projects workspaces create --name "My App" --path /path/to/my-app --mkdir --git-init --marker --json
+projects workspaces create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
+projects workspaces cleanup-create my-app --dry-run --json
+projects workspaces import /path/to/existing --json
+projects workspaces import-github hasna/example --root open-source --clone --dry-run --json
+projects workspaces import /path/to/root --bulk --dry-run --json
+projects workspaces scan-roots --json
+projects workspaces list --query app --tags web,ts --json
+projects workspaces show my-app --json
+projects workspaces update my-app --description "New description" --tags web,ts
+projects workspaces publish my-app --dry-run --json
+projects workspaces link my-app --github-url https://github.com/hasna/my-app --todos-project-id todo_123
+projects workspaces archive my-app
+projects workspaces unarchive my-app
+projects workspaces delete my-app
 
-# Import existing directories
-projects import /path/to/existing-project
-projects import-bulk /path/to/workspace               # imports all subdirs
-projects clone my-app /new/local/path                 # pull from S3 to new machine path
+# Workspace checks and migration
+projects workspaces doctor my-app --fix --dry-run --json
+projects workspaces lock my-app --reason "manual maintenance"
+projects workspaces locks
+projects workspaces unlock workspace:wks_abc123
+projects workspaces migrate-legacy --dry-run --report /tmp/workspace-migration.json --json
+projects workspaces migrate-legacy --backup-dir ~/.hasna/workspaces/backups --json
 
-# Sync to/from S3
-projects update my-app --s3-bucket my-bucket
-projects sync my-app
-projects sync my-app --direction push
-projects sync-all                                     # sync all projects with S3 configured
-projects watch my-app                                 # push changes live as you edit
-projects sync-log my-app                              # show sync history
+# Agent evals
+projects workspaces agent-eval --json
+projects workspaces agent-eval --mock --json
+projects workspaces agent-eval --case create-explicit-path,tmux-apply-existing --fail-on-error
 
-# Schedule auto-sync
-projects schedule set --interval daily --direction both
-projects schedule status
-projects schedule remove
-
-# Cloud sync (SQLite ↔ RDS PostgreSQL)
-projects cloud status
-projects cloud pull
-projects cloud push
-
-# tmux
-projects tmux open --name my-app
-projects tmux window-status my-app my-app --json      # alive/dead/missing window health
-projects tmux dead-windows my-app                     # exited panes / dead windows
-projects tmux revive-window my-app my-app             # recreates only missing/dead windows
-projects tmux revive-window my-app my-app --force     # explicit live-window restart
-projects tmux revive-window my-app my-app --force --cwd "$PWD" --command "claude"
-projects tmux revive-window master worker             # preserves active windows for every linked session
-
-# Publish to GitHub
-projects publish my-app --org hasnaxyz
-projects unpublish my-app
-
-# Git passthrough
-projects git my-app status
-projects git my-app log --oneline -10
-
-# Shell completion (includes workon + penv functions)
-eval "$(projects completion)"                         # bash
-eval "$(projects completion --shell zsh)"             # zsh
+# Shell completion, including workon
+eval "$(projects completion)"
+eval "$(projects completion --shell zsh)"
 ```
+
+`workspaces create --dry-run` is a true no-write creation plan. It returns planned DB writes, filesystem actions, tmux actions, verification steps, locks, and rollback records without writing rows or files. `workspaces cleanup-create` can apply those rollback records later, removing only safe creation artifacts such as the workspace row, marker file, `.git`, and empty created directory.
 
 ## MCP Server
 
-Add to your Claude config:
+Add to an MCP client config:
 
 ```json
 {
@@ -121,125 +92,121 @@ Add to your Claude config:
 
 ## HTTP mode
 
-Long-lived Streamable HTTP transport (stateless, `127.0.0.1` only):
+MCP uses stdio by default. A long-lived Streamable HTTP transport is also available on `127.0.0.1`:
 
 ```bash
-projects-mcp --http              # default port 8827
-MCP_HTTP=1 MCP_HTTP_PORT=8827 projects-mcp
+projects-mcp --http              # default port 8871
+MCP_HTTP=1 MCP_HTTP_PORT=8871 projects-mcp
 ```
 
 Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/GET /mcp`.
 
-### Available tools
+### Workspace Tools
 
-| Tool | Description |
-|------|-------------|
-| `projects_create` | Register a new project. Returns `workingDirectory` + `post_create_actions` |
-| `projects_list` | List projects, filter by `status` and/or `tags` |
-| `projects_get` | Get project by ID or slug. Returns `workingDirectory` |
-| `projects_update` | Update project metadata |
-| `projects_archive` | Archive a project |
-| `projects_open` | Get `workingDirectory` for a project (also tracks `last_opened_at`) |
-| `projects_sync` | Sync to/from S3 (incremental, by file hash) |
-| `projects_sync_all` | Sync all active projects with S3 configured |
-| `projects_sync_log` | List recent sync history |
-| `projects_link` | Store integration IDs (todos, mementos, conversations, files) |
-| `projects_import` | Import an existing directory as a project |
-| `projects_import_bulk` | Import all subdirectories of a path |
-| `projects_publish` | Create GitHub repo, add remote, push |
-| `projects_workdir_add` | Add a working directory; optionally generate CLAUDE.md + AGENTS.md |
-| `projects_workdir_list` | List all working directories for a project |
-| `projects_workdir_generate` | Generate CLAUDE.md + AGENTS.md in working directories |
-| `projects_schedule_set` | Enable cron-based auto-sync |
-| `projects_schedule_status` | Get current schedule config |
-| `projects_cloud_status` | Show RDS connection health |
-| `projects_cloud_pull` | Pull from cloud PostgreSQL to local SQLite |
-| `projects_cloud_push` | Push local SQLite to cloud PostgreSQL |
-| `projects_context` | Full agent handoff context for one project |
-| `projects_where` | Workdir locations across machines with existence flags |
-| `projects_setup_machine` | Machine readiness checks for Bun, tmux, git, gh, AWS, paths |
-| `projects_stale` | Find stale paths, workdirs, orphan tmux sessions, and dead windows |
-| `projects_cleanup` | Preview/apply safe stale workdir cleanup |
-| `projects_tmux_window_status` | Check tmux window alive/dead/missing state |
-| `projects_tmux_dead_windows` | List dead tmux windows |
-| `projects_tmux_revive_window` | Safely recreate missing/dead tmux windows |
+| Tool | Purpose |
+| --- | --- |
+| `projects_roots_list` / `projects_roots_add` / `projects_roots_show` / `projects_roots_update` / `projects_roots_delete` / `projects_roots_match` | Register, inspect, score, update, and delete root folders/path templates |
+| `projects_recipes_list` / `projects_recipes_add` | Manage recipe defaults for workspace creation |
+| `projects_agents_list` / `projects_agents_add` | Register human, CLI, service, and AI agents |
+| `projects_tmux_profiles_list` / `projects_tmux_profiles_add` / `projects_tmux_profiles_apply` | Manage reusable tmux sessions/windows |
+| `projects_workspaces_list` / `projects_workspaces_show` | Search and inspect generic workspaces |
+| `projects_workspaces_create` | Plan or create a workspace anywhere on disk |
+| `projects_workspaces_cleanup_create` | Clean up DB/files created by a workspace creation run using rollback records |
+| `projects_workspaces_import` | Import existing folders as workspaces |
+| `projects_workspaces_scan_roots` | Scan registered roots and preview/import child folders |
+| `projects_workspaces_import_github` | Import GitHub repos as local or remote-only workspaces |
+| `projects_workspaces_github_publish` / `projects_workspaces_github_unpublish` | Publish/unlink GitHub workspace metadata |
+| `projects_workspaces_integrations_link` | Merge external service IDs into workspace integrations |
+| `projects_workspaces_update` | Update workspace metadata with audit events |
+| `projects_workspaces_archive` / `projects_workspaces_unarchive` / `projects_workspaces_delete` | Change workspace lifecycle status |
+| `projects_workspaces_doctor` | Validate markers, paths, locations, references, and failed runs |
+| `projects_workspaces_lock` / `projects_workspaces_unlock` / `projects_workspaces_locks` | Coordinate workspace mutations |
+| `projects_workspaces_migrate_legacy` | One-time migration from legacy project rows with dry-run, backup, and report support |
+| `projects_agent_eval` | Run prompt-agent eval cases and return success/confidence |
+| `projects_agent_prompt` | Run the AI SDK/OpenRouter workspace agent loop |
 
-### projects_create response
+The MCP server no longer exposes legacy project-specific tools such as `projects_create`, `projects_list`, `projects_update`, or `projects_sync`.
 
-```json
-{
-  "id": "prj_abc123",
-  "name": "my-app",
-  "path": "/path/to/my-app",
-  "workingDirectory": "/path/to/my-app",
-  "instruction": "Project created. workingDirectory: /path/to/my-app",
-  "post_create_actions": [
-    {
-      "description": "Register with open-todos for task tracking",
-      "tool": "mcp__todos__create_project",
-      "args": { "name": "my-app", "path": "/path/to/my-app" },
-      "on_complete": "Call projects_link with todos_project_id=<returned id>"
-    }
-  ]
-}
+## Prompt Mode
+
+Prompt mode uses AI SDK with OpenRouter. Configure the key with `OPENROUTER_API_KEY`, `WORKSPACES_OPENROUTER_API_KEY`, or the local secrets vault. The default model is `openai/gpt-4o-mini`.
+
+Mutations require `--yes`. Without approval, mutating tools return structured plans/previews. `--dry-run` forces no-write behavior even if `--yes` is present.
+
+The prompt agent can inspect roots, recipes, agents, tmux profiles, and workspaces; create/update/archive/delete/import workspaces; import/publish GitHub repos; link external integrations; and plan/apply tmux profiles. It records agent runs and tool calls in SQLite.
+
+`projects workspaces agent-eval` seeds temporary workspace fixtures and runs a repeatable prompt suite over create, constrained root/recipe creation, import, update, archive, delete, tmux planning, GitHub publish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate` and `confidence`.
+
+## Data Model
+
+Core tables:
+
+- `roots`: named base folders, tags, path templates, default kind/recipe/tmux profile, GitHub defaults
+- `recipes`: reusable creation metadata, variables, default tags, and scaffold steps
+- `agents`: human, CLI, service, and AI actors with provider/model/permissions metadata
+- `workspaces`: generic workspace records with kind, status, root, recipe, path, tags, integrations, and metadata
+- `workspace_locations`: machine-local paths for a workspace
+- `workspace_events`: immutable audit events for mutations and runtime actions
+- `agent_runs`: prompt-loop run ledger with tool calls and results
+- `tmux_profiles` / `tmux_profile_windows`: reusable tmux session/window templates
+- `workspace_locks`: short-lived mutation locks
+- `workspace_migration_map`: one-time legacy project-to-workspace mapping
+
+DB path: `~/.hasna/workspaces/workspaces.db`
+
+Override: `HASNA_WORKSPACES_DB_PATH`
+
+## Legacy Migration
+
+`projects workspaces migrate-legacy` is a one-time full migration from old `projects` and `project_workdirs` rows into generic workspace tables. Use `--dry-run` first; it runs against a temporary SQLite copy and leaves the source DB untouched. Real runs create a pre-migration database snapshot by default unless `--no-backup` is passed.
+
+JSON output includes before/after counts, project/workdir validation, sample mappings, backup paths, report path, and a release checklist for MCP config review, verification, publish, and rollback.
+
+The final domain, root inventory, ID prefixes, marker strategy, and old-to-new mapping are documented in [docs/workspace-migration-contract.md](docs/workspace-migration-contract.md).
+
+## SDK
+
+The public SDK exports workspace domain types and services only:
+
+```ts
+import {
+  createWorkspace,
+  updateWorkspace,
+  planWorkspaceCreation,
+  executeWorkspaceCreation,
+  runWorkspaceAgentPrompt,
+} from "@hasna/projects";
 ```
 
 ## Architecture
 
-```
+```text
 src/
 ├── cli/
-│   ├── index.ts              # CLI entry point (commander)
+│   ├── index.ts                 # workspace CLI and prompt entrypoint
 │   └── commands/
-│       ├── projects.ts       # All project commands
-│       └── completion.ts     # Shell completion
+│       ├── workspaces.ts         # roots, recipes, agents, tmux profiles, workspaces
+│       └── completion.ts         # workspace shell completion
 ├── db/
-│   ├── database.ts           # SQLite init, path resolution
-│   ├── schema.ts             # Migrations
-│   └── projects.ts           # CRUD + sync log
+│   ├── database.ts               # SQLite init/path resolution
+│   ├── schema.ts                 # migrations
+│   └── workspaces.ts             # workspace/root/recipe/agent/tmux services
 ├── lib/
-│   ├── git.ts                # git init, .gitignore, passthrough
-│   ├── sync.ts               # S3 incremental sync
-│   ├── project-context.ts    # Agent handoff context
-│   ├── setup-machine.ts      # Machine readiness checks
-│   ├── stale.ts              # Stale project/workdir/tmux findings
-│   ├── import.ts             # Import existing projects
-│   ├── github.ts             # GitHub publish via gh CLI
-│   └── scheduler.ts          # Cron auto-sync
+│   ├── workspace-agent.ts        # AI SDK/OpenRouter prompt loop
+│   ├── workspace-github.ts       # GitHub import/publish and integration linking
+│   ├── workspace-plan.ts         # deterministic creation plans/executor
+│   ├── workspace-runtime.ts      # directory/git/marker/tmux runtime actions
+│   ├── workspace-import.ts       # arbitrary folder and registered-root import scanner
+│   ├── workspace-migration.ts    # legacy migration dry-run, backup, and reports
+│   └── workspace-doctor.ts       # marker/path/reference validation
 ├── mcp/
-│   └── index.ts              # MCP server (all tools)
+│   └── index.ts                  # workspace-only MCP server
 ├── types/
-│   └── index.ts              # Types + error classes
-└── index.ts                  # SDK exports
+│   └── workspace.ts              # public workspace domain types
+└── index.ts                      # workspace-only SDK exports
 ```
 
-## Data model
-
-**projects** — `id` (`prj_` + nanoid12), `slug`, `name`, `description`, `status`, `path`, `s3_bucket`, `s3_prefix`, `git_remote`, `tags`, `integrations`, `created_at`, `updated_at`, `synced_at`
-
-**project_files** — `project_id`, `relative_path`, `size`, `hash`, `synced_at`
-
-**sync_log** — `project_id`, `direction`, `status`, `files_synced`, `bytes`, `error`, `started_at`, `completed_at`
-
-DB path: `~/.hasna/projects/projects.db` (override: `HASNA_PROJECTS_DB_PATH`)
-
-## Ecosystem integration
-
-`projects_create` returns `post_create_actions` — an array of MCP calls the agent should make to register the project with:
-
-- **open-todos** (`mcp__todos__create_project`) — task tracking
-- **open-mementos** (`mcp__mementos__register_project`) — persistent memory
-- **open-conversations** (`mcp__conversations__create_space`) — team coordination (optional)
-
-After each call, use `projects_link` to store the returned IDs in the project record and `.project.json`.
-
-## S3 sync
-
-- S3 path: `s3://{bucket}/{prefix}/projects/{project-id}/{relative-path}`
-- Incremental: compares local MD5 vs S3 ETag, skips unchanged files
-- Skips files >100MB
-- Includes `.git/` for full restorability
-- Writes sync history to `sync_log` table
+Legacy `project` modules may still exist internally during the migration window so existing rows can be migrated once with `projects workspaces migrate-legacy`, but they are no longer part of the CLI, MCP, or public SDK surface.
 
 ## License
 

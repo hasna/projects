@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
 import { getDatabase, getDbPath, resolvePartialId, now, uuid } from "./database.js";
 import { runMigrations } from "./schema.js";
-import { createProject } from "./projects.js";
+import { createWorkspace } from "./workspaces.js";
 
 describe("database", () => {
   describe("getDatabase", () => {
@@ -31,22 +31,16 @@ describe("database", () => {
   });
 
   describe("getDbPath", () => {
-    test("uses HASNA_PROJECTS_DB_PATH env var", () => {
-      process.env["HASNA_PROJECTS_DB_PATH"] = "/custom/env.db";
+    test("uses HASNA_WORKSPACES_DB_PATH env var", () => {
+      process.env["HASNA_WORKSPACES_DB_PATH"] = "/custom/env.db";
       expect(getDbPath()).toBe("/custom/env.db");
-      delete process.env["HASNA_PROJECTS_DB_PATH"];
-    });
-
-    test("falls back to PROJECTS_DB_PATH env var", () => {
-      process.env["PROJECTS_DB_PATH"] = "/legacy/path.db";
-      expect(getDbPath()).toBe("/legacy/path.db");
-      delete process.env["PROJECTS_DB_PATH"];
+      delete process.env["HASNA_WORKSPACES_DB_PATH"];
     });
 
     test("returns default path when no env vars", () => {
       const path = getDbPath();
       expect(path).toContain(".hasna");
-      expect(path).toContain("projects.db");
+      expect(path).toContain("workspaces.db");
     });
   });
 
@@ -69,18 +63,18 @@ describe("database", () => {
       expect(resolvePartialId("ab", db)).toBeNull();
     });
 
-    test("returns null when no project exists", () => {
+    test("returns null when no workspace exists", () => {
       const db = getDatabase(":memory:");
-      expect(resolvePartialId("prj_1234", db)).toBeNull();
+      expect(resolvePartialId("wks_1234", db)).toBeNull();
     });
 
     test("matches partial id prefix", () => {
       const db = getDatabase(":memory:");
       const dir = mkdtempSync(join(tmpdir(), "db-partial-"));
-      const p = createProject({ name: "Partial", path: dir, git_init: false }, db);
-      const partial = p.id.slice(0, 8);
+      const workspace = createWorkspace({ name: "Partial", primary_path: dir, kind: "generic" }, db);
+      const partial = workspace.id.slice(0, 8);
       const result = resolvePartialId(partial, db);
-      expect(result).toBe(p.id);
+      expect(result).toBe(workspace.id);
       rmSync(dir, { recursive: true });
       db.close();
     });

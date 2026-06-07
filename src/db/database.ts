@@ -4,14 +4,11 @@ import { dirname, join, resolve } from "node:path";
 import { runMigrations } from "./schema.js";
 
 export function getDbPath(): string {
-  if (process.env["HASNA_PROJECTS_DB_PATH"]) {
-    return process.env["HASNA_PROJECTS_DB_PATH"];
-  }
-  if (process.env["PROJECTS_DB_PATH"]) {
-    return process.env["PROJECTS_DB_PATH"];
+  if (process.env["HASNA_WORKSPACES_DB_PATH"]) {
+    return process.env["HASNA_WORKSPACES_DB_PATH"];
   }
   const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
-  return join(home, ".hasna", "projects", "projects.db");
+  return join(home, ".hasna", "workspaces", "workspaces.db");
 }
 
 function ensureDir(filePath: string): void {
@@ -58,7 +55,7 @@ export function resolvePartialId(partial: string, db?: Database): string | null 
   const d = db || getDatabase();
   if (partial.length < 4) return null;
   const row = d
-    .query("SELECT id FROM projects WHERE id LIKE ? OR slug = ? LIMIT 1")
+    .query("SELECT id FROM workspaces WHERE id LIKE ? OR slug = ? LIMIT 1")
     .get(`${partial}%`, partial) as { id: string } | null;
   return row?.id ?? null;
 }

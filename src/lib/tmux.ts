@@ -1,6 +1,4 @@
 import { execSync } from "node:child_process";
-import type { Project } from "../types/index.js";
-import { getConfig } from "./config.js";
 
 function run(cmd: string): string {
   return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
@@ -77,13 +75,6 @@ export interface TmuxGroup {
   name: string;
   sessions: string[];
   windows: number;
-}
-
-export function getTmuxSessionName(project: Pick<Project, "name" | "path" | "slug">): string {
-  // The session is named exactly after the project's repo/folder (its slug).
-  // One standalone session per project — no master group, no linked sessions,
-  // and the window name always matches the session name (see createTmuxWindow).
-  return project.slug || project.name;
 }
 
 export function listGroups(): TmuxGroup[] {
@@ -241,7 +232,7 @@ export function reviveWindow(session: string, window: string, options: ReviveWin
   } else if (before.dead || options.force === true) {
     const windows = listWindows(session);
     if (windows.length <= 1) {
-      const tmpName = `projects-revive-${Date.now()}`;
+      const tmpName = `workspaces-revive-${Date.now()}`;
       createWindow(session, tmpName, undefined, { cwd, detached: true });
       killWindow(session, before.name);
       createWindow(session, windowName, options.command, {
@@ -277,7 +268,6 @@ export function reviveWindow(session: string, window: string, options: ReviveWin
 }
 
 export function restartSession(name: string, projectPath?: string, windowName?: string): void {
-  const config = getConfig();
   const win = windowName || name;
 
   try {
@@ -296,10 +286,6 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
   if (projectPath) {
     const winId = findWindowId(name, win);
     run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(projectPath)}" Enter`);
-  }
-  if (config.launch_takumi !== false && projectPath) {
-    const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} "takumi" Enter`);
   }
 }
 
@@ -334,61 +320,6 @@ export function findDeadSessions(sessions?: TmuxSession[]): string[] {
     }
   }
   return dead;
-}
-
-export function createTmuxWindow(project: Project, windowName?: string): boolean {
-  const { path } = project;
-  const config = getConfig();
-
-  const sessionName = getTmuxSessionName(project);
-  // The window name always matches the session/folder name unless explicitly
-  // overridden (e.g. iapp-takumi-01). One session, one window, same name.
-  const winName = windowName || sessionName;
-
-  try {
-    // Check if session already exists
-    const sessions = listSessions();
-    const existingSession = sessions.find((session) => session.name === sessionName);
-    const sessionExists = Boolean(existingSession);
-
-    if (existingSession?.group) {
-      // Older versions linked project sessions into shared groups, causing attach
-      // to show unrelated windows. Recreate those sessions as isolated projects.
-      killSession(sessionName);
-    }
-
-    if (sessionExists && !existingSession?.group) {
-      // Check if a window with this name already exists
-      const windows = listWindows(sessionName);
-      const existingWindow = windows.find((w) => w.name === winName);
-      if (existingWindow) {
-        // Window already exists — just select it
-        run(`tmux select-window -t ${shellEscape(`${sessionName}:${existingWindow.name}`)}`);
-        return true;
-      }
-      // Session exists but with different windows — don't create duplicates
-      // Just select the existing session's first window
-      if (windows.length > 0) {
-        run(`tmux select-window -t ${shellEscape(`${sessionName}:${windows[0]!.name}`)}`);
-        return true;
-      }
-      // Session exists but has no windows (edge case) — add one
-      run(`tmux new-window -t ${shellEscape(sessionName)} -n ${shellEscape(winName)}`);
-    } else {
-      // Create standalone session with the desired window name directly.
-      // Project isolation is intentional; linked groups share windows across sessions.
-      run(`tmux new-session -d -s ${shellEscape(sessionName)} -n ${shellEscape(winName)}`);
-    }
-
-    if (config.launch_takumi !== false) {
-      const winId = findWindowId(sessionName, winName);
-      run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(path)} && takumi" Enter`);
-    }
-    return true;
-  } catch {
-    // Non-fatal — tmux may not be available
-    return false;
-  }
 }
 
 export function attachSession(name: string): void {
