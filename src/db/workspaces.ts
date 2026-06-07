@@ -715,8 +715,8 @@ export function listWorkspaces(filter: WorkspaceFilter = {}, db?: Database): Wor
   if (filter.root_id) { conditions.push("root_id = ?"); params.push(filter.root_id); }
   if (filter.query) {
     const q = `%${filter.query.toLowerCase()}%`;
-    conditions.push("(lower(name) LIKE ? OR lower(slug) LIKE ? OR lower(COALESCE(description, '')) LIKE ? OR lower(COALESCE(primary_path, '')) LIKE ?)");
-    params.push(q, q, q, q);
+    conditions.push("(lower(name) LIKE ? OR lower(slug) LIKE ? OR lower(COALESCE(description, '')) LIKE ? OR lower(COALESCE(primary_path, '')) LIKE ? OR lower(COALESCE(tags, '')) LIKE ? OR lower(COALESCE(integrations, '')) LIKE ? OR lower(COALESCE(metadata, '')) LIKE ?)");
+    params.push(q, q, q, q, q, q, q);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";

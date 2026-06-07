@@ -71,6 +71,51 @@ describe("workspace agent CLI", () => {
     expect(existsSync(targetPath)).toBe(false);
   });
 
+  test("prompt mode reports an existing workspace instead of creating a duplicate", () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-agent-duplicate-"));
+    const dbPath = join(root, "workspaces.db");
+    const targetPath = join(root, "existing-security");
+    const env = {
+      HASNA_WORKSPACES_DB_PATH: dbPath,
+      WORKSPACES_AGENT_MOCK: "1",
+    };
+
+    const create = runProjects([
+      "workspaces",
+      "create",
+      "--name",
+      "Existing Security",
+      "--slug",
+      "existing-security",
+      "--description",
+      "Home security camera planning",
+      "--path",
+      targetPath,
+      "--tags",
+      "family-security,security-cameras",
+      "--json",
+    ], env);
+    expect(create.exitCode).toBe(0);
+
+    const res = runProjects(["--yes", "--json", `create "Existing Security" in ${targetPath}`], env);
+    expect(res.exitCode).toBe(0);
+    const payload = JSON.parse(text(res.stdout)) as {
+      text: string;
+      workspaces: unknown[];
+      tool_calls: Array<{ output?: { status?: string; workspace?: { slug?: string } } }>;
+    };
+
+    expect(payload.workspaces).toHaveLength(0);
+    expect(payload.text).toContain("already exists");
+    expect(payload.tool_calls[0]?.output?.status).toBe("already_exists");
+    expect(payload.tool_calls[0]?.output?.workspace?.slug).toBe("existing-security");
+
+    const list = runProjects(["workspaces", "list", "--query", "security", "--json"], env);
+    expect(list.exitCode).toBe(0);
+    const rows = JSON.parse(text(list.stdout)) as Array<{ slug: string }>;
+    expect(rows.filter((row) => row.slug === "existing-security")).toHaveLength(1);
+  });
+
   test("prompt flags constrain root, recipe, actor agent, and tmux planning", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-flags-"));
     const dbPath = join(root, "workspaces.db");

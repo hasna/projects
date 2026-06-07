@@ -15,6 +15,7 @@ import {
   getRecipeBySlug,
   getRoot,
   getRootBySlug,
+  getWorkspaceByPath,
   listAgents,
   listRecipes,
   listRoots,
@@ -53,6 +54,7 @@ import { WORKSPACE_KINDS, type Agent, type JsonObject, type Workspace, type Work
 
 export const DEFAULT_WORKSPACE_AGENT_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_SECRET_KEYS = ["hasna/takumi/live/openrouter_api_key", "openrouter/api_key", "OPENROUTER_API_KEY"];
+const DEFAULT_WORKSPACE_AGENT_CONTEXT_LIMIT = 500;
 
 export interface WorkspaceAgentPromptOptions {
   prompt: string;
@@ -163,11 +165,70 @@ function compactWorkspace(workspace: Workspace): JsonObject {
     id: workspace.id,
     slug: workspace.slug,
     name: workspace.name,
+    description: workspace.description,
     kind: workspace.kind,
     status: workspace.status,
+    root_id: workspace.root_id,
+    recipe_id: workspace.recipe_id,
     primary_path: workspace.primary_path,
+    git_remote: workspace.git_remote,
+    s3_bucket: workspace.s3_bucket,
+    s3_prefix: workspace.s3_prefix,
     tags: workspace.tags,
+    integrations: workspace.integrations,
+    metadata: workspace.metadata,
+    created_at: workspace.created_at,
+    updated_at: workspace.updated_at,
+    last_opened_at: workspace.last_opened_at,
+    synced_at: workspace.synced_at,
   };
+}
+
+function workspaceContextLimit(): number {
+  const raw = process.env["WORKSPACES_AGENT_CONTEXT_LIMIT"];
+  if (!raw) return DEFAULT_WORKSPACE_AGENT_CONTEXT_LIMIT;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_WORKSPACE_AGENT_CONTEXT_LIMIT;
+  return Math.min(parsed, 1_000);
+}
+
+export function buildWorkspaceInventoryContext(limit = workspaceContextLimit()): JsonObject {
+  const workspaces = listWorkspaces({ limit }).map(compactWorkspace);
+  return {
+    count: workspaces.length,
+    limit,
+    workspaces,
+  };
+}
+
+export function buildWorkspaceAgentSystemPrompt(input: {
+  actorAgentId: string;
+  forcedRootId?: string;
+  forcedRecipeId?: string;
+  tmuxAllowed: boolean;
+  workspaceInventory?: JsonObject;
+}): string {
+  const inventory = input.workspaceInventory ?? buildWorkspaceInventoryContext();
+  return [
+    "You are the open-projects workspace orchestration agent.",
+    "The workspace_inventory JSON below is loaded from recorded workspaces before this run. Treat it as the first source of truth for deduplication and for knowing existing project metadata.",
+    "Before creating anything, compare the user request against workspace_inventory by name, slug, path, tags, integrations, and metadata. If a matching workspace already exists, use workspace_show, workspace_update, workspace_event_record, workspace_tmux_apply, or another existing-workspace tool instead of creating a duplicate.",
+    "If the request may refer to an existing workspace and the inventory is not specific enough, call workspaces_list with query/tags/kind/status or workspace_show before deciding.",
+    "Use tools to inspect roots, recipes, agents, and existing workspaces before creating anything.",
+    "A workspace can represent any project or repository in any folder, not only a fixed projects/ directory.",
+    `Prompt constraints: acting agent id is ${input.actorAgentId};${input.forcedRootId ? ` root id ${input.forcedRootId} is required for new workspaces;` : ""}${input.forcedRecipeId ? ` recipe id ${input.forcedRecipeId} is required for new workspaces;` : ""} tmux is ${input.tmuxAllowed ? "allowed" : "disabled"}.`,
+    "Prefer an explicit user-requested path when present. Otherwise select a registered root whose tags/kind match the request.",
+    "If a prompt constraint provides a required root or recipe, pass that root/recipe to workspace_create or let the tool apply the constraint; do not choose a different one.",
+    "If a required root is provided, do not invent or pass a workspace path; let the root path template determine the path.",
+    "Only mutating tools are allowed to make changes, and those tools will refuse to mutate unless the CLI was run with --yes.",
+    "For every requested mutation, call the corresponding mutating tool even in dry-run mode so it returns a structured planned action. Do not only describe a change after inspection.",
+    "Use workspace_plan_create for explicit no-write planning, workspace_update for requested metadata changes, workspace_archive/workspace_unarchive for status changes, workspace_delete for lifecycle deletion, workspace_cleanup_create for cleaning up a partial or unwanted creation run, workspace_import for one-folder import requests, workspace_scan_roots for broad registered-root scans/imports, workspace_github_import for GitHub repository imports, workspace_github_publish for GitHub publication, workspace_integrations_link for external IDs, workspace_verification_run for checks, workspace_event_record for custom audit events, and workspace_create for new workspaces.",
+    "When a user asks for tmux or mentions a saved tmux profile, call tmux_profiles_list before workspace_create or workspace_tmux_apply. The tools reject saved profile usage until profiles have been inspected.",
+    "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in workspace_create, even if the user mentions tmux.",
+    "When creating a local workspace directory, write a .workspace.json marker unless the user explicitly asks not to.",
+    "Finish with a concise summary of the plan or what was changed.",
+    `workspace_inventory=${JSON.stringify(inventory)}`,
+  ].join("\n");
 }
 
 function resolveRootId(idOrSlug: string | undefined): string | undefined {
@@ -227,6 +288,42 @@ function inferPathFromPrompt(prompt: string): string | undefined {
 function isCreateIntent(prompt: string): boolean {
   const text = prompt.toLowerCase();
   return /\b(plan|create|make|new|scaffold)\b/.test(text) && /\b(workspace|project|repo|repository|folder|directory|app|tool|site|service)\b/.test(text);
+}
+
+function comparisonKey(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function findExistingWorkspaceForCreate(input: {
+  name: string;
+  slug?: string;
+  primary_path?: string;
+  path?: string;
+}): Workspace | null {
+  if (input.slug) {
+    const bySlug = resolveWorkspace(input.slug);
+    if (bySlug) return bySlug;
+  }
+
+  const path = input.primary_path ?? input.path;
+  if (path) {
+    const byPath = getWorkspaceByPath(path);
+    if (byPath) return byPath;
+  }
+
+  const nameKey = comparisonKey(input.name);
+  if (!nameKey) return null;
+  return listWorkspaces({ query: input.name, limit: 25 }).find((workspace) => (
+    comparisonKey(workspace.name) === nameKey || comparisonKey(workspace.slug) === nameKey
+  )) ?? null;
+}
+
+function existingWorkspaceOutput(workspace: Workspace): JsonObject {
+  return {
+    status: "already_exists",
+    workspace: compactWorkspace(workspace),
+    note: "A matching recorded workspace already exists. Use update/link/tmux tools for changes instead of creating a duplicate.",
+  };
 }
 
 function hasToolCall(toolCalls: JsonObject[], name: string): boolean {
@@ -326,6 +423,19 @@ function fallbackWorkspaceCreate(
     prompt: options.prompt,
     command: options.command,
   };
+  const existing = findExistingWorkspaceForCreate(workspaceInput);
+  if (existing) {
+    return {
+      text: `Workspace ${existing.slug} already exists at ${existing.primary_path ?? "no local path"}.`,
+      call: {
+        name: "workspace_create",
+        input: workspaceInput,
+        success: true,
+        fallback: true,
+        output: existingWorkspaceOutput(existing),
+      },
+    };
+  }
 
   if (options.approve && !options.dryRun) {
     const result = executeWorkspaceCreation(workspaceInput);
@@ -392,6 +502,37 @@ async function runMockPrompt(
     command: options.command,
     tags: ["agent-created"],
   };
+  const existing = findExistingWorkspaceForCreate(workspaceInput);
+  if (existing) {
+    const output = existingWorkspaceOutput(existing);
+    const text = `Workspace ${existing.slug} already exists at ${existing.primary_path ?? "no local path"}.`;
+    const toolCalls: JsonObject[] = [{
+      name: "workspace_create",
+      input: workspaceInput,
+      dry_run: options.dryRun,
+      approved: options.approve,
+      output,
+    }];
+    completeAgentRun(runId, {
+      status: "completed",
+      workspace_id: existing.id,
+      tool_calls: toolCalls,
+      result: { text, workspaces: [], existing_workspace: compactWorkspace(existing) },
+    });
+    return {
+      mode: "mock",
+      run_id: runId,
+      agent_id: agent.id,
+      provider: "openrouter",
+      model: options.model,
+      actor_agent_id: agent.id,
+      approved: options.approve,
+      dry_run: options.dryRun,
+      text,
+      workspaces: [],
+      tool_calls: toolCalls,
+    };
+  }
 
   const workspaces: Workspace[] = [];
   const plan = planWorkspaceCreation(workspaceInput);
@@ -573,12 +714,21 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       })),
     }),
     workspaces_list: tool({
-      description: "List existing workspaces for deduplication before creating a new one.",
+      description: "List existing workspaces for deduplication before creating a new one. Returns descriptions, tags, integrations, and metadata.",
       inputSchema: z.object({
         kind: z.enum(WORKSPACE_KINDS).optional(),
-        limit: z.number().int().positive().max(100).optional(),
+        status: z.enum(["active", "archived", "deleted"]).optional(),
+        query: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        limit: z.number().int().positive().max(500).optional(),
       }),
-      execute: async (input) => listWorkspaces({ kind: input.kind, limit: input.limit ?? 50 }).map(compactWorkspace),
+      execute: async (input) => listWorkspaces({
+        kind: input.kind,
+        status: input.status,
+        query: input.query,
+        tags: input.tags,
+        limit: input.limit ?? 100,
+      }).map(compactWorkspace),
     }),
     workspace_show: tool({
       description: "Resolve one workspace by id or slug and return its core metadata.",
@@ -922,6 +1072,12 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           prompt: options.prompt,
           command,
         };
+        const existing = findExistingWorkspaceForCreate({
+          name: createInput.name,
+          slug: createInput.slug,
+          primary_path: forcedRootId ? undefined : input.path,
+        });
+        if (existing) return existingWorkspaceOutput(existing);
         return {
           status: "planned",
           plan: planWorkspaceCreation({
@@ -978,6 +1134,12 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           prompt: options.prompt,
           command,
         };
+        const existing = findExistingWorkspaceForCreate({
+          name: createInput.name,
+          slug: createInput.slug,
+          primary_path: forcedRootId ? undefined : input.path,
+        });
+        if (existing) return existingWorkspaceOutput(existing);
 
         if (!approve) {
           return {
@@ -1086,22 +1248,12 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
   try {
     const result = await generateText({
       model: provider(model),
-      system: [
-        "You are the open-projects workspace orchestration agent.",
-        "Use tools to inspect roots, recipes, agents, and existing workspaces before creating anything.",
-        "A workspace can represent any project or repository in any folder, not only a fixed projects/ directory.",
-        `Prompt constraints: acting agent id is ${actorAgent.id};${forcedRootId ? ` root id ${forcedRootId} is required for new workspaces;` : ""}${forcedRecipeId ? ` recipe id ${forcedRecipeId} is required for new workspaces;` : ""} tmux is ${tmuxAllowed ? "allowed" : "disabled"}.`,
-        "Prefer an explicit user-requested path when present. Otherwise select a registered root whose tags/kind match the request.",
-        "If a prompt constraint provides a required root or recipe, pass that root/recipe to workspace_create or let the tool apply the constraint; do not choose a different one.",
-        "If a required root is provided, do not invent or pass a workspace path; let the root path template determine the path.",
-        "Only mutating tools are allowed to make changes, and those tools will refuse to mutate unless the CLI was run with --yes.",
-        "For every requested mutation, call the corresponding mutating tool even in dry-run mode so it returns a structured planned action. Do not only describe a change after inspection.",
-        "Use workspace_plan_create for explicit no-write planning, workspace_update for requested metadata changes, workspace_archive/workspace_unarchive for status changes, workspace_delete for lifecycle deletion, workspace_cleanup_create for cleaning up a partial or unwanted creation run, workspace_import for one-folder import requests, workspace_scan_roots for broad registered-root scans/imports, workspace_github_import for GitHub repository imports, workspace_github_publish for GitHub publication, workspace_integrations_link for external IDs, workspace_verification_run for checks, workspace_event_record for custom audit events, and workspace_create for new workspaces.",
-        "When a user asks for tmux or mentions a saved tmux profile, call tmux_profiles_list before workspace_create or workspace_tmux_apply. The tools reject saved profile usage until profiles have been inspected.",
-        "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in workspace_create, even if the user mentions tmux.",
-        "When creating a local workspace directory, write a .workspace.json marker unless the user explicitly asks not to.",
-        "Finish with a concise summary of the plan or what was changed.",
-      ].join("\n"),
+      system: buildWorkspaceAgentSystemPrompt({
+        actorAgentId: actorAgent.id,
+        forcedRootId,
+        forcedRecipeId,
+        tmuxAllowed,
+      }),
       prompt: options.prompt,
       tools,
       stopWhen: stepCountIs(options.maxSteps ?? 6),

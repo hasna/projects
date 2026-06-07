@@ -1043,7 +1043,7 @@ function registerWorkspacesCommand(program: Command): void {
     .command("list")
     .option("--kind <kind>", "Filter by kind")
     .option("--status <status>", "Filter by status")
-    .option("--query <text>", "Search name, slug, description, or path")
+    .option("--query <text>", "Search name, slug, description, path, tags, integrations, or metadata")
     .option("--tags <tags>", "Comma-separated tag filter")
     .option("-j, --json", "Output JSON")
     .action((opts) => {

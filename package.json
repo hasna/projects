@@ -1,6 +1,6 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.52",
+  "version": "0.1.53",
   "description": "Generic workspace orchestration CLI, MCP server, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",
