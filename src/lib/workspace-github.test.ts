@@ -69,6 +69,11 @@ describe("workspace GitHub services", () => {
     expect(local.remote_only).toBe(false);
     expect(local.path).toBe(join(rootPath, "open-example"));
     expect(local.commands[0]).toContain("gh repo clone hasna/example");
+
+    const localRootWins = planWorkspaceGitHubImport("hasna/example-two", { root: root.id, remoteOnly: true, db });
+    expect(localRootWins.remote_only).toBe(false);
+    expect(localRootWins.path).toBe(join(rootPath, "open-example-two"));
+    expect(localRootWins.commands).toEqual([]);
     rmSync(rootPath, { recursive: true, force: true });
     db.close();
   });

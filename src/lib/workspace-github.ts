@@ -415,7 +415,8 @@ export function planWorkspaceGitHubImport(repoInput: string, options: WorkspaceG
     ?? root?.default_kind
     ?? inferWorkspaceKind(slug, explicitPath ?? parsed.fullName, tags);
   const shouldClone = Boolean(options.clone);
-  const remoteOnly = options.remoteOnly ?? (!shouldClone && !explicitPath && !root);
+  const hasLocalTarget = Boolean(shouldClone || explicitPath || root);
+  const remoteOnly = !hasLocalTarget && (options.remoteOnly ?? true);
   const targetPath = remoteOnly
     ? null
     : explicitPath ?? (root ? rootDerivedPath(root, slug, parsed.repo, kind, parsed.org) : resolve(parsed.repo));

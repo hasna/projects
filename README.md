@@ -135,7 +135,7 @@ Mutations require `--yes`. Without approval, mutating tools return structured pl
 
 The prompt agent can inspect roots, recipes, agents, tmux profiles, and workspaces; create/update/archive/delete/import workspaces; import/publish GitHub repos; link external integrations; and plan/apply tmux profiles. It records agent runs and tool calls in SQLite.
 
-`projects workspaces agent-eval` seeds temporary workspace fixtures and runs a repeatable prompt suite over create, constrained root/recipe creation, import, update, archive, delete, tmux planning, GitHub publish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate` and `confidence`.
+`projects workspaces agent-eval` seeds temporary workspace fixtures and runs a repeatable 32-case prompt suite over root registration/matching, recipe and agent planning, workspace listing/show/events, create/deduplication, import/scan, update, archive/unarchive, delete/hard-delete, cleanup, verification, tmux planning, GitHub publish/unpublish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate` and `confidence`.
 
 ## Data Model
 

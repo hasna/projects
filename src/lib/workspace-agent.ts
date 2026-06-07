@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { z } from "zod/v4";
 import {
   acquireWorkspaceLock,
+  createRoot,
+  createRecipe,
   archiveWorkspace,
   deleteWorkspace,
   completeAgentRun,
   createAgent,
+  createTmuxProfile,
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
@@ -39,6 +42,7 @@ import {
   linkWorkspaceExternalIntegrations,
   normalizeWorkspaceIntegrations,
   publishWorkspaceToGitHub,
+  unpublishWorkspaceFromGitHub,
   type GitHubRemoteProtocol,
   type GitHubVisibility,
 } from "./workspace-github.js";
@@ -50,7 +54,7 @@ import {
   planWorkspaceCreation,
   type WorkspaceCreationPlanAction,
 } from "./workspace-plan.js";
-import { WORKSPACE_KINDS, type Agent, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
+import { AGENT_KINDS, WORKSPACE_KINDS, type Agent, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
 
 export const DEFAULT_WORKSPACE_AGENT_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_SECRET_KEYS = ["hasna/takumi/live/openrouter_api_key", "openrouter/api_key", "OPENROUTER_API_KEY"];
@@ -214,7 +218,7 @@ export function buildWorkspaceAgentSystemPrompt(input: {
     "The workspace_inventory JSON below is loaded from recorded workspaces before this run. Treat it as the first source of truth for deduplication and for knowing existing project metadata.",
     "Before creating anything, compare the user request against workspace_inventory by name, slug, path, tags, integrations, and metadata. If a matching workspace already exists, use workspace_show, workspace_update, workspace_event_record, workspace_tmux_apply, or another existing-workspace tool instead of creating a duplicate.",
     "If the request may refer to an existing workspace and the inventory is not specific enough, call workspaces_list with query/tags/kind/status or workspace_show before deciding.",
-    "Use tools to inspect roots, recipes, agents, and existing workspaces before creating anything.",
+    "Use roots_list/roots_match, recipes_list/recipe_get, agents_list, workspaces_list/workspace_show/workspace_events_list, and tmux_profiles_list to inspect recorded state before creating anything.",
     "A workspace can represent any project or repository in any folder, not only a fixed projects/ directory.",
     `Prompt constraints: acting agent id is ${input.actorAgentId};${input.forcedRootId ? ` root id ${input.forcedRootId} is required for new workspaces;` : ""}${input.forcedRecipeId ? ` recipe id ${input.forcedRecipeId} is required for new workspaces;` : ""} tmux is ${input.tmuxAllowed ? "allowed" : "disabled"}.`,
     "Prefer an explicit user-requested path when present. Otherwise select a registered root whose tags/kind match the request.",
@@ -222,7 +226,9 @@ export function buildWorkspaceAgentSystemPrompt(input: {
     "If a required root is provided, do not invent or pass a workspace path; let the root path template determine the path.",
     "Only mutating tools are allowed to make changes, and those tools will refuse to mutate unless the CLI was run with --yes.",
     "For every requested mutation, call the corresponding mutating tool even in dry-run mode so it returns a structured planned action. Do not only describe a change after inspection.",
-    "Use workspace_plan_create for explicit no-write planning, workspace_update for requested metadata changes, workspace_archive/workspace_unarchive for status changes, workspace_delete for lifecycle deletion, workspace_cleanup_create for cleaning up a partial or unwanted creation run, workspace_import for one-folder import requests, workspace_scan_roots for broad registered-root scans/imports, workspace_github_import for GitHub repository imports, workspace_github_publish for GitHub publication, workspace_integrations_link for external IDs, workspace_verification_run for checks, workspace_event_record for custom audit events, and workspace_create for new workspaces.",
+    "Use root_create for registering a new root/path, recipe_create for new creation recipes, agent_create for recording human/AI/service/CLI agents, and tmux_profile_create for saved tmux layouts.",
+    "Use workspace_plan_create for explicit no-write planning, workspace_update for requested metadata changes, workspace_archive/workspace_unarchive for status changes, workspace_delete for lifecycle deletion, workspace_cleanup_create for cleaning up a partial or unwanted creation run, workspace_import for one-folder import requests, workspace_scan_roots for broad registered-root scans/imports, workspace_github_import for GitHub repository imports, workspace_github_publish/workspace_github_unpublish for GitHub publication state, workspace_integrations_link for external IDs, workspace_verification_run for checks, workspace_event_record for custom audit events, and workspace_create for new workspaces.",
+    "For workspace_github_import, set remote_only=true only when the user explicitly wants a remote-only record and did not provide a root, path, or clone request. A root/path/clone request means local workspace registration.",
     "When a user asks for tmux or mentions a saved tmux profile, call tmux_profiles_list before workspace_create or workspace_tmux_apply. The tools reject saved profile usage until profiles have been inspected.",
     "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in workspace_create, even if the user mentions tmux.",
     "When creating a local workspace directory, write a .workspace.json marker unless the user explicitly asks not to.",
@@ -333,6 +339,10 @@ function hasToolCall(toolCalls: JsonObject[], name: string): boolean {
 function hasMutationToolCall(toolCalls: JsonObject[]): boolean {
   const mutationTools = new Set([
     "workspace_create",
+    "root_create",
+    "recipe_create",
+    "agent_create",
+    "tmux_profile_create",
     "workspace_update",
     "workspace_archive",
     "workspace_unarchive",
@@ -343,6 +353,7 @@ function hasMutationToolCall(toolCalls: JsonObject[]): boolean {
     "workspace_tmux_apply",
     "workspace_github_publish",
     "workspace_github_import",
+    "workspace_github_unpublish",
     "workspace_integrations_link",
     "workspace_event_record",
   ]);
@@ -695,6 +706,37 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         return matches.map((item) => ({ root: compactRoot(item.root), score: item.score, reasons: item.reasons }));
       },
     }),
+    root_create: tool({
+      description: "Register a new root/path where workspaces can be created. Mutates only when approved.",
+      inputSchema: z.object({
+        name: z.string().min(1),
+        path: z.string().min(1),
+        slug: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        kind: z.enum(WORKSPACE_KINDS).optional(),
+        github_org: z.string().optional(),
+        repo_visibility: z.enum(["public", "private"]).optional(),
+        path_template: z.string().optional(),
+        name_template: z.string().optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: async (input) => {
+        const rootInput = {
+          name: input.name,
+          slug: input.slug,
+          base_path: input.path,
+          tags: input.tags,
+          default_kind: input.kind,
+          github_org: input.github_org,
+          repo_visibility: input.repo_visibility,
+          path_template: input.path_template,
+          name_template: input.name_template,
+          metadata: input.metadata as JsonObject | undefined,
+        };
+        if (!approve) return { status: "planned", root: rootInput, note: "Run again with --yes to register this root." };
+        return { status: "created", root: compactRoot(createRoot(rootInput)) };
+      },
+    }),
     recipes_list: tool({
       description: "List workspace creation recipes with default kind, tags, and steps.",
       inputSchema: z.object({}),
@@ -717,6 +759,34 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         return recipe ?? { error: `Recipe not found: ${input.id_or_slug}` };
       },
     }),
+    recipe_create: tool({
+      description: "Create a workspace creation recipe. Mutates only when approved.",
+      inputSchema: z.object({
+        name: z.string().min(1),
+        slug: z.string().optional(),
+        description: z.string().optional(),
+        kind: z.enum(WORKSPACE_KINDS).optional(),
+        default_tags: z.array(z.string()).optional(),
+        steps: z.array(z.record(z.string(), z.unknown())).optional(),
+        variables: z.record(z.string(), z.unknown()).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: async (input) => {
+        const recipeInput = {
+          name: input.name,
+          slug: input.slug,
+          description: input.description,
+          kind: input.kind,
+          default_tags: input.default_tags,
+          steps: input.steps as JsonObject[] | undefined,
+          variables: input.variables as JsonObject | undefined,
+          metadata: input.metadata as JsonObject | undefined,
+        };
+        if (!approve) return { status: "planned", recipe: recipeInput, note: "Run again with --yes to create this recipe." };
+        const recipe = createRecipe(recipeInput);
+        return { status: "created", recipe: { id: recipe.id, slug: recipe.slug, name: recipe.name, kind: recipe.kind, default_tags: recipe.default_tags, steps: recipe.steps } };
+      },
+    }),
     agents_list: tool({
       description: "List registered human, CLI, service, and AI agents that can own workspace changes.",
       inputSchema: z.object({}),
@@ -729,6 +799,34 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         model: registeredAgent.model,
         role: registeredAgent.role,
       })),
+    }),
+    agent_create: tool({
+      description: "Record a human, AI, service, or CLI agent that can be attributed to workspace changes. Mutates only when approved.",
+      inputSchema: z.object({
+        name: z.string().min(1),
+        slug: z.string().optional(),
+        kind: z.enum(AGENT_KINDS).optional(),
+        provider: z.string().optional(),
+        model: z.string().optional(),
+        role: z.string().optional(),
+        permissions: z.array(z.string()).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: async (input) => {
+        const agentInput = {
+          name: input.name,
+          slug: input.slug,
+          kind: input.kind ?? "human",
+          provider: input.provider,
+          model: input.model,
+          role: input.role,
+          permissions: input.permissions,
+          metadata: input.metadata as JsonObject | undefined,
+        };
+        if (!approve) return { status: "planned", agent: agentInput, note: "Run again with --yes to create this agent." };
+        const agent = createAgent(agentInput);
+        return { status: "created", agent: { id: agent.id, slug: agent.slug, name: agent.name, kind: agent.kind, provider: agent.provider, model: agent.model, role: agent.role, permissions: agent.permissions } };
+      },
     }),
     workspaces_list: tool({
       description: "List existing workspaces for deduplication before creating a new one. Returns descriptions, tags, integrations, and metadata.",
@@ -999,6 +1097,26 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         return approve ? withAgentWorkspaceLock(workspace, actorAgent.id, "workspace GitHub publish", publish) : publish();
       },
     }),
+    workspace_github_unpublish: tool({
+      description: "Remove GitHub origin metadata from an existing workspace without deleting the GitHub repository. Mutates only when approved.",
+      inputSchema: z.object({
+        workspace: z.string().min(1).describe("Workspace id or slug"),
+        clear_integrations: z.boolean().optional(),
+      }),
+      execute: async (input) => {
+        const workspace = resolveWorkspace(input.workspace);
+        if (!workspace) return { error: `Workspace not found: ${input.workspace}` };
+        const unpublish = () => unpublishWorkspaceFromGitHub(workspace, {
+          clearIntegrations: input.clear_integrations,
+          dryRun: !approve,
+          agent_id: actorAgent.id,
+          source: "agent",
+          prompt: options.prompt,
+          command,
+        });
+        return approve ? withAgentWorkspaceLock(workspace, actorAgent.id, "workspace GitHub unpublish", unpublish) : unpublish();
+      },
+    }),
     workspace_github_import: tool({
       description: "Import a GitHub repository as a workspace. Can create a remote-only workspace or clone/register a local path. Mutates only when approved.",
       inputSchema: z.object({
@@ -1191,6 +1309,47 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         });
         if (result.workspace) createdWorkspaces.push(result.workspace);
         return { status: "created", ...result, workspace: result.workspace ? compactWorkspace(result.workspace) : null };
+      },
+    }),
+    tmux_profile_create: tool({
+      description: "Create a saved tmux profile with one or more windows. Mutates only when approved.",
+      inputSchema: z.object({
+        name: z.string().min(1),
+        slug: z.string().optional(),
+        description: z.string().optional(),
+        session_template: z.string().optional(),
+        attach: z.boolean().optional(),
+        windows: z.array(tmuxWindowSchema).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: async (input) => {
+        const profileInput = {
+          name: input.name,
+          slug: input.slug,
+          description: input.description,
+          session_template: input.session_template,
+          attach: input.attach,
+          metadata: input.metadata as JsonObject | undefined,
+          windows: input.windows?.map((window) => ({
+            window_name_template: window.name,
+            path_template: window.path,
+            command: window.command,
+            window_index: window.index,
+            detached: window.detached,
+          })),
+        };
+        if (!approve) return { status: "planned", profile: profileInput, note: "Run again with --yes to create this tmux profile." };
+        const profile = createTmuxProfile(profileInput);
+        return {
+          status: "created",
+          profile: {
+            id: profile.id,
+            slug: profile.slug,
+            name: profile.name,
+            session_template: profile.session_template,
+            windows: listTmuxProfileWindows(profile.id),
+          },
+        };
       },
     }),
     tmux_profiles_list: tool({
