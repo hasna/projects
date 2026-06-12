@@ -1,6 +1,6 @@
 # open-projects
 
-Generic workspace orchestration CLI, MCP server, and SDK for AI coding agents. A workspace can be any repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder. The app tracks roots, recipes, agents, tmux profiles, immutable workspace events, and prompt-driven AI agent runs.
+High-level project management CLI, MCP server, and SDK for AI coding agents. A project can be any repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder. Projects tracks roots, recipes, agents, tmux profiles, immutable project events, and prompt-driven AI agent runs.
 
 ## Install
 
@@ -10,13 +10,13 @@ bun install -g @hasna/projects
 
 ## CLI
 
-The binary is still named `projects`, but the command surface is workspace-first.
+The app and binary are named `projects`, and the public command surface is project-first.
 
 ```bash
 # Prompt mode through AI SDK + OpenRouter
-projects --dry-run --json "Plan a new open source workspace named Log Tools in /tmp/log-tools with tmux"
-projects --yes "Create a docs workspace in /home/me/docs/new-docs and write a marker"
-projects --model openai/gpt-4o-mini --max-steps 8 "Import this folder as a workspace"
+projects --dry-run --json "Plan a new open source project named Log Tools in /tmp/log-tools with tmux"
+projects --yes "Create a docs project in /home/me/docs/new-docs and write a marker"
+projects --model openai/gpt-4o-mini --max-steps 8 "Import this folder as a project"
 
 # Roots
 projects roots add --name "Open Source" --path /home/me/opensource --kind open-source --path-template "{slug}"
@@ -37,44 +37,80 @@ projects agents list
 # Tmux profiles
 projects tmux-profiles add --name "Dev" --slug dev --session-template "{slug}-dev" \
   --windows-json '[{"name":"editor"},{"name":"server","command":"bun run dev"}]'
-projects tmux-profiles apply dev my-workspace --dry-run --json
+projects tmux-profiles apply dev my-project --dry-run --json
 
-# Workspaces
-projects workspaces create --name "My App" --path /path/to/my-app --mkdir --git-init --marker --json
-projects workspaces create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
-projects workspaces cleanup-create my-app --dry-run --json
-projects workspaces import /path/to/existing --json
-projects workspaces import-github hasna/example --root open-source --clone --dry-run --json
-projects workspaces import /path/to/root --bulk --dry-run --json
-projects workspaces scan-roots --json
-projects workspaces list --query app --tags web,ts --json
-projects workspaces show my-app --json
-projects workspaces update my-app --description "New description" --tags web,ts
-projects workspaces publish my-app --dry-run --json
-projects workspaces link my-app --github-url https://github.com/hasna/my-app --todos-project-id todo_123
-projects workspaces archive my-app
-projects workspaces unarchive my-app
-projects workspaces delete my-app
+# Projects
+projects create --name "My App" --path /path/to/my-app --stage active --priority high \
+  --owner hasna --launch-profile dev --start-agent claude --start-command "claude --resume" \
+  --start-session-policy error-if-running \
+  --start-windows-json '[{"name":"server","command":"bun run dev"}]' \
+  --todos-project-id todo_123 --brief-id brief_123 --mkdir --git-init --marker --json
+projects create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
+projects start my-app --agent codewith
+projects start /path/to/existing --agent claude --window-name editor
+projects start /path/to/new-folder --tags family,security --metadata-json '{"domain":"home-security"}' --dry-run --json
+projects start my-app --profile dev --agent claude --new
+projects start my-app --error-if-running --agent none
+projects start --bulk my-app docs-site service-api --agent opencode --dry-run --json
+projects start --bulk-file ./project-targets.json --agent claude --dry-run --json
+projects status my-app --profile dev --json
+projects import /path/to/existing --json
+projects import-github hasna/example --root open-source --clone --dry-run --json
+projects import /path/to/root --bulk --dry-run --json
+projects list --query app --tags web,ts --json
+projects show my-app --json
+projects update my-app --description "New description" --tags web,ts --priority critical --launch-profile dev
+projects tag my-app security cameras
+projects untag my-app cameras
+projects link my-app --github-url https://github.com/hasna/my-app --todos-project-id todo_123 --todos-task-list-id list_123
+projects unlink my-app --todos --brief
+projects locations add my-app /path/to/another-folder --label docs
+projects locations list my-app
+projects archive my-app
+projects unarchive my-app
+projects delete my-app
 
-# Workspace checks and migration
-projects workspaces doctor my-app --fix --dry-run --json
-projects workspaces lock my-app --reason "manual maintenance"
-projects workspaces locks
-projects workspaces unlock workspace:wks_abc123
-projects workspaces migrate-legacy --dry-run --report /tmp/workspace-migration.json --json
-projects workspaces migrate-legacy --backup-dir ~/.hasna/workspaces/backups --json
+# Project checks
+projects doctor my-app --fix --dry-run --json
 
 # Agent evals
-projects workspaces agent-eval --json
-projects workspaces agent-eval --mock --json
-projects workspaces agent-eval --case create-explicit-path,tmux-apply-existing --fail-on-error
+projects agent-eval --json
+projects agent-eval --mock --json
+projects agent-eval --case create-explicit-path,tmux-apply-existing --fail-on-error
 
 # Shell completion, including workon
 eval "$(projects completion)"
 eval "$(projects completion --shell zsh)"
 ```
 
-`workspaces create --dry-run` is a true no-write creation plan. It returns planned DB writes, filesystem actions, tmux actions, verification steps, locks, and rollback records without writing rows or files. `workspaces cleanup-create` can apply those rollback records later, removing only safe creation artifacts such as the workspace row, marker file, `.git`, and empty created directory.
+Projects stores high-level management fields directly on the project record:
+`stage`, `priority`, `owner`, `launch_profile`, `start_agent`,
+`start_command`, `start_session_policy`, `start_windows`, todos links, and
+brief links. `projects start` and `projects status` use those launch defaults
+unless the command passes an explicit override. Detailed execution still belongs
+in `todos`; long-form specs and decisions still belong in `brief`.
+
+## Storage Sync
+
+Production storage for Hasna XYZ uses the `projects` database on
+`hasna-xyz-infra-apps-prod-postgres`. The runtime secret path is
+`hasna/xyz/opensource/projects/prod/rds`; load that secret into
+`HASNA_PROJECTS_DATABASE_URL` for runtime or smoke commands and do not print
+the value. `PROJECTS_DATABASE_URL` remains available as a local/self-hosted
+fallback.
+
+```bash
+export HASNA_PROJECTS_DATABASE_URL="<value from hasna/xyz/opensource/projects/prod/rds>"
+projects storage status --json
+projects storage push
+projects storage pull
+```
+
+Before cutover, verify `projects storage status --json`, run a read-only smoke
+against the canonical database, and keep legacy sources read-only until the
+central rollback window closes.
+
+`projects create --dry-run` is a true no-write creation plan. It returns planned DB writes, filesystem actions, tmux actions, verification steps, locks, and rollback records without writing rows or files. Creation cleanup remains available through MCP as `projects_cleanup_create`, removing only safe creation artifacts such as the project row, marker file, `.git`, and empty created directory.
 
 ## MCP Server
 
@@ -101,80 +137,79 @@ MCP_HTTP=1 MCP_HTTP_PORT=8871 projects-mcp
 
 Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/GET /mcp`.
 
-### Workspace Tools
+### Project Tools
 
 | Tool | Purpose |
 | --- | --- |
 | `projects_roots_list` / `projects_roots_add` / `projects_roots_show` / `projects_roots_update` / `projects_roots_delete` / `projects_roots_match` | Register, inspect, score, update, and delete root folders/path templates |
-| `projects_recipes_list` / `projects_recipes_add` | Manage recipe defaults for workspace creation |
+| `projects_recipes_list` / `projects_recipes_add` | Manage recipe defaults for project creation |
 | `projects_agents_list` / `projects_agents_add` | Register human, CLI, service, and AI agents |
 | `projects_tmux_profiles_list` / `projects_tmux_profiles_add` / `projects_tmux_profiles_apply` | Manage reusable tmux sessions/windows |
-| `projects_workspaces_list` / `projects_workspaces_show` | Search and inspect generic workspaces |
-| `projects_workspaces_create` | Plan or create a workspace anywhere on disk |
-| `projects_workspaces_cleanup_create` | Clean up DB/files created by a workspace creation run using rollback records |
-| `projects_workspaces_import` | Import existing folders as workspaces |
-| `projects_workspaces_scan_roots` | Scan registered roots and preview/import child folders |
-| `projects_workspaces_import_github` | Import GitHub repos as local or remote-only workspaces |
-| `projects_workspaces_github_publish` / `projects_workspaces_github_unpublish` | Publish/unlink GitHub workspace metadata |
-| `projects_workspaces_integrations_link` | Merge external service IDs into workspace integrations |
-| `projects_workspaces_update` | Update workspace metadata with audit events |
-| `projects_workspaces_archive` / `projects_workspaces_unarchive` / `projects_workspaces_delete` | Change workspace lifecycle status |
-| `projects_workspaces_doctor` | Validate markers, paths, locations, references, and failed runs |
-| `projects_workspaces_lock` / `projects_workspaces_unlock` / `projects_workspaces_locks` | Coordinate workspace mutations |
-| `projects_workspaces_migrate_legacy` | One-time migration from legacy project rows with dry-run, backup, and report support |
+| `projects_list` / `projects_show` | Search and inspect projects |
+| `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
+| `projects_create` | Plan or create a project anywhere on disk |
+| `projects_start` | Open or reuse a tmux session and launch Codewith, Claude, OpenCode, Cursor, or no tool |
+| `projects_tmux_status` | Inspect expected and current tmux session/window status for a project |
+| `projects_cleanup_create` | Clean up DB/files created by a project creation run using rollback records |
+| `projects_import` / `projects_scan_roots` | Import existing folders as projects |
+| `projects_import_github` | Import GitHub repos as local or remote-only projects |
+| `projects_github_publish` / `projects_github_unpublish` | Publish/unlink GitHub project metadata |
+| `projects_link` | Merge external service IDs into project integrations |
+| `projects_unlink` | Clear external service IDs from project integrations |
+| `projects_update` | Update project metadata with audit events |
+| `projects_tag` / `projects_untag` | Add or remove project tags without replacing the full tag list |
+| `projects_archive` / `projects_unarchive` / `projects_delete` | Change project lifecycle status |
+| `projects_doctor` | Validate markers, paths, locations, references, and failed runs |
+| `projects_events_list` / `projects_event_record` | Inspect or record project audit events |
+| `projects_lock` / `projects_unlock` / `projects_locks` | Coordinate project mutations |
 | `projects_agent_eval` | Run prompt-agent eval cases and return success/confidence |
-| `projects_agent_prompt` | Run the AI SDK/OpenRouter workspace agent loop |
+| `projects_agent_prompt` | Run the AI SDK/OpenRouter project agent loop |
 
-The MCP server no longer exposes legacy project-specific tools such as `projects_create`, `projects_list`, `projects_update`, or `projects_sync`.
+Workspace-named MCP aliases are removed from the public contract.
 
 ## Prompt Mode
 
-Prompt mode uses AI SDK with OpenRouter. Configure the key with `OPENROUTER_API_KEY`, `WORKSPACES_OPENROUTER_API_KEY`, or the local secrets vault. The default model is `openai/gpt-4o-mini`.
+Prompt mode uses AI SDK with OpenRouter. Configure the key with `OPENROUTER_API_KEY`, `PROJECTS_OPENROUTER_API_KEY`, or the local secrets vault. The default model is `openai/gpt-4o-mini`.
 
 Mutations require `--yes`. Without approval, mutating tools return structured plans/previews. `--dry-run` forces no-write behavior even if `--yes` is present.
 
-The prompt agent can inspect roots, recipes, agents, tmux profiles, and workspaces; create/update/archive/delete/import workspaces; import/publish GitHub repos; link external integrations; and plan/apply tmux profiles. It records agent runs and tool calls in SQLite.
+The prompt agent can inspect roots, recipes, agents, tmux profiles, and projects; create/update/tag/untag/archive/delete/import projects; import/publish GitHub repos; link/unlink external integrations; start projects with saved launch defaults; and plan/apply tmux profiles. It records agent runs and tool calls in SQLite.
 
-`projects workspaces agent-eval` seeds temporary workspace fixtures and runs a repeatable 32-case prompt suite over root registration/matching, recipe and agent planning, workspace listing/show/events, create/deduplication, import/scan, update, archive/unarchive, delete/hard-delete, cleanup, verification, tmux planning, GitHub publish/unpublish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate` and `confidence`.
+`projects agent-eval` seeds temporary project fixtures into an isolated SQLite database under the eval base path and runs a repeatable prompt suite over root registration/matching, recipe and agent planning, project listing/show/events, create/deduplication, import/scan, update, archive/unarchive, delete/hard-delete, cleanup, verification, tmux planning, GitHub publish/unpublish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate`, `confidence`, and `db_path`.
+
+Normal `projects list` output hides prompt-agent eval fixtures. Use `projects list --include-evals` to inspect old fixtures and `projects cleanup-evals --dry-run --json` followed by `projects cleanup-evals --apply` to remove them.
 
 ## Data Model
 
-Core tables:
+Core internal tables:
 
 - `roots`: named base folders, tags, path templates, default kind/recipe/tmux profile, GitHub defaults
 - `recipes`: reusable creation metadata, variables, default tags, and scaffold steps
 - `agents`: human, CLI, service, and AI actors with provider/model/permissions metadata
-- `workspaces`: generic workspace records with kind, status, root, recipe, path, tags, integrations, and metadata
-- `workspace_locations`: machine-local paths for a workspace
-- `workspace_events`: immutable audit events for mutations and runtime actions
+- `workspaces`: storage records backing projects with kind, status, root, recipe, path, tags, integrations, and metadata
+- `workspace_locations`: machine-local paths for a project
+- `workspace_events`: immutable project audit events for mutations and runtime actions
 - `agent_runs`: prompt-loop run ledger with tool calls and results
 - `tmux_profiles` / `tmux_profile_windows`: reusable tmux session/window templates
 - `workspace_locks`: short-lived mutation locks
 - `workspace_migration_map`: one-time legacy project-to-workspace mapping
 
-DB path: `~/.hasna/workspaces/workspaces.db`
+DB path: `~/.hasna/projects/projects.db`
 
-Override: `HASNA_WORKSPACES_DB_PATH`
-
-## Legacy Migration
-
-`projects workspaces migrate-legacy` is a one-time full migration from old `projects` and `project_workdirs` rows into generic workspace tables. Use `--dry-run` first; it runs against a temporary SQLite copy and leaves the source DB untouched. Real runs create a pre-migration database snapshot by default unless `--no-backup` is passed.
-
-JSON output includes before/after counts, project/workdir validation, sample mappings, backup paths, report path, and a release checklist for MCP config review, verification, publish, and rollback.
-
-The final domain, root inventory, ID prefixes, marker strategy, and old-to-new mapping are documented in [docs/workspace-migration-contract.md](docs/workspace-migration-contract.md).
+Override: `HASNA_PROJECTS_DB_PATH`
 
 ## SDK
 
-The public SDK exports workspace domain types and services only:
+The public SDK exports project-named functions and types. Storage-layer modules still use workspace names internally, but the package boundary is project-first.
 
 ```ts
 import {
-  createWorkspace,
-  updateWorkspace,
-  planWorkspaceCreation,
-  executeWorkspaceCreation,
-  runWorkspaceAgentPrompt,
+  createProject,
+  updateProject,
+  planProjectCreation,
+  executeProjectCreation,
+  runProjectAgentPrompt,
+  startProject,
 } from "@hasna/projects";
 ```
 
@@ -183,10 +218,10 @@ import {
 ```text
 src/
 ├── cli/
-│   ├── index.ts                 # workspace CLI and prompt entrypoint
+│   ├── index.ts                 # project CLI and prompt entrypoint
 │   └── commands/
-│       ├── workspaces.ts         # roots, recipes, agents, tmux profiles, workspaces
-│       └── completion.ts         # workspace shell completion
+│       ├── workspaces.ts         # project, roots, recipes, agents, tmux profiles
+│       └── completion.ts         # project shell completion
 ├── db/
 │   ├── database.ts               # SQLite init/path resolution
 │   ├── schema.ts                 # migrations
@@ -200,13 +235,11 @@ src/
 │   ├── workspace-migration.ts    # legacy migration dry-run, backup, and reports
 │   └── workspace-doctor.ts       # marker/path/reference validation
 ├── mcp/
-│   └── index.ts                  # workspace-only MCP server
+│   └── index.ts                  # project-first MCP server
 ├── types/
-│   └── workspace.ts              # public workspace domain types
-└── index.ts                      # workspace-only SDK exports
+│   └── workspace.ts              # internal storage/project domain types
+└── index.ts                      # SDK exports
 ```
-
-Legacy `project` modules may still exist internally during the migration window so existing rows can be migrated once with `projects workspaces migrate-legacy`, but they are no longer part of the CLI, MCP, or public SDK surface.
 
 ## License
 

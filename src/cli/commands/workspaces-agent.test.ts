@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,13 +17,13 @@ function text(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("utf-8");
 }
 
-describe("workspace agent CLI", () => {
-  test("runs a quoted prompt through the mock agent and creates a workspace when approved", () => {
+describe("project agent CLI", () => {
+  test("runs a quoted prompt through the mock agent and creates a project when approved", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "agent-smoke");
     const env = {
-      HASNA_WORKSPACES_DB_PATH: dbPath,
+      HASNA_PROJECTS_DB_PATH: dbPath,
       WORKSPACES_AGENT_MOCK: "1",
     };
 
@@ -32,56 +32,55 @@ describe("workspace agent CLI", () => {
     const payload = JSON.parse(text(res.stdout)) as {
       mode: string;
       approved: boolean;
-      workspaces: Array<{ slug: string; name: string; primary_path: string }>;
+      projects: Array<{ slug: string; name: string; primary_path: string }>;
       tool_calls: Array<{ name?: string }>;
     };
 
     expect(payload.mode).toBe("mock");
     expect(payload.approved).toBe(true);
-    expect(payload.workspaces).toHaveLength(1);
-    expect(payload.workspaces[0]!.name).toBe("Agent Smoke");
-    expect(payload.workspaces[0]!.primary_path).toBe(targetPath);
-    expect(payload.tool_calls.some((call) => call.name === "workspace_create")).toBe(true);
+    expect(payload.projects).toHaveLength(1);
+    expect(payload.projects[0]!.name).toBe("Agent Smoke");
+    expect(payload.projects[0]!.primary_path).toBe(targetPath);
+    expect(payload.tool_calls.some((call) => call.name === "projects_create")).toBe(true);
 
-    const show = runProjects(["workspaces", "show", payload.workspaces[0]!.slug, "--json"], env);
+    const show = runProjects(["show", payload.projects[0]!.slug, "--json"], env);
     expect(show.exitCode).toBe(0);
     const shown = JSON.parse(text(show.stdout)) as {
-      workspace: { primary_path: string };
+      project: { primary_path: string };
       events: Array<{ source: string; event_type: string; prompt: string | null }>;
     };
-    expect(shown.workspace.primary_path).toBe(targetPath);
+    expect(shown.project.primary_path).toBe(targetPath);
     expect(shown.events.some((event) => event.source === "agent" && event.event_type === "created")).toBe(true);
   });
 
   test("plans a prompt without --yes and does not create the target directory", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-plan-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "planned-only");
     const env = {
-      HASNA_WORKSPACES_DB_PATH: dbPath,
+      HASNA_PROJECTS_DB_PATH: dbPath,
       WORKSPACES_AGENT_MOCK: "1",
     };
 
     const res = runProjects(["--json", `create "Planned Only" in ${targetPath}`], env);
     expect(res.exitCode).toBe(0);
-    const payload = JSON.parse(text(res.stdout)) as { approved: boolean; workspaces: unknown[]; text: string };
+    const payload = JSON.parse(text(res.stdout)) as { approved: boolean; projects: unknown[]; text: string };
     expect(payload.approved).toBe(false);
-    expect(payload.workspaces).toHaveLength(0);
+    expect(payload.projects).toHaveLength(0);
     expect(payload.text).toContain("Run with --yes");
     expect(existsSync(targetPath)).toBe(false);
   });
 
-  test("prompt mode reports an existing workspace instead of creating a duplicate", () => {
+  test("prompt mode reports an existing project instead of creating a duplicate", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-duplicate-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "existing-security");
     const env = {
-      HASNA_WORKSPACES_DB_PATH: dbPath,
+      HASNA_PROJECTS_DB_PATH: dbPath,
       WORKSPACES_AGENT_MOCK: "1",
     };
 
     const create = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Existing Security",
@@ -101,28 +100,64 @@ describe("workspace agent CLI", () => {
     expect(res.exitCode).toBe(0);
     const payload = JSON.parse(text(res.stdout)) as {
       text: string;
-      workspaces: unknown[];
-      tool_calls: Array<{ output?: { status?: string; workspace?: { slug?: string } } }>;
+      projects: unknown[];
+      tool_calls: Array<{ output?: { status?: string; project?: { slug?: string } } }>;
     };
 
-    expect(payload.workspaces).toHaveLength(0);
+    expect(payload.projects).toHaveLength(0);
     expect(payload.text).toContain("already exists");
     expect(payload.tool_calls[0]?.output?.status).toBe("already_exists");
-    expect(payload.tool_calls[0]?.output?.workspace?.slug).toBe("existing-security");
+    expect(payload.tool_calls[0]?.output?.project?.slug).toBe("existing-security");
 
-    const list = runProjects(["workspaces", "list", "--query", "security", "--json"], env);
+    const list = runProjects(["list", "--query", "security", "--json"], env);
     expect(list.exitCode).toBe(0);
     const rows = JSON.parse(text(list.stdout)) as Array<{ slug: string }>;
     expect(rows.filter((row) => row.slug === "existing-security")).toHaveLength(1);
   });
 
+  test("prompt mode can plan starting an existing project with a selected tool", () => {
+    const root = mkdtempSync(join(tmpdir(), "project-agent-start-"));
+    const dbPath = join(root, "projects.db");
+    const targetPath = join(root, "startable-project");
+    const env = {
+      HASNA_PROJECTS_DB_PATH: dbPath,
+      WORKSPACES_AGENT_MOCK: "1",
+    };
+
+    const create = runProjects([
+      "create",
+      "--name",
+      "Startable Project",
+      "--slug",
+      "startable-project",
+      "--path",
+      targetPath,
+      "--json",
+    ], env);
+    expect(create.exitCode).toBe(0);
+
+    const res = runProjects(["--json", "start project \"startable-project\" with claude"], env);
+    expect(res.exitCode).toBe(0);
+    const payload = JSON.parse(text(res.stdout)) as {
+      text: string;
+      projects: Array<{ slug: string }>;
+      tool_calls: Array<{ name?: string; output?: { agent_tool?: string; tmux?: { dry_run: boolean; session_name: string } } }>;
+    };
+
+    expect(payload.projects[0]?.slug).toBe("startable-project");
+    expect(payload.tool_calls[0]?.name).toBe("projects_start");
+    expect(payload.tool_calls[0]?.output?.agent_tool).toBe("claude");
+    expect(payload.tool_calls[0]?.output?.tmux?.dry_run).toBe(true);
+    expect(payload.text).toContain("Planned start");
+  });
+
   test("prompt flags constrain root, recipe, actor agent, and tmux planning", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-flags-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const rootPath = join(root, "registered-root");
     mkdirSync(rootPath);
     const env = {
-      HASNA_WORKSPACES_DB_PATH: dbPath,
+      HASNA_PROJECTS_DB_PATH: dbPath,
       WORKSPACES_AGENT_MOCK: "1",
     };
 
@@ -188,7 +223,7 @@ describe("workspace agent CLI", () => {
     expect(res.exitCode).toBe(0);
     const payload = JSON.parse(text(res.stdout)) as {
       actor_agent_id: string;
-      workspaces: Array<{
+      projects: Array<{
         slug: string;
         primary_path: string;
         kind: string;
@@ -196,18 +231,18 @@ describe("workspace agent CLI", () => {
         root_id: string;
         recipe_id: string;
       }>;
-      tool_calls: Array<{ output?: { plan?: { tmux: unknown; workspace: { primary_path: string; kind: string; tags: string[] } } } }>;
+      tool_calls: Array<{ output?: { plan?: { tmux: unknown; project: { primary_path: string; kind: string; tags: string[] } } } }>;
     };
 
     expect(payload.actor_agent_id).toBe(actor.id);
-    expect(payload.workspaces).toHaveLength(1);
-    expect(payload.workspaces[0]!.primary_path).toBe(join(rootPath, "docs-flagged-workspace"));
-    expect(payload.workspaces[0]!.kind).toBe("docs");
-    expect(payload.workspaces[0]!.tags.sort()).toEqual(["agent-created", "docs", "recipe"].sort());
+    expect(payload.projects).toHaveLength(1);
+    expect(payload.projects[0]!.primary_path).toBe(join(rootPath, "docs-flagged-workspace"));
+    expect(payload.projects[0]!.kind).toBe("docs");
+    expect(payload.projects[0]!.tags.sort()).toEqual(["agent-created", "docs", "recipe"].sort());
     expect(payload.tool_calls[0]!.output?.plan?.tmux).toBeNull();
-    expect(payload.tool_calls[0]!.output?.plan?.workspace.primary_path).toBe(join(rootPath, "docs-flagged-workspace"));
+    expect(payload.tool_calls[0]!.output?.plan?.project.primary_path).toBe(join(rootPath, "docs-flagged-workspace"));
 
-    const show = runProjects(["workspaces", "show", payload.workspaces[0]!.slug, "--json"], env);
+    const show = runProjects(["show", payload.projects[0]!.slug, "--json"], env);
     expect(show.exitCode).toBe(0);
     const shown = JSON.parse(text(show.stdout)) as { events: Array<{ agent_id: string | null; command: string | null }> };
     expect(shown.events.some((event) => event.agent_id === actor.id && event.command?.includes("--no-tmux"))).toBe(true);
@@ -215,8 +250,8 @@ describe("workspace agent CLI", () => {
 
   test("prompt mode validates loop limits and records provider failures", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-policy-"));
-    const dbPath = join(root, "workspaces.db");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const dbPath = join(root, "projects.db");
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const invalidSteps = runProjects(["--max-steps", "0", "create a workspace"], env);
     expect(invalidSteps.exitCode).toBe(1);
@@ -238,18 +273,17 @@ describe("workspace agent CLI", () => {
     db.close();
   });
 
-  test("workspaces create exposes runtime dry-run for directories and tmux windows", () => {
+  test("projects create exposes runtime dry-run for directories and tmux windows", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-runtime-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "runtime-app");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const windows = JSON.stringify([
       { name: "editor" },
       { name: "server", command: "bun run dev" },
     ]);
     const res = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Runtime App",
@@ -267,11 +301,11 @@ describe("workspace agent CLI", () => {
 
     expect(res.exitCode).toBe(0);
     const payload = JSON.parse(text(res.stdout)) as {
-      workspace: { primary_path: string };
+      project: { primary_path: string };
       prepare: Array<{ type: string; status: string; target: string }>;
       tmux: { dry_run: boolean; windows: Array<{ target: string; status: string }> };
     };
-    expect(payload.workspace.primary_path).toBe(targetPath);
+    expect(payload.project.primary_path).toBe(targetPath);
     expect(payload.prepare.map((action) => action.type)).toEqual(["mkdir", "git_init"]);
     expect(payload.prepare.every((action) => action.status === "planned")).toBe(true);
     expect(payload.tmux.dry_run).toBe(true);
@@ -279,14 +313,13 @@ describe("workspace agent CLI", () => {
     expect(existsSync(targetPath)).toBe(false);
   });
 
-  test("workspaces create --dry-run returns a no-write deterministic plan", () => {
+  test("projects create --dry-run returns a no-write deterministic plan", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-create-plan-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "planned-create-app");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const res = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Planned Create App",
@@ -301,67 +334,40 @@ describe("workspace agent CLI", () => {
     expect(res.exitCode).toBe(0);
     const payload = JSON.parse(text(res.stdout)) as {
       dry_run: boolean;
-      workspace: null;
+      project: null;
       plan: {
-        workspace: { slug: string; primary_path: string };
+        kind: string;
+        project: { slug: string; primary_path: string };
+        project_input: { name: string; primary_path: string };
+        workspace_input?: unknown;
         db_writes: Array<{ target: string }>;
         runtime_actions: Array<{ type: string; status: string }>;
         rollback_actions: Array<{ action: string }>;
       };
     };
     expect(payload.dry_run).toBe(true);
-    expect(payload.workspace).toBeNull();
-    expect(payload.plan.workspace.primary_path).toBe(targetPath);
+    expect(payload.project).toBeNull();
+    expect(payload.plan.kind).toBe("project_creation");
+    expect(payload.plan.project.primary_path).toBe(targetPath);
+    expect(payload.plan.project_input.primary_path).toBe(targetPath);
+    expect(payload.plan.workspace_input).toBeUndefined();
     expect(payload.plan.db_writes.map((write) => write.target)).toContain("workspaces");
     expect(payload.plan.runtime_actions.map((action) => action.type)).toEqual(["mkdir", "workspace_marker"]);
     expect(payload.plan.runtime_actions.every((action) => action.status === "planned")).toBe(true);
     expect(payload.plan.rollback_actions.some((action) => action.action === "remove_file")).toBe(true);
     expect(existsSync(targetPath)).toBe(false);
 
-    const list = runProjects(["workspaces", "list", "--json"], env);
+    const list = runProjects(["list", "--json"], env);
     expect(JSON.parse(text(list.stdout))).toHaveLength(0);
   });
 
-  test("workspaces migrate-legacy --dry-run emits a full report", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-migrate-cli-"));
-    const dbPath = join(root, "workspaces.db");
-    const reportPath = join(root, "migration-report.json");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
-
-    const res = runProjects([
-      "workspaces",
-      "migrate-legacy",
-      "--dry-run",
-      "--report",
-      reportPath,
-      "--json",
-    ], env);
-
-    expect(res.exitCode).toBe(0);
-    const payload = JSON.parse(text(res.stdout)) as {
-      dry_run: boolean;
-      execution_db_path: string;
-      report_path: string;
-      result: { migrated: number; validation: { valid: boolean } };
-      release_checklist: Array<{ key: string }>;
-    };
-    expect(payload.dry_run).toBe(true);
-    expect(payload.execution_db_path).not.toBe(dbPath);
-    expect(payload.result.migrated).toBe(0);
-    expect(payload.result.validation.valid).toBe(true);
-    expect(payload.release_checklist.map((item) => item.key)).toContain("migration_counts");
-    expect(existsSync(reportPath)).toBe(true);
-    expect((JSON.parse(readFileSync(reportPath, "utf-8")) as { dry_run: boolean }).dry_run).toBe(true);
-  });
-
-  test("workspaces create can write marker and doctor validates it", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-marker-cli-"));
-    const dbPath = join(root, "workspaces.db");
+  test("projects create can write marker and doctor validates it", () => {
+    const root = mkdtempSync(join(tmpdir(), "project-marker-cli-"));
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "marker-app");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const create = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Marker App",
@@ -372,24 +378,23 @@ describe("workspace agent CLI", () => {
       "--json",
     ], env);
     expect(create.exitCode).toBe(0);
-    const payload = JSON.parse(text(create.stdout)) as { workspace: { slug: string; id: string } };
-    const markerPath = join(targetPath, ".workspace.json");
+    const payload = JSON.parse(text(create.stdout)) as { project: { slug: string; id: string } };
+    const markerPath = join(targetPath, ".project.json");
     expect(existsSync(markerPath)).toBe(true);
 
-    const doctor = runProjects(["workspaces", "doctor", payload.workspace.slug, "--json"], env);
+    const doctor = runProjects(["doctor", payload.project.slug, "--json"], env);
     expect(doctor.exitCode).toBe(0);
     const rows = JSON.parse(text(doctor.stdout)) as Array<{ checks: Array<{ code: string }> }>;
     expect(rows[0]!.checks.some((check) => check.code === "WORKSPACE_MARKER_OK")).toBe(true);
   });
 
-  test("workspaces cleanup-create previews and applies rollback records", () => {
+  test("projects cleanup-create previews and applies rollback records", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-cleanup-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "cleanup-app");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const create = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Cleanup App",
@@ -400,35 +405,34 @@ describe("workspace agent CLI", () => {
       "--json",
     ], env);
     expect(create.exitCode).toBe(0);
-    const created = JSON.parse(text(create.stdout)) as { workspace: { slug: string } };
-    expect(existsSync(join(targetPath, ".workspace.json"))).toBe(true);
+    const created = JSON.parse(text(create.stdout)) as { project: { slug: string } };
+    expect(existsSync(join(targetPath, ".project.json"))).toBe(true);
 
-    const preview = runProjects(["workspaces", "cleanup-create", created.workspace.slug, "--dry-run", "--json"], env);
+    const preview = runProjects(["cleanup-create", created.project.slug, "--dry-run", "--json"], env);
     expect(preview.exitCode).toBe(0);
     const previewPayload = JSON.parse(text(preview.stdout)) as { dry_run: boolean; actions: Array<{ status: string }> };
     expect(previewPayload.dry_run).toBe(true);
     expect(previewPayload.actions.some((action) => action.status === "planned")).toBe(true);
     expect(existsSync(targetPath)).toBe(true);
 
-    const cleanup = runProjects(["workspaces", "cleanup-create", created.workspace.slug, "--json"], env);
+    const cleanup = runProjects(["cleanup-create", created.project.slug, "--json"], env);
     expect(cleanup.exitCode).toBe(0);
     const cleanupPayload = JSON.parse(text(cleanup.stdout)) as { success: boolean; actions: Array<{ action: string; status: string }> };
     expect(cleanupPayload.success).toBe(true);
     expect(cleanupPayload.actions.some((action) => action.action === "remove_empty_directory" && action.status === "completed")).toBe(true);
     expect(existsSync(targetPath)).toBe(false);
 
-    const list = runProjects(["workspaces", "list", "--json"], env);
+    const list = runProjects(["list", "--json"], env);
     expect(JSON.parse(text(list.stdout))).toHaveLength(0);
   });
 
-  test("workspaces update, archive, unarchive, delete, and query list replace project metadata flows", () => {
+  test("projects update, archive, unarchive, delete, and query list replace project metadata flows", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-metadata-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const targetPath = join(root, "metadata-app");
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     const create = runProjects([
-      "workspaces",
       "create",
       "--name",
       "Metadata App",
@@ -437,12 +441,11 @@ describe("workspace agent CLI", () => {
       "--json",
     ], env);
     expect(create.exitCode).toBe(0);
-    const created = JSON.parse(text(create.stdout)) as { workspace: { slug: string } };
+    const created = JSON.parse(text(create.stdout)) as { project: { slug: string } };
 
     const update = runProjects([
-      "workspaces",
       "update",
-      created.workspace.slug,
+      created.project.slug,
       "--name",
       "Metadata App Renamed",
       "--description",
@@ -459,41 +462,41 @@ describe("workspace agent CLI", () => {
     expect(updated.tags).toEqual(["workspace", "replacement"]);
     expect(updated.metadata.owner).toBe("cli-test");
 
-    const search = runProjects(["workspaces", "list", "--query", "queryable", "--json"], env);
+    const search = runProjects(["list", "--query", "queryable", "--json"], env);
     expect(search.exitCode).toBe(0);
     expect(JSON.parse(text(search.stdout))).toHaveLength(1);
 
-    const archive = runProjects(["workspaces", "archive", created.workspace.slug, "--json"], env);
+    const archive = runProjects(["archive", created.project.slug, "--json"], env);
     expect(JSON.parse(text(archive.stdout)).status).toBe("archived");
 
-    const unarchive = runProjects(["workspaces", "unarchive", created.workspace.slug, "--json"], env);
+    const unarchive = runProjects(["unarchive", created.project.slug, "--json"], env);
     expect(JSON.parse(text(unarchive.stdout)).status).toBe("active");
 
-    const del = runProjects(["workspaces", "delete", created.workspace.slug, "--json"], env);
+    const del = runProjects(["delete", created.project.slug, "--json"], env);
     expect(del.exitCode).toBe(0);
-    const deleted = JSON.parse(text(del.stdout)) as { hard: boolean; workspace: { status: string } };
+    const deleted = JSON.parse(text(del.stdout)) as { hard: boolean; project: { status: string } };
     expect(deleted.hard).toBe(false);
-    expect(deleted.workspace.status).toBe("deleted");
+    expect(deleted.project.status).toBe("deleted");
   });
 
-  test("workspaces import, locks, and tmux profile apply support JSON dry-run flows", () => {
+  test("projects import, locks, and tmux profile apply support JSON dry-run flows", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-extra-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const importDir = join(root, "existing-app");
     mkdirSync(importDir);
     writeFileSync(join(importDir, "package.json"), JSON.stringify({ name: "existing-app" }));
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
-    const dryImport = runProjects(["workspaces", "import", importDir, "--dry-run", "--json"], env);
+    const dryImport = runProjects(["import", importDir, "--dry-run", "--json"], env);
     expect(dryImport.exitCode).toBe(0);
     const dryPayload = JSON.parse(text(dryImport.stdout)) as { skipped: string; preview: { slug: string } };
     expect(dryPayload.skipped).toBe("dry-run");
     expect(dryPayload.preview.slug).toBe("existing-app");
 
-    const imported = runProjects(["workspaces", "import", importDir, "--json"], env);
+    const imported = runProjects(["import", importDir, "--json"], env);
     expect(imported.exitCode).toBe(0);
-    const importedPayload = JSON.parse(text(imported.stdout)) as { workspace: { slug: string; id: string } };
-    expect(importedPayload.workspace.slug).toBe("existing-app");
+    const importedPayload = JSON.parse(text(imported.stdout)) as { project: { slug: string; id: string } };
+    expect(importedPayload.project.slug).toBe("existing-app");
 
     const profile = runProjects([
       "tmux-profiles",
@@ -516,30 +519,30 @@ describe("workspace agent CLI", () => {
     expect(applyPayload.session_name).toBe("existing-app-dev");
     expect(applyPayload.windows.map((window) => window.target)).toEqual(["existing-app-dev:editor", "existing-app-dev:server"]);
 
-    const lock = runProjects(["workspaces", "lock", "existing-app", "--key", "test-lock", "--json"], env);
+    const lock = runProjects(["lock", "existing-app", "--key", "test-lock", "--json"], env);
     expect(lock.exitCode).toBe(0);
-    const locks = runProjects(["workspaces", "locks", "--json"], env);
+    const locks = runProjects(["locks", "--json"], env);
     expect(JSON.parse(text(locks.stdout))).toHaveLength(1);
-    const unlock = runProjects(["workspaces", "unlock", "test-lock", "--json"], env);
+    const unlock = runProjects(["unlock", "test-lock", "--json"], env);
     expect(unlock.exitCode).toBe(0);
     expect(JSON.parse(text(unlock.stdout)).released).toBe(true);
 
-    const mutationLock = runProjects(["workspaces", "lock", "existing-app", "--json"], env);
+    const mutationLock = runProjects(["lock", "existing-app", "--json"], env);
     expect(mutationLock.exitCode).toBe(0);
     const locked = JSON.parse(text(mutationLock.stdout)) as { lock_key: string };
-    const blockedUpdate = runProjects(["workspaces", "update", "existing-app", "--description", "blocked", "--json"], env);
+    const blockedUpdate = runProjects(["update", "existing-app", "--description", "blocked", "--json"], env);
     expect(blockedUpdate.exitCode).toBe(1);
-    expect(text(blockedUpdate.stderr)).toContain("Workspace lock already held");
-    const releaseMutation = runProjects(["workspaces", "unlock", locked.lock_key, "--json"], env);
+    expect(text(blockedUpdate.stderr)).toContain("Project lock already held");
+    const releaseMutation = runProjects(["unlock", locked.lock_key, "--json"], env);
     expect(JSON.parse(text(releaseMutation.stdout)).released).toBe(true);
   });
 
-  test("workspaces GitHub dry-runs and integration links use workspace metadata", () => {
+  test("projects GitHub dry-runs and integration links use project metadata", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-github-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const rootPath = join(root, "registered-root");
     mkdirSync(rootPath);
-    const env = { HASNA_WORKSPACES_DB_PATH: dbPath };
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
 
     expect(runProjects([
       "roots",
@@ -562,7 +565,6 @@ describe("workspace agent CLI", () => {
     ], env).exitCode).toBe(0);
 
     const created = runProjects([
-      "workspaces",
       "create",
       "--name",
       "GitHub App",
@@ -571,25 +573,24 @@ describe("workspace agent CLI", () => {
       "--json",
     ], env);
     expect(created.exitCode).toBe(0);
-    const workspace = (JSON.parse(text(created.stdout)) as { workspace: { slug: string } }).workspace;
+    const project = (JSON.parse(text(created.stdout)) as { project: { slug: string } }).project;
 
-    const publish = runProjects(["workspaces", "publish", workspace.slug, "--dry-run", "--json"], env);
+    const publish = runProjects(["publish", project.slug, "--dry-run", "--json"], env);
     expect(publish.exitCode).toBe(0);
     const publishPayload = JSON.parse(text(publish.stdout)) as { full_name: string; visibility: string; dry_run: boolean };
     expect(publishPayload.dry_run).toBe(true);
     expect(publishPayload.full_name).toBe("hasna/github-app");
     expect(publishPayload.visibility).toBe("public");
 
-    const githubImport = runProjects(["workspaces", "import-github", "hasna/example", "--root", "github-root", "--clone", "--dry-run", "--json"], env);
+    const githubImport = runProjects(["import-github", "hasna/example", "--root", "github-root", "--clone", "--dry-run", "--json"], env);
     expect(githubImport.exitCode).toBe(0);
     const importPayload = JSON.parse(text(githubImport.stdout)) as { path: string; commands: string[] };
     expect(importPayload.path).toBe(join(rootPath, "open-example"));
     expect(importPayload.commands[0]).toContain("gh repo clone hasna/example");
 
     const link = runProjects([
-      "workspaces",
       "link",
-      workspace.slug,
+      project.slug,
       "--github-url",
       "https://github.com/hasna/github-app",
       "--todos-project-id",
@@ -602,15 +603,15 @@ describe("workspace agent CLI", () => {
     expect(linked.integrations.todos_project_id).toBe("todo_123");
   });
 
-  test("workspaces agent-eval scores prompt cases in mock mode", () => {
+  test("projects agent-eval scores prompt cases in mock mode", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-agent-eval-cli-"));
-    const dbPath = join(root, "workspaces.db");
+    const dbPath = join(root, "projects.db");
     const env = {
-      HASNA_WORKSPACES_DB_PATH: dbPath,
+      HASNA_PROJECTS_DB_PATH: dbPath,
       WORKSPACES_AGENT_MOCK: "1",
     };
 
-    const res = runProjects(["workspaces", "agent-eval", "--mock", "--json"], env);
+    const res = runProjects(["agent-eval", "--mock", "--json"], env);
     expect(res.exitCode).toBe(0);
     const payload = JSON.parse(text(res.stdout)) as {
       mode: string;

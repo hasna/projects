@@ -12,6 +12,9 @@ import {
 import { recordWorkspaceEvent } from "../db/workspaces.js";
 import type { EventSource, JsonObject, TmuxProfile, TmuxProfileWindow, Workspace } from "../types/workspace.js";
 
+export const PROJECT_MARKER_FILENAME = ".project.json";
+export const LEGACY_WORKSPACE_MARKER_FILENAME = ".workspace.json";
+
 export interface WorkspaceRuntimeAction {
   type: string;
   target: string;
@@ -58,7 +61,9 @@ export interface WorkspaceTmuxWindowSpec {
 
 export interface ApplyWorkspaceTmuxOptions {
   session?: string;
+  sessionPolicy?: "reuse" | "new" | "error-if-running";
   windows?: WorkspaceTmuxWindowSpec[];
+  runExistingWindowCommands?: boolean;
   recordEvents?: boolean;
   db?: Database;
   dryRun?: boolean;
@@ -89,7 +94,11 @@ function renderTemplate(template: string, values: Record<string, string | null |
 }
 
 export function workspaceMarkerPath(workspace: Pick<Workspace, "primary_path" | "slug">): string {
-  return join(workspacePath(workspace), ".workspace.json");
+  return join(workspacePath(workspace), PROJECT_MARKER_FILENAME);
+}
+
+export function projectMarkerPath(workspace: Pick<Workspace, "primary_path" | "slug">): string {
+  return workspaceMarkerPath(workspace);
 }
 
 export function buildWorkspaceMarker(workspace: Workspace): WorkspaceMarker {
@@ -197,8 +206,27 @@ function normalizeTmuxWindows(windows: WorkspaceTmuxWindowSpec[] | undefined, wo
   }));
 }
 
+function nextAvailableSessionName(base: string, existingNames: Set<string>): string {
+  if (!existingNames.has(base)) return base;
+  let index = 2;
+  while (existingNames.has(`${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
+}
+
 export function applyWorkspaceTmux(workspace: Workspace, options: ApplyWorkspaceTmuxOptions = {}): WorkspaceTmuxResult {
-  const sessionName = options.session?.trim() || workspace.slug;
+  const requestedSessionName = options.session?.trim() || workspace.slug;
+  const sessionPolicy = options.sessionPolicy ?? "reuse";
+  let sessions: ReturnType<typeof listSessions> = [];
+  try {
+    sessions = listSessions();
+  } catch {
+    sessions = [];
+  }
+  const existingSessionNames = new Set(sessions.map((session) => session.name));
+  const requestedSessionExists = existingSessionNames.has(requestedSessionName);
+  const sessionName = sessionPolicy === "new"
+    ? nextAvailableSessionName(requestedSessionName, existingSessionNames)
+    : requestedSessionName;
   const windows = normalizeTmuxWindows(options.windows, workspace);
   const result: WorkspaceTmuxResult = {
     session_name: sessionName,
@@ -208,6 +236,25 @@ export function applyWorkspaceTmux(workspace: Workspace, options: ApplyWorkspace
     errors: [],
     success: true,
   };
+
+  if (sessionPolicy === "error-if-running" && requestedSessionExists) {
+    result.session_action = "failed";
+    result.success = false;
+    result.errors.push(`Tmux session already exists: ${requestedSessionName}`);
+    result.windows = windows.map((window) => ({
+      type: "tmux_window",
+      target: `${requestedSessionName}:${window.name}`,
+      status: "failed",
+      message: "Session already exists",
+      metadata: {
+        path: window.path,
+        command: window.command,
+        index: window.index,
+        detached: window.detached ?? true,
+      },
+    }));
+    return result;
+  }
 
   if (options.dryRun) {
     result.windows = windows.map((window) => ({
@@ -225,8 +272,7 @@ export function applyWorkspaceTmux(workspace: Workspace, options: ApplyWorkspace
   }
 
   try {
-    const sessions = listSessions();
-    const exists = sessions.some((session) => session.name === sessionName);
+    const exists = existingSessionNames.has(sessionName);
     const first = windows[0] ?? { name: workspace.slug, path: workspace.primary_path ?? undefined };
 
     if (!exists) {
@@ -246,7 +292,7 @@ export function applyWorkspaceTmux(workspace: Workspace, options: ApplyWorkspace
           status: "skipped",
           message: "Window already exists",
         });
-        if (window.command) execInWindow(sessionName, window.name, window.command);
+        if (window.command && options.runExistingWindowCommands !== false) execInWindow(sessionName, window.name, window.command);
         continue;
       }
 

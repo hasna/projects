@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerWorkspaceCommands } from "./commands/workspaces.js";
 import { registerCompletionCommand } from "./commands/completion.js";
+import { registerStorageCommands } from "./commands/storage.js";
 import { runWorkspaceAgentPrompt } from "../lib/workspace-agent.js";
 
 function getPackageVersion(): string {
@@ -44,6 +45,17 @@ function firstPositionalArg(argv: string[]): string | undefined {
   return undefined;
 }
 
+function hasAnyFlag(argv: string[], flags: string[]): boolean {
+  return argv.slice(2).some((arg) => flags.includes(arg));
+}
+
+function shouldRouteToCommand(firstArg: string, argv: string[]): boolean {
+  if (argv.includes("--")) return false;
+  if (hasAnyFlag(argv, ["--yes", "--model", "--max-steps", "--no-tmux"])) return false;
+  if (firstArg === "create" && !hasAnyFlag(argv, ["--name"])) return false;
+  return true;
+}
+
 function preparePromptFlags(): void {
   const firstArg = firstPositionalArg(process.argv);
   if (!firstArg) return;
@@ -53,11 +65,14 @@ function preparePromptFlags(): void {
     commandNames.add(command.name());
     for (const alias of command.aliases()) commandNames.add(alias);
   }
-  if (commandNames.has(firstArg)) return;
+  if (commandNames.has(firstArg) && shouldRouteToCommand(firstArg, process.argv)) return;
 
   const nextArgv = process.argv.slice(0, 2);
+  const promptStartsWithCommand = commandNames.has(firstArg);
+  const promptParts: string[] = [];
   for (let i = 2; i < process.argv.length; i++) {
     const arg = process.argv[i]!;
+    if (arg === "--") continue;
     if (arg === "--yes") {
       promptOptions.yes = true;
       continue;
@@ -91,29 +106,31 @@ function preparePromptFlags(): void {
       continue;
     }
     if (arg === "--json" || arg === "-j") {
-      process.env["WORKSPACES_JSON"] = process.env["WORKSPACES_JSON"] || "1";
+      process.env["PROJECTS_JSON"] = process.env["PROJECTS_JSON"] || "1";
       continue;
     }
-    nextArgv.push(arg);
+    if (promptStartsWithCommand) promptParts.push(arg);
+    else nextArgv.push(arg);
   }
+  if (promptStartsWithCommand) nextArgv.push(promptParts.join(" "));
   process.argv = nextArgv;
 }
 
 program
   .name("projects")
-  .description("Generic workspace orchestration CLI for AI agents")
+  .description("High-level project management and launcher CLI for AI agents")
   .version(getPackageVersion())
-  .argument("[prompt...]", "Natural-language prompt for the workspace agent")
+  .argument("[prompt...]", "Natural-language prompt for the Projects agent")
   .addHelpText("after", `
 
 Prompt mode options:
-  --yes                 Allow prompt-mode workspace mutations
+  --yes                 Allow prompt-mode project mutations
   --dry-run             Force prompt mode to plan without writing
   --model <model>       OpenRouter model for prompt mode
   --max-steps <n>       Maximum AI SDK tool-call steps for prompt mode
-  --agent <id-or-slug>  Existing agent to attribute prompt-mode workspace mutations to
-  --root <id-or-slug>   Required root for prompt-mode workspace creation
-  --recipe <id-or-slug> Required recipe for prompt-mode workspace creation
+  --agent <id-or-slug>  Existing agent to attribute prompt-mode project mutations to
+  --root <id-or-slug>   Required root for prompt-mode project creation
+  --recipe <id-or-slug> Required recipe for prompt-mode project creation
   --no-tmux             Disable tmux planning and tmux changes in prompt mode`)
   .action(async (promptParts: string[]) => {
     if (!promptParts.length) {
@@ -140,18 +157,18 @@ Prompt mode options:
         tmux: promptOptions.tmux,
       });
 
-      if (process.env["WORKSPACES_JSON"]) {
+      if (process.env["PROJECTS_JSON"] || process.env["WORKSPACES_JSON"]) {
         console.log(JSON.stringify(result, null, 2));
         return;
       }
 
       console.log(result.text);
-      for (const workspace of result.workspaces) {
-        console.log(chalk.green(`✓ Workspace: ${workspace.slug}`));
-        if (workspace.primary_path) console.log(`  ${chalk.dim("path:")} ${workspace.primary_path}`);
+      for (const project of result.projects) {
+        console.log(chalk.green(`✓ Project: ${project.slug}`));
+        if (project.primary_path) console.log(`  ${chalk.dim("path:")} ${project.primary_path}`);
       }
       if (!result.approved && !result.dry_run) {
-        console.log(chalk.dim("Run with --yes to allow workspace creation and tmux changes."));
+        console.log(chalk.dim("Run with --yes to allow project creation and tmux changes."));
       }
     } catch (err) {
       console.error(chalk.red(err instanceof Error ? err.message : String(err)));
@@ -160,6 +177,7 @@ Prompt mode options:
   });
 
 registerWorkspaceCommands(program);
+registerStorageCommands(program);
 registerCompletionCommand(program);
 
 preparePromptFlags();

@@ -12,7 +12,8 @@ import {
   releaseWorkspaceLock,
   workspaceSlugify,
 } from "../db/workspaces.js";
-import type { Root, Workspace, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
+import type { EventSource, JsonObject, Root, Workspace, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
+import { LEGACY_WORKSPACE_MARKER_FILENAME, PROJECT_MARKER_FILENAME } from "./workspace-runtime.js";
 
 export interface WorkspaceImportPreview {
   name: string;
@@ -21,6 +22,7 @@ export interface WorkspaceImportPreview {
   kind: WorkspaceKind;
   root_id?: string;
   tags: string[];
+  metadata: JsonObject;
   git_remote?: string;
   confidence: number;
   signals: string[];
@@ -29,7 +31,11 @@ export interface WorkspaceImportPreview {
 export interface ImportWorkspaceOptions {
   dryRun?: boolean;
   tags?: string[];
+  metadata?: JsonObject;
   agent_id?: string;
+  source?: EventSource;
+  prompt?: string;
+  command?: string;
   db?: Database;
 }
 
@@ -70,10 +76,10 @@ function packageName(path: string): string | null {
 }
 
 function markerName(path: string): string | null {
-  const workspace = readJson(join(path, ".workspace.json"));
-  if (typeof workspace?.["name"] === "string") return workspace["name"];
-  const project = readJson(join(path, ".project.json"));
+  const project = readJson(join(path, PROJECT_MARKER_FILENAME));
   if (typeof project?.["name"] === "string") return project["name"];
+  const workspace = readJson(join(path, LEGACY_WORKSPACE_MARKER_FILENAME));
+  if (typeof workspace?.["name"] === "string") return workspace["name"];
   return null;
 }
 
@@ -106,8 +112,8 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
 
   const signals: string[] = [];
   const name = markerName(absPath) ?? packageName(absPath) ?? basename(absPath);
-  if (existsSync(join(absPath, ".workspace.json"))) signals.push("workspace-marker");
-  if (existsSync(join(absPath, ".project.json"))) signals.push("legacy-project-marker");
+  if (existsSync(join(absPath, PROJECT_MARKER_FILENAME))) signals.push("project-marker");
+  if (existsSync(join(absPath, LEGACY_WORKSPACE_MARKER_FILENAME))) signals.push("legacy-workspace-marker");
   if (existsSync(join(absPath, "package.json"))) signals.push("package-json");
   if (existsSync(join(absPath, ".git"))) signals.push("git");
   for (const dir of ["data", "scripts", "assets", "docs"]) {
@@ -129,6 +135,7 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
     kind,
     root_id: root?.id,
     tags,
+    metadata: { ...(options.metadata ?? {}) },
     git_remote: remote,
     confidence: Math.min(1, 0.45 + signals.length * 0.12),
     signals,
@@ -162,10 +169,15 @@ export async function importWorkspace(path: string, options: ImportWorkspaceOpti
         primary_path: preview.path,
         git_remote: preview.git_remote,
         tags: preview.tags,
-        metadata: { import_signals: preview.signals, import_confidence: preview.confidence },
+        metadata: {
+          ...preview.metadata,
+          import_signals: preview.signals,
+          import_confidence: preview.confidence,
+        },
         agent_id: options.agent_id,
-        source: "cli",
-        command: "workspaces import",
+        source: options.source ?? "cli",
+        prompt: options.prompt,
+        command: options.command ?? "projects import",
       }, options.db);
       return { workspace, preview };
     } finally {

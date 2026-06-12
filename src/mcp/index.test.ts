@@ -33,23 +33,34 @@ describe("projects-mcp CLI flags", () => {
   });
 });
 
-describe("projects-mcp workspace-only surface", () => {
-  test("does not register legacy project-specific MCP tools", () => {
+describe("projects-mcp project-first surface", () => {
+  test("registers project-first MCP tools and removes workspace aliases", () => {
     const source = readFileSync("src/mcp/index.ts", "utf-8");
+    const legacyAliasEnv = "PROJECTS_ENABLE_" + "WORKSPACE_MCP_ALIASES";
+    const legacyCreateTool = ["projects", "workspaces_create"].join("_");
 
-    expect(source).not.toContain("\"projects_create\"");
-    expect(source).not.toContain("\"projects_list\"");
-    expect(source).not.toContain("\"projects_update\"");
-    expect(source).not.toContain("\"projects_archive\"");
+    expect(source).toContain("\"projects_create\"");
+    expect(source).toContain("\"projects_list\"");
+    expect(source).toContain("\"projects_update\"");
+    expect(source).toContain("\"projects_tag\"");
+    expect(source).toContain("\"projects_untag\"");
+    expect(source).toContain("\"projects_unlink\"");
+    expect(source).toContain("\"projects_archive\"");
+    expect(source).toContain("\"projects_start\"");
+    expect(source).toContain("\"projects_tmux_status\"");
+    expect(source).toContain("\"projects_cleanup_create\"");
+    expect(source).toContain("\"projects_agents_assign\"");
+    expect(source).toContain("\"projects_locations_list\"");
+    expect(source).toContain("\"projects_locations_add\"");
     expect(source).not.toContain("\"projects_sync\"");
-    expect(source).toContain("\"projects_workspaces_create\"");
-    expect(source).toContain("\"projects_workspaces_cleanup_create\"");
+    expect(source).not.toContain(legacyAliasEnv);
+    expect(source).not.toContain(`"${legacyCreateTool}"`);
     expect(source).toContain("\"projects_agent_eval\"");
     expect(source).toContain("\"projects_agent_prompt\"");
   });
 
-  test("lists workspace tools over stdio JSON-RPC", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-mcp-smoke-"));
+  test("lists project tools over stdio JSON-RPC", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-smoke-"));
     const messages = [
       {
         jsonrpc: "2.0",
@@ -58,7 +69,7 @@ describe("projects-mcp workspace-only surface", () => {
         params: {
           protocolVersion: "2025-06-18",
           capabilities: {},
-          clientInfo: { name: "workspace-mcp-test", version: "0" },
+          clientInfo: { name: "project-mcp-test", version: "0" },
         },
       },
       { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
@@ -69,7 +80,10 @@ describe("projects-mcp workspace-only surface", () => {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, HASNA_WORKSPACES_DB_PATH: join(root, "workspaces.db") },
+      env: {
+        ...process.env,
+        HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      },
     });
 
     child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
@@ -89,11 +103,22 @@ describe("projects-mcp workspace-only surface", () => {
       result?: { tools?: Array<{ name: string }> };
     }>;
     const tools = responses.find((response) => response.id === 2)?.result?.tools?.map((tool) => tool.name) ?? [];
-    expect(tools).toContain("projects_workspaces_create");
-    expect(tools).toContain("projects_workspaces_cleanup_create");
+    const legacyCreateTool = ["projects", "workspaces_create"].join("_");
+    expect(tools).toContain("projects_create");
+    expect(tools).toContain("projects_list");
+    expect(tools).toContain("projects_tag");
+    expect(tools).toContain("projects_untag");
+    expect(tools).toContain("projects_unlink");
+    expect(tools).toContain("projects_start");
+    expect(tools).toContain("projects_tmux_status");
+    expect(tools).toContain("projects_cleanup_create");
+    expect(tools).toContain("projects_agents_assign");
+    expect(tools).toContain("projects_locations_list");
+    expect(tools).toContain("projects_locations_add");
+    expect(tools).toContain("projects_events_list");
     expect(tools).toContain("projects_agent_eval");
     expect(tools).toContain("projects_agent_prompt");
-    expect(tools).not.toContain("projects_create");
+    expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
   });
 });

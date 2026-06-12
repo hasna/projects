@@ -42,13 +42,13 @@ describe("projects MCP HTTP transport", () => {
     expect(await res.json()).toEqual({ status: "ok", name: "projects" });
   });
 
-  test("MCP initialize + projects_workspaces_list over Streamable HTTP", async () => {
+  test("MCP initialize + projects_list over Streamable HTTP", async () => {
     const client = new Client({ name: "projects-http-test", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${port}/mcp`),
     );
     await client.connect(transport);
-    const result = await client.callTool({ name: "projects_workspaces_list", arguments: { limit: 1 } });
+    const result = await client.callTool({ name: "projects_list", arguments: { limit: 1 } });
     expect(result.isError).not.toBe(true);
     const content = result.content as Array<{ type: string }> | undefined;
     expect(content?.[0]?.type).toBe("text");

@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import { runMigrations } from "./schema.js";
 import {
   acquireWorkspaceLock,
+  addWorkspaceLocation,
   addTmuxProfileWindow,
   archiveWorkspace,
+  assignAgentToWorkspace,
   completeAgentRun,
   createAgent,
   createRecipe,
@@ -24,7 +26,9 @@ import {
   listTmuxProfileWindows,
   listWorkspaceLocks,
   listWorkspaceEvents,
+  listWorkspaceAgents,
   listWorkspaceLocations,
+  listWorkspacesByPath,
   listWorkspaces,
   matchRootForPath,
   migrateLegacyProjectsToWorkspaces,
@@ -120,10 +124,38 @@ describe("workspace domain services", () => {
     expect(getWorkspaceByPath(workspace.primary_path!, db)?.id).toBe(workspace.id);
     expect(listWorkspaceLocations(workspace.id, db)).toHaveLength(1);
     expect(listWorkspaceEvents(workspace.id, db).map((event) => event.event_type)).toContain("created");
+    const creatorAssignments = listWorkspaceAgents(workspace.id, db);
+    expect(creatorAssignments).toHaveLength(1);
+    expect(creatorAssignments[0]?.role).toBe("creator");
+    expect(creatorAssignments[0]?.agent?.slug).toBe("codex");
     expect(listRoots(db)).toHaveLength(1);
     expect(listWorkspaces({ tags: ["typescript"] }, db)).toHaveLength(1);
 
+    const secondaryPath = tmpDir();
+    const secondary = addWorkspaceLocation({
+      workspace_id: workspace.id,
+      path: secondaryPath,
+      label: "secondary",
+      metadata: { purpose: "alternate folder" },
+      agent_id: agent.id,
+      source: "cli",
+      command: "projects locations add",
+    }, db);
+    expect(secondary.path).toBe(secondaryPath);
+    expect(secondary.is_primary).toBe(false);
+    expect(getWorkspaceByPath(secondaryPath, db)?.id).toBe(workspace.id);
+    expect(listWorkspacesByPath(secondaryPath, db).map((item) => item.id)).toEqual([workspace.id]);
+    expect(listWorkspaceEvents(workspace.id, db).map((event) => event.event_type)).toContain("location_added");
+
+    const owner = createAgent({ name: "Owner", slug: "owner", kind: "human" }, db);
+    const assignment = assignAgentToWorkspace(workspace.id, owner.id, "owner", agent.id, { scope: "project" }, db);
+    expect(assignment.role).toBe("owner");
+    expect(assignment.agent?.slug).toBe("owner");
+    expect(assignment.metadata.scope).toBe("project");
+    expect(listWorkspaceAgents(workspace.id, db).map((item) => item.role).sort()).toEqual(["creator", "owner"]);
+
     rmSync(rootPath, { recursive: true });
+    rmSync(secondaryPath, { recursive: true });
     db.close();
   });
 
@@ -296,7 +328,7 @@ describe("workspace domain services", () => {
       writeMarker: true,
     }, { db });
     const workspace = executed.workspace!;
-    const markerPath = join(workspace.primary_path!, ".workspace.json");
+    const markerPath = join(workspace.primary_path!, ".project.json");
     expect(existsSync(workspace.primary_path!)).toBe(true);
     expect(existsSync(markerPath)).toBe(true);
 
@@ -366,10 +398,11 @@ describe("workspace domain services", () => {
     writeFileSync(join(childDir, ".project.json"), JSON.stringify({ name: "Legacy Tooling" }));
     const root = createRoot({ name: "Import Root", slug: "import-root", base_path: rootDir, path_template: "{slug}" }, db);
 
-    const preview = planWorkspaceImport(childDir, { db, tags: ["imported"] });
+    const preview = planWorkspaceImport(childDir, { db, tags: ["imported"], metadata: { domain: "tools" } });
     expect(preview.name).toBe("Legacy Tooling");
     expect(preview.root_id).toBe(root.id);
-    expect(preview.signals).toContain("legacy-project-marker");
+    expect(preview.metadata.domain).toBe("tools");
+    expect(preview.signals).toContain("project-marker");
     expect(preview.signals).toContain("scaffold-dir:docs");
     expect(matchRootForPath(childDir, db)?.id).toBe(root.id);
 
@@ -383,15 +416,17 @@ describe("workspace domain services", () => {
     expect(listWorkspaceLocks(db).map((item) => item.lock_key)).not.toContain("workspace-slug:legacy-tooling");
     expect(releaseWorkspaceLock(pathLock.lock_key, db)).toBe(true);
 
-    const imported = await importWorkspace(childDir, { db, tags: ["imported"] });
+    const imported = await importWorkspace(childDir, { db, tags: ["imported"], metadata: { domain: "tools" } });
     expect(imported.workspace?.slug).toBe("legacy-tooling");
     const workspace = imported.workspace!;
+    expect(workspace.metadata.domain).toBe("tools");
+    expect(workspace.metadata.import_signals).toContain("project-marker");
     const beforeFix = doctorWorkspace(workspace, {}, db);
-    expect(beforeFix.checks.some((check) => check.code === "WORKSPACE_MARKER_MISSING")).toBe(true);
+    expect(beforeFix.checks.some((check) => check.code === "WORKSPACE_MARKER_MISMATCH")).toBe(true);
     const dryRunFix = doctorWorkspace(workspace, { fix: true, dryRun: true }, db);
     expect(dryRunFix.fixes.some((fix) => fix.code === "FIX_WORKSPACE_MARKER" && fix.dryRun)).toBe(true);
     prepareWorkspaceDirectory(workspace, { writeMarker: true, recordEvents: false });
-    expect(workspaceMarkerPath(workspace)).toBe(join(childDir, ".workspace.json"));
+    expect(workspaceMarkerPath(workspace)).toBe(join(childDir, ".project.json"));
     expect(doctorWorkspace(workspace, {}, db).checks.some((check) => check.code === "WORKSPACE_MARKER_OK")).toBe(true);
 
     const lock = acquireWorkspaceLock({ lock_key: "workspace:test", workspace_id: workspace.id, reason: "test" }, db);

@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   acquireWorkspaceLock,
+  addWorkspaceLocation,
   addTmuxProfileWindow,
   archiveWorkspace,
+  assignAgentToWorkspace,
   createAgent,
   createRecipe,
   createRoot,
@@ -29,9 +31,11 @@ import {
   listTmuxProfileWindows,
   listTmuxProfiles,
   listWorkspaceEvents,
+  listWorkspaceAgents,
   listWorkspaceLocations,
   listWorkspaceLocks,
   listWorkspaces,
+  recordWorkspaceEvent,
   scoreRoots,
   releaseWorkspaceLock,
   resolveTmuxProfile,
@@ -40,8 +44,34 @@ import {
   updateRoot,
   updateWorkspace,
 } from "../db/workspaces.js";
+import { getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
 import { runWorkspaceAgentPrompt } from "../lib/workspace-agent.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../lib/workspace-agent-eval.js";
+import {
+  parseProjectStartAgent,
+  startProject,
+} from "../lib/project-start.js";
+import { projectTmuxStatus } from "../lib/project-tmux-status.js";
+import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
+import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
+import {
+  PROJECT_PRIORITIES,
+  PROJECT_STAGES,
+  PROJECT_START_AGENTS,
+  PROJECT_START_SESSION_POLICIES,
+  expandProjectIntegrationUnlinkKeys,
+  hasProjectIntegrationFields,
+  hasProjectManagementFields,
+  mergeProjectIntegrationFields,
+  mergeProjectManagementMetadata,
+  mergeProjectTags,
+  projectDashboardSummary,
+  projectExternalLinksSummary,
+  projectManagementSummary,
+  projectWithManagement,
+  removeProjectTags,
+  unlinkProjectIntegrationFields,
+} from "../lib/project-management.js";
 import { doctorWorkspace } from "../lib/workspace-doctor.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
@@ -59,8 +89,8 @@ import {
   executeWorkspaceCreation,
   type WorkspaceCreationPlanAction,
 } from "../lib/workspace-plan.js";
-import { applyWorkspaceTmuxProfile } from "../lib/workspace-runtime.js";
-import type { AgentKind, Workspace, WorkspaceIntegrations, WorkspaceKind } from "../types/workspace.js";
+import { applyWorkspaceTmuxProfile, workspaceMarkerPath } from "../lib/workspace-runtime.js";
+import { PROJECT_AGENT_ROLES, type AgentKind, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
 
 function getPkgVersion(): string {
   try {
@@ -74,7 +104,7 @@ function getPkgVersion(): string {
 function printHelp(): void {
   console.log(`Usage: projects-mcp [options]
 
-MCP server for generic workspace orchestration tools (stdio transport by default)
+MCP server for project management and launch tools (stdio transport by default)
 
 Options:
   --http         serve MCP over Streamable HTTP on 127.0.0.1 (also MCP_HTTP=1)
@@ -108,6 +138,31 @@ function errorText(message: string) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
+function projectPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => projectPayload(item));
+  if (!value || typeof value !== "object") return value;
+  const payload: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const nextKey = key === "workspace"
+      ? "project"
+      : key === "workspaces"
+        ? "projects"
+        : key === "workspace_id"
+          ? "project_id"
+          : key === "workspace_slug"
+            ? "project_slug"
+            : key === "workspace_input"
+              ? "project_input"
+              : key;
+    payload[nextKey] = projectPayload(raw);
+  }
+  return payload;
+}
+
+function jsonProjectText(value: unknown) {
+  return jsonText(projectPayload(value));
+}
+
 function rootId(idOrSlug: string | undefined): string | undefined {
   if (!idOrSlug) return undefined;
   const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
@@ -127,6 +182,10 @@ function agentId(idOrSlug: string | undefined): string {
   const agent = getAgent(idOrSlug) ?? getAgentBySlug(idOrSlug);
   if (!agent) throw new Error(`Agent not found: ${idOrSlug}`);
   return agent.id;
+}
+
+function findProjectTarget(target: string | undefined): Workspace | null {
+  return resolveRegisteredProjectTarget(target)?.project ?? null;
 }
 
 function withWorkspaceMutationLock<T>(workspace: Workspace, owner: string | undefined, reason: string, fn: () => T): T {
@@ -176,7 +235,7 @@ function cleanupTargetFromWorkspace(workspace: Workspace, rollbackActions?: Work
   ];
   if (workspace.primary_path) {
     fallback.push({ type: "rollback", action: "delete", target: `workspace_locations:${workspace.primary_path}`, status: "planned", metadata: { automatic: false } });
-    fallback.push({ type: "rollback", action: "remove_file", target: join(workspace.primary_path, ".workspace.json"), status: "planned", metadata: { automatic: false } });
+    fallback.push({ type: "rollback", action: "remove_file", target: workspaceMarkerPath(workspace), status: "planned", metadata: { automatic: false } });
     fallback.push({ type: "rollback", action: "remove_git_dir", target: join(workspace.primary_path, ".git"), status: "planned", metadata: { automatic: false } });
     fallback.push({ type: "rollback", action: "remove_empty_directory", target: workspace.primary_path, status: "planned", metadata: { automatic: false } });
   }
@@ -185,14 +244,14 @@ function cleanupTargetFromWorkspace(workspace: Workspace, rollbackActions?: Work
 
 server.tool(
   "projects_roots_list",
-  "List registered root folders and path templates for generic workspaces.",
+  "List registered root folders and path templates for projects.",
   {},
   async () => jsonText(listRoots()),
 );
 
 server.tool(
   "projects_roots_add",
-  "Register a root folder that workspaces can be created under.",
+  "Register a root folder that projects can be created under.",
   {
     name: z.string(),
     path: z.string(),
@@ -277,16 +336,16 @@ server.tool(
 
 server.tool(
   "projects_roots_delete",
-  "Delete a registered root. Refuses roots referenced by workspaces unless detach_workspaces=true.",
+  "Delete a registered root. Refuses roots referenced by projects unless detach_projects=true.",
   {
     id: z.string(),
-    detach_workspaces: z.boolean().optional(),
+    detach_projects: z.boolean().optional(),
   },
   async (input) => {
     try {
       const root = getRoot(input.id) ?? getRootBySlug(input.id);
       if (!root) return errorText(`Root not found: ${input.id}`);
-      return jsonText(deleteRoot(root.id, { detachWorkspaces: input.detach_workspaces }));
+      return jsonText(deleteRoot(root.id, { detachWorkspaces: input.detach_projects }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -312,14 +371,14 @@ server.tool(
 
 server.tool(
   "projects_recipes_list",
-  "List workspace recipes for agent-visible creation defaults.",
+  "List project recipes for agent-visible creation defaults.",
   {},
   async () => jsonText(listRecipes()),
 );
 
 server.tool(
   "projects_recipes_add",
-  "Register a workspace recipe with optional default tags and JSON steps.",
+  "Register a project recipe with optional default tags and JSON steps.",
   {
     name: z.string(),
     slug: z.string().optional(),
@@ -346,28 +405,35 @@ server.tool(
 
 server.tool(
   "projects_recipes_built_ins",
-  "List built-in workspace recipe definitions.",
+  "List built-in project recipe definitions.",
   {},
   async () => jsonText(builtInWorkspaceRecipes()),
 );
 
 server.tool(
   "projects_recipes_seed_defaults",
-  "Create any missing built-in workspace recipes.",
+  "Create any missing built-in project recipes.",
   {},
   async () => jsonText(ensureBuiltInWorkspaceRecipes()),
 );
 
 server.tool(
   "projects_agents_list",
-  "List registered agents that can own workspace changes.",
-  {},
-  async () => jsonText(listAgents()),
+  "List registered agents, or agents assigned to a specific project.",
+  {
+    project: z.string().optional(),
+  },
+  async (input) => {
+    if (!input.project) return jsonText(listAgents());
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText(listWorkspaceAgents(project.id));
+  },
 );
 
 server.tool(
   "projects_agents_add",
-  "Register a human, CLI, service, or AI agent for workspace attribution.",
+  "Register a human, CLI, service, or AI agent for project attribution.",
   {
     name: z.string(),
     kind: z.enum(["human", "ai", "service", "cli"]),
@@ -395,8 +461,52 @@ server.tool(
 );
 
 server.tool(
+  "projects_agents_assign",
+  "Assign a registered agent to a project role and record an audit event.",
+  {
+    project: z.string(),
+    agent: z.string(),
+    role: z.enum(PROJECT_AGENT_ROLES).optional(),
+    assigned_by: z.string().optional(),
+    metadata: z.record(z.unknown()).optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const agent = getAgent(input.agent) ?? getAgentBySlug(input.agent);
+      if (!agent) return errorText(`Agent not found: ${input.agent}`);
+      const assignedBy = input.assigned_by ? agentId(input.assigned_by) : ensureCliAgent().id;
+      const assignment = assignAgentToWorkspace(
+        project.id,
+        agent.id,
+        input.role ?? "contributor",
+        assignedBy,
+        input.metadata as JsonObject | undefined,
+      );
+      recordWorkspaceEvent({
+        workspace_id: project.id,
+        agent_id: assignedBy,
+        event_type: "agent_assigned",
+        source: "mcp",
+        command: "projects_agents_assign",
+        after: {
+          agent_id: agent.id,
+          agent_slug: agent.slug,
+          role: assignment.role,
+          assignment_id: assignment.id,
+        },
+      });
+      return jsonText(assignment);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
   "projects_tmux_profiles_list",
-  "List saved workspace tmux profiles.",
+  "List saved project tmux profiles.",
   {},
   async () => jsonText(listTmuxProfiles().map((profile) => ({ ...profile, windows: listTmuxProfileWindows(profile.id) }))),
 );
@@ -462,25 +572,116 @@ const rollbackActionInput = z.object({
 
 server.tool(
   "projects_tmux_profiles_apply",
-  "Apply a saved tmux profile to a workspace.",
+  "Apply a saved tmux profile to a project.",
   {
     profile: z.string(),
-    workspace: z.string(),
+    project: z.string(),
     dry_run: z.boolean().optional(),
   },
   async (input) => {
     try {
       const profile = resolveTmuxProfile(input.profile);
       if (!profile) return errorText(`Tmux profile not found: ${input.profile}`);
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = ensureCliAgent().id;
-      const apply = () => applyWorkspaceTmuxProfile(workspace, profile, listTmuxProfileWindows(profile.id), {
+      const apply = () => applyWorkspaceTmuxProfile(project, profile, listTmuxProfileWindows(profile.id), {
         dryRun: input.dry_run,
         source: "mcp",
         command: "projects_tmux_profiles_apply",
       });
-      return jsonText(input.dry_run ? apply() : withWorkspaceMutationLock(workspace, owner, "tmux profile apply", apply));
+      return jsonText(input.dry_run ? apply() : withWorkspaceMutationLock(project, owner, "project tmux profile apply", apply));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+function projectDoctorPayload(result: ReturnType<typeof doctorWorkspace>) {
+  const { workspace, ...rest } = result;
+  return { ...rest, project: workspace };
+}
+
+server.tool(
+  "projects_list",
+  "List registered projects across all roots and arbitrary paths.",
+  {
+    kind: z.string().optional(),
+    status: z.enum(["active", "archived", "deleted"]).optional(),
+    query: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    include_evals: z.boolean().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  },
+  async (input) => jsonText(filterProjectEvalArtifacts(listWorkspaces({
+    kind: input.kind as WorkspaceKind | undefined,
+    status: input.status,
+    query: input.query,
+    tags: input.tags,
+    limit: input.limit,
+  }), input.include_evals).map(projectWithManagement)),
+);
+
+server.tool(
+  "projects_show",
+  "Show a project with locations and event history.",
+  { id: z.string() },
+  async (input) => {
+    const project = findProjectTarget(input.id);
+    if (!project) return errorText(`Project not found: ${input.id}`);
+    return jsonText({
+      project: projectWithManagement(project),
+      management: projectManagementSummary(project),
+      external_links: projectExternalLinksSummary(project),
+      dashboard: projectDashboardSummary(project),
+      agents: listWorkspaceAgents(project.id),
+      locations: listWorkspaceLocations(project.id),
+      events: listWorkspaceEvents(project.id),
+    });
+  },
+);
+
+server.tool(
+  "projects_locations_list",
+  "List registered folder locations for a project.",
+  { project: z.string() },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText({ project: projectWithManagement(project), locations: listWorkspaceLocations(project.id) });
+  },
+);
+
+server.tool(
+  "projects_locations_add",
+  "Register another folder location for a project. Use primary=true to make it the default project path.",
+  {
+    project: z.string(),
+    path: z.string(),
+    label: z.string().optional(),
+    kind: z.string().optional(),
+    primary: z.boolean().optional(),
+    metadata: z.record(z.unknown()).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const location = withWorkspaceMutationLock(project, owner, "project location add", () => addWorkspaceLocation({
+        workspace_id: project.id,
+        path: input.path,
+        label: input.label,
+        kind: input.kind,
+        is_primary: input.primary,
+        metadata: input.metadata as JsonObject | undefined,
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_locations_add",
+      }));
+      const updated = resolveWorkspace(project.id) ?? project;
+      return jsonText({ project: projectWithManagement(updated), location });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -488,27 +689,8 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_list",
-  "List generic workspaces across all registered roots and arbitrary paths.",
-  {
-    kind: z.string().optional(),
-    status: z.enum(["active", "archived", "deleted"]).optional(),
-    query: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    limit: z.number().int().positive().max(500).optional(),
-  },
-  async (input) => jsonText(listWorkspaces({
-    kind: input.kind as WorkspaceKind | undefined,
-    status: input.status,
-    query: input.query,
-    tags: input.tags,
-    limit: input.limit,
-  })),
-);
-
-server.tool(
-  "projects_workspaces_create",
-  "Create/register a generic workspace anywhere on disk, optionally preparing directory/git and tmux windows.",
+  "projects_create",
+  "Create/register a project anywhere on disk, optionally preparing directory/git and tmux windows.",
   {
     name: z.string(),
     slug: z.string().optional(),
@@ -518,6 +700,20 @@ server.tool(
     recipe: z.string().optional(),
     path: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    stage: z.enum(PROJECT_STAGES).optional(),
+    priority: z.enum(PROJECT_PRIORITIES).optional(),
+    owner: z.string().optional(),
+    launch_profile: z.string().optional(),
+    start_agent: z.enum(PROJECT_START_AGENTS).optional(),
+    start_command: z.string().optional(),
+    start_session_policy: z.enum(PROJECT_START_SESSION_POLICIES).optional(),
+    start_windows: z.array(tmuxWindowInput).optional(),
+    todos_project_id: z.string().optional(),
+    todos_task_list_id: z.string().optional(),
+    brief_id: z.string().optional(),
+    brief_path: z.string().optional(),
+    integrations: z.record(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
     agent: z.string().optional(),
     git_remote: z.string().optional(),
     mkdir: z.boolean().optional(),
@@ -532,7 +728,25 @@ server.tool(
   async (input) => {
     try {
       const owner = agentId(input.agent);
-      return jsonText(executeWorkspaceCreation({
+      const metadataBase = (input.metadata ?? {}) as JsonObject;
+      const metadata = mergeProjectManagementMetadata(metadataBase, {
+        stage: input.stage,
+        priority: input.priority,
+        owner: input.owner,
+        launch_profile: input.launch_profile,
+        start_agent: input.start_agent,
+        start_command: input.start_command,
+        start_session_policy: input.start_session_policy,
+        start_windows: input.start_windows,
+      }) ?? metadataBase;
+      const integrationsBase = input.integrations as WorkspaceIntegrations | undefined ?? {};
+      const integrations = mergeProjectIntegrationFields(integrationsBase, {
+        todos_project_id: input.todos_project_id,
+        todos_task_list_id: input.todos_task_list_id,
+        brief_id: input.brief_id,
+        brief_path: input.brief_path,
+      }) ?? integrationsBase;
+      return jsonProjectText(executeWorkspaceCreation({
         name: input.name,
         slug: input.slug,
         description: input.description,
@@ -541,10 +755,12 @@ server.tool(
         recipe_id: recipeId(input.recipe),
         primary_path: input.path,
         tags: input.tags,
+        integrations,
+        metadata,
         git_remote: input.git_remote,
         agent_id: owner,
         source: "mcp",
-        command: "projects_workspaces_create",
+        command: "projects_create",
         createDirectory: input.mkdir || input.git_init,
         gitInit: input.git_init,
         writeMarker: input.marker,
@@ -561,8 +777,8 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_import",
-  "Import an existing folder or direct child folders as generic workspaces.",
+  "projects_import",
+  "Import an existing folder or direct child folders as projects.",
   {
     path: z.string(),
     bulk: z.boolean().optional(),
@@ -573,7 +789,7 @@ server.tool(
   async (input) => {
     try {
       const owner = input.agent ? agentId(input.agent) : undefined;
-      return jsonText(input.bulk
+      return jsonProjectText(input.bulk
         ? await importWorkspaceBulk(input.path, { dryRun: input.dry_run, tags: input.tags, agent_id: owner })
         : await importWorkspace(input.path, { dryRun: input.dry_run, tags: input.tags, agent_id: owner }));
     } catch (err) {
@@ -583,8 +799,45 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_scan_roots",
-  "Scan all registered roots and preview or import direct child folders as workspaces. Dry-run by default.",
+  "projects_import_github",
+  "Import a GitHub repository as a project. Can plan, clone, or register remote-only projects.",
+  {
+    repo: z.string(),
+    root: z.string().optional(),
+    path: z.string().optional(),
+    clone: z.boolean().optional(),
+    remote_only: z.boolean().optional(),
+    kind: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    agent: z.string().optional(),
+    remote_protocol: z.enum(["https", "ssh"]).optional(),
+    dry_run: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const owner = input.agent ? agentId(input.agent) : undefined;
+      return jsonProjectText(await importWorkspaceFromGitHub(input.repo, {
+        root: input.root,
+        path: input.path,
+        clone: input.clone,
+        remoteOnly: input.remote_only,
+        kind: input.kind as WorkspaceKind | undefined,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
+        dryRun: input.dry_run,
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_import_github",
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_scan_roots",
+  "Scan registered roots and preview or import direct child folders as projects. Dry-run by default.",
   {
     apply: z.boolean().optional(),
     tags: z.array(z.string()).optional(),
@@ -605,47 +858,10 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_import_github",
-  "Import a GitHub repository as a generic workspace. Can plan, clone, or register remote-only workspaces.",
+  "projects_github_publish",
+  "Publish a project to GitHub. Creates the repo, updates project metadata, and can push local git.",
   {
-    repo: z.string(),
-    root: z.string().optional(),
-    path: z.string().optional(),
-    clone: z.boolean().optional(),
-    remote_only: z.boolean().optional(),
-    kind: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    agent: z.string().optional(),
-    remote_protocol: z.enum(["https", "ssh"]).optional(),
-    dry_run: z.boolean().optional(),
-  },
-  async (input) => {
-    try {
-      const owner = input.agent ? agentId(input.agent) : undefined;
-      return jsonText(await importWorkspaceFromGitHub(input.repo, {
-        root: input.root,
-        path: input.path,
-        clone: input.clone,
-        remoteOnly: input.remote_only,
-        kind: input.kind as WorkspaceKind | undefined,
-        tags: input.tags,
-        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
-        dryRun: input.dry_run,
-        agent_id: owner,
-        source: "mcp",
-        command: "projects_workspaces_import_github",
-      }));
-    } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
-  "projects_workspaces_github_publish",
-  "Publish a workspace to GitHub. Creates the repo, updates workspace git/integration metadata, and can push local git.",
-  {
-    workspace: z.string(),
+    project: z.string(),
     org: z.string().optional(),
     repo: z.string().optional(),
     visibility: z.enum(["public", "private"]).optional(),
@@ -657,10 +873,10 @@ server.tool(
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      const publish = () => publishWorkspaceToGitHub(workspace, {
+      const publish = () => publishWorkspaceToGitHub(project, {
         org: input.org,
         repoName: input.repo,
         visibility: input.visibility as GitHubVisibility | undefined,
@@ -670,9 +886,9 @@ server.tool(
         dryRun: input.dry_run,
         agent_id: owner,
         source: "mcp",
-        command: "projects_workspaces_github_publish",
+        command: "projects_github_publish",
       });
-      return jsonText(input.dry_run ? publish() : withWorkspaceMutationLock(workspace, owner, "workspace GitHub publish", publish));
+      return jsonProjectText(input.dry_run ? publish() : withWorkspaceMutationLock(project, owner, "project GitHub publish", publish));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -680,27 +896,27 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_github_unpublish",
-  "Remove GitHub origin metadata from a workspace without deleting the GitHub repo.",
+  "projects_github_unpublish",
+  "Remove GitHub origin metadata from a project without deleting the GitHub repo.",
   {
-    workspace: z.string(),
+    project: z.string(),
     clear_integrations: z.boolean().optional(),
     dry_run: z.boolean().optional(),
     agent: z.string().optional(),
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      const unpublish = () => unpublishWorkspaceFromGitHub(workspace, {
+      const unpublish = () => unpublishWorkspaceFromGitHub(project, {
         clearIntegrations: input.clear_integrations,
         dryRun: input.dry_run,
         agent_id: owner,
         source: "mcp",
-        command: "projects_workspaces_github_unpublish",
+        command: "projects_github_unpublish",
       });
-      return jsonText(input.dry_run ? unpublish() : withWorkspaceMutationLock(workspace, owner, "workspace GitHub unpublish", unpublish));
+      return jsonProjectText(input.dry_run ? unpublish() : withWorkspaceMutationLock(project, owner, "project GitHub unpublish", unpublish));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -708,22 +924,41 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_integrations_link",
-  "Merge external integration IDs into a workspace and record an update event.",
+  "projects_start",
+  "Start a project by creating or reusing a tmux session and launching a coding tool.",
   {
-    workspace: z.string(),
-    integrations: z.record(z.string()),
+    target: z.string().optional(),
+    agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
+    command: z.string().optional(),
+    profile: z.string().optional(),
+    session: z.string().optional(),
+    session_policy: z.enum(PROJECT_START_SESSION_POLICIES).optional(),
+    window_name: z.string().optional(),
+    windows: z.array(tmuxWindowInput).optional(),
+    register: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    dry_run: z.boolean().optional(),
     agent: z.string().optional(),
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
-      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      return jsonText(linkWorkspaceExternalIntegrations(workspace, input.integrations as WorkspaceIntegrations, {
-        agent_id: owner,
+      return jsonText(await startProject(input.target, {
+        agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
+        toolCommand: input.command,
+        profile: input.profile,
+        session: input.session,
+        sessionPolicy: input.session_policy,
+        windowName: input.window_name,
+        extraWindows: input.windows,
+        register: input.register,
+        importTags: input.tags,
+        importMetadata: input.metadata as JsonObject | undefined,
+        dryRun: input.dry_run,
+        attach: false,
+        agentId: input.agent ? agentId(input.agent) : ensureCliAgent().id,
         source: "mcp",
-        command: "projects_workspaces_integrations_link",
+        auditCommand: "projects_start",
       }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -732,23 +967,65 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_show",
-  "Show a generic workspace with locations and event history.",
-  { id: z.string() },
+  "projects_tmux_status",
+  "Inspect the expected and current tmux session/window status for a project.",
+  {
+    target: z.string().optional(),
+    profile: z.string().optional(),
+    session: z.string().optional(),
+    agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
+    command: z.string().optional(),
+    window_name: z.string().optional(),
+    windows: z.array(tmuxWindowInput).optional(),
+  },
   async (input) => {
-    const workspace = resolveWorkspace(input.id);
-    if (!workspace) return errorText(`Workspace not found: ${input.id}`);
-    return jsonText({
-      workspace,
-      locations: listWorkspaceLocations(workspace.id),
-      events: listWorkspaceEvents(workspace.id),
-    });
+    try {
+      return jsonText(await projectTmuxStatus(input.target, {
+        profile: input.profile,
+        session: input.session,
+        agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
+        command: input.command,
+        windowName: input.window_name,
+        extraWindows: input.windows,
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   },
 );
 
 server.tool(
-  "projects_workspaces_update",
-  "Update generic workspace metadata. Acquires a workspace mutation lock and records an immutable event.",
+  "projects_cleanup_create",
+  "Safely clean up DB/files created by a project creation run using rollback records.",
+  {
+    project: z.string(),
+    rollback_actions: z.array(rollbackActionInput).optional(),
+    dry_run: z.boolean().optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      return jsonText(withWorkspaceMutationLock(project, owner, "project creation cleanup", () => cleanupWorkspaceCreationTarget(
+        cleanupTargetFromWorkspace(project, input.rollback_actions),
+        {
+          dryRun: input.dry_run,
+          agentId: owner,
+          source: "mcp",
+          command: "projects_cleanup_create",
+        },
+      )));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_update",
+  "Update project metadata. Acquires a mutation lock and records an immutable event.",
   {
     id: z.string(),
     name: z.string().optional(),
@@ -767,14 +1044,50 @@ server.tool(
     s3_prefix: z.string().nullable().optional(),
     integrations: z.record(z.unknown()).optional(),
     metadata: z.record(z.unknown()).optional(),
+    stage: z.enum(PROJECT_STAGES).nullable().optional(),
+    priority: z.enum(PROJECT_PRIORITIES).nullable().optional(),
+    owner: z.string().nullable().optional(),
+    launch_profile: z.string().nullable().optional(),
+    start_agent: z.enum(PROJECT_START_AGENTS).nullable().optional(),
+    start_command: z.string().nullable().optional(),
+    start_session_policy: z.enum(PROJECT_START_SESSION_POLICIES).nullable().optional(),
+    start_windows: z.array(tmuxWindowInput).nullable().optional(),
+    todos_project_id: z.string().nullable().optional(),
+    todos_task_list_id: z.string().nullable().optional(),
+    brief_id: z.string().nullable().optional(),
+    brief_path: z.string().nullable().optional(),
     agent: z.string().optional(),
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.id);
-      if (!workspace) return errorText(`Workspace not found: ${input.id}`);
+      const project = findProjectTarget(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
       const owner = agentId(input.agent);
-      return jsonText(withWorkspaceMutationLock(workspace, owner, "workspace update", () => updateWorkspace(workspace.id, {
+      const metadataBase = input.metadata === undefined ? project.metadata : input.metadata as JsonObject;
+      const metadataFields = {
+        stage: input.stage,
+        priority: input.priority,
+        owner: input.owner,
+        launch_profile: input.launch_profile,
+        start_agent: input.start_agent,
+        start_command: input.start_command,
+        start_session_policy: input.start_session_policy,
+        start_windows: input.start_windows,
+      };
+      const metadata = hasProjectManagementFields(metadataFields)
+        ? mergeProjectManagementMetadata(metadataBase, metadataFields)
+        : input.metadata === undefined ? undefined : metadataBase;
+      const integrationsBase = input.integrations === undefined ? project.integrations : input.integrations as WorkspaceIntegrations;
+      const integrationFields = {
+        todos_project_id: input.todos_project_id,
+        todos_task_list_id: input.todos_task_list_id,
+        brief_id: input.brief_id,
+        brief_path: input.brief_path,
+      };
+      const integrations = hasProjectIntegrationFields(integrationFields)
+        ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
+        : input.integrations === undefined ? undefined : integrationsBase;
+      const updated = withWorkspaceMutationLock(project, owner, "project update", () => updateWorkspace(project.id, {
         name: input.name,
         slug: input.slug,
         description: input.description,
@@ -787,12 +1100,13 @@ server.tool(
         git_remote: input.git_remote,
         s3_bucket: input.s3_bucket,
         s3_prefix: input.s3_prefix,
-        integrations: input.integrations as WorkspaceIntegrations | undefined,
-        metadata: input.metadata,
+        integrations,
+        metadata,
         agent_id: owner,
         source: "mcp",
-        command: "projects_workspaces_update",
-      })));
+        command: "projects_update",
+      }));
+      return jsonText({ project: updated });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -800,89 +1114,23 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_archive",
-  "Archive a generic workspace. Acquires a mutation lock and records an event.",
-  { id: z.string(), agent: z.string().optional() },
-  async (input) => {
-    try {
-      const workspace = resolveWorkspace(input.id);
-      if (!workspace) return errorText(`Workspace not found: ${input.id}`);
-      const owner = agentId(input.agent);
-      return jsonText(withWorkspaceMutationLock(workspace, owner, "workspace archive", () => archiveWorkspace(workspace.id, {
-        agent_id: owner,
-        source: "mcp",
-        command: "projects_workspaces_archive",
-      })));
-    } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
-  "projects_workspaces_unarchive",
-  "Restore an archived or deleted generic workspace to active.",
-  { id: z.string(), agent: z.string().optional() },
-  async (input) => {
-    try {
-      const workspace = resolveWorkspace(input.id);
-      if (!workspace) return errorText(`Workspace not found: ${input.id}`);
-      const owner = agentId(input.agent);
-      return jsonText(withWorkspaceMutationLock(workspace, owner, "workspace unarchive", () => unarchiveWorkspace(workspace.id, {
-        agent_id: owner,
-        source: "mcp",
-        command: "projects_workspaces_unarchive",
-      })));
-    } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
-  "projects_workspaces_delete",
-  "Mark a generic workspace deleted, or hard-delete the row when hard=true.",
-  { id: z.string(), hard: z.boolean().optional(), agent: z.string().optional() },
-  async (input) => {
-    try {
-      const workspace = resolveWorkspace(input.id);
-      if (!workspace) return errorText(`Workspace not found: ${input.id}`);
-      const owner = agentId(input.agent);
-      return jsonText(withWorkspaceMutationLock(workspace, owner, "workspace delete", () => deleteWorkspace(workspace.id, {
-        hard: input.hard,
-        agent_id: owner,
-        source: "mcp",
-        command: "projects_workspaces_delete",
-      })));
-    } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
-  "projects_workspaces_cleanup_create",
-  "Safely clean up DB/files created by a workspace creation run using stored or supplied rollback actions.",
+  "projects_link",
+  "Merge external integration IDs into a project and record an update event.",
   {
-    workspace: z.string(),
-    rollback_actions: z.array(rollbackActionInput).optional(),
-    dry_run: z.boolean().optional(),
+    project: z.string(),
+    integrations: z.record(z.string()),
     agent: z.string().optional(),
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      return jsonText(withWorkspaceMutationLock(workspace, owner, "workspace creation cleanup", () => cleanupWorkspaceCreationTarget(
-        cleanupTargetFromWorkspace(workspace, input.rollback_actions),
-        {
-          dryRun: input.dry_run,
-          agentId: owner,
-          source: "mcp",
-          command: "projects_workspaces_cleanup_create",
-        },
-      )));
+      return jsonText({ project: linkWorkspaceExternalIntegrations(project, input.integrations as WorkspaceIntegrations, {
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_link",
+      }) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -890,8 +1138,149 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_doctor",
-  "Check one or all workspaces for path, marker, reference, location, and failed-run issues.",
+  "projects_tag",
+  "Add tags to a project and record an update event.",
+  {
+    project: z.string(),
+    tags: z.array(z.string()).min(1),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const updated = withWorkspaceMutationLock(project, owner, "project tag", () => updateWorkspace(project.id, {
+        tags: mergeProjectTags(project.tags, input.tags),
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_tag",
+      }));
+      return jsonText({ project: projectWithManagement(updated) });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_untag",
+  "Remove tags from a project and record an update event.",
+  {
+    project: z.string(),
+    tags: z.array(z.string()).min(1),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const updated = withWorkspaceMutationLock(project, owner, "project untag", () => updateWorkspace(project.id, {
+        tags: removeProjectTags(project.tags, input.tags),
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_untag",
+      }));
+      return jsonText({ project: projectWithManagement(updated) });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_unlink",
+  "Clear external integration IDs from a project and record an update event.",
+  {
+    project: z.string(),
+    keys: z.array(z.string()).min(1),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const unlinked = expandProjectIntegrationUnlinkKeys(input.keys);
+      if (unlinked.length === 0) return errorText("Provide at least one integration key or group to unlink");
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const updated = withWorkspaceMutationLock(project, owner, "project integration unlink", () => updateWorkspace(project.id, {
+        integrations: unlinkProjectIntegrationFields(project.integrations, input.keys),
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_unlink",
+      }));
+      return jsonText({ project: projectWithManagement(updated), unlinked });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_archive",
+  "Archive a project. Acquires a mutation lock and records an event.",
+  { id: z.string(), agent: z.string().optional() },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
+      const owner = agentId(input.agent);
+      return jsonText({ project: withWorkspaceMutationLock(project, owner, "project archive", () => archiveWorkspace(project.id, {
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_archive",
+      })) });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_unarchive",
+  "Restore an archived or deleted project to active.",
+  { id: z.string(), agent: z.string().optional() },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
+      const owner = agentId(input.agent);
+      return jsonText({ project: withWorkspaceMutationLock(project, owner, "project unarchive", () => unarchiveWorkspace(project.id, {
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_unarchive",
+      })) });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_delete",
+  "Mark a project deleted, or hard-delete the row when hard=true.",
+  { id: z.string(), hard: z.boolean().optional(), agent: z.string().optional() },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
+      const owner = agentId(input.agent);
+      return jsonProjectText(withWorkspaceMutationLock(project, owner, "project delete", () => deleteWorkspace(project.id, {
+        hard: input.hard,
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_delete",
+      })));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_doctor",
+  "Check one or all projects for path, marker, reference, location, and failed-run issues.",
   {
     id: z.string().optional(),
     fix: z.boolean().optional(),
@@ -900,26 +1289,78 @@ server.tool(
   async (input) => {
     const options = { fix: input.fix, dryRun: input.dry_run };
     if (input.id) {
-      const workspace = resolveWorkspace(input.id);
-      if (!workspace) return errorText(`Workspace not found: ${input.id}`);
+      const project = findProjectTarget(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
       const owner = ensureCliAgent().id;
       const result = input.fix && !input.dry_run
-        ? withWorkspaceMutationLock(workspace, owner, "workspace doctor fix", () => doctorWorkspace(workspace, options))
-        : doctorWorkspace(workspace, options);
-      return jsonText([result]);
+        ? withWorkspaceMutationLock(project, owner, "project doctor fix", () => doctorWorkspace(project, options))
+        : doctorWorkspace(project, options);
+      return jsonText([projectDoctorPayload(result)]);
     }
     const owner = ensureCliAgent().id;
-    return jsonText(listWorkspaces({ limit: 500 }).map((workspace) => input.fix && !input.dry_run
-      ? withWorkspaceMutationLock(workspace, owner, "workspace doctor fix", () => doctorWorkspace(workspace, options))
-      : doctorWorkspace(workspace, options)));
+    return jsonText(listWorkspaces({ limit: 500 }).map((project) => projectDoctorPayload(input.fix && !input.dry_run
+      ? withWorkspaceMutationLock(project, owner, "project doctor fix", () => doctorWorkspace(project, options))
+      : doctorWorkspace(project, options))));
   },
 );
 
 server.tool(
-  "projects_workspaces_lock",
-  "Acquire a workspace mutation lock.",
+  "projects_events_list",
+  "List audit events for a project.",
+  { project: z.string() },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText({ project, events: listWorkspaceEvents(project.id) });
+  },
+);
+
+server.tool(
+  "projects_event_record",
+  "Record a custom audit event for a project.",
   {
-    workspace: z.string(),
+    project: z.string(),
+    event_type: z.string(),
+    agent: z.string().optional(),
+    prompt: z.string().optional(),
+    before: z.record(z.unknown()).nullable().optional(),
+    after: z.record(z.unknown()).nullable().optional(),
+    metadata: z.record(z.unknown()).optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const event = recordWorkspaceEvent({
+        workspace_id: project.id,
+        agent_id: input.agent ? agentId(input.agent) : undefined,
+        event_type: input.event_type,
+        source: "mcp",
+        prompt: input.prompt,
+        command: "projects_event_record",
+        before: input.before as JsonObject | null | undefined,
+        after: input.after as JsonObject | null | undefined,
+        metadata: input.metadata as JsonObject | undefined,
+      });
+      return jsonText({ project, event });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_locks",
+  "List currently held project mutation locks.",
+  {},
+  async () => jsonText(listWorkspaceLocks()),
+);
+
+server.tool(
+  "projects_lock",
+  "Acquire a project mutation lock.",
+  {
+    project: z.string(),
     key: z.string().optional(),
     agent: z.string().optional(),
     reason: z.string().optional(),
@@ -927,11 +1368,11 @@ server.tool(
   },
   async (input) => {
     try {
-      const workspace = resolveWorkspace(input.workspace);
-      if (!workspace) return errorText(`Workspace not found: ${input.workspace}`);
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
       return jsonText(acquireWorkspaceLock({
-        lock_key: input.key ?? `workspace:${workspace.id}`,
-        workspace_id: workspace.id,
+        lock_key: input.key ?? `workspace:${project.id}`,
+        workspace_id: project.id,
         agent_id: input.agent ? agentId(input.agent) : undefined,
         reason: input.reason,
         ttl_seconds: input.ttl_seconds,
@@ -943,49 +1384,15 @@ server.tool(
 );
 
 server.tool(
-  "projects_workspaces_unlock",
-  "Release a workspace mutation lock.",
+  "projects_unlock",
+  "Release a project mutation lock.",
   { key: z.string() },
   async (input) => jsonText({ released: releaseWorkspaceLock(input.key) }),
 );
 
 server.tool(
-  "projects_workspaces_locks",
-  "List currently held workspace mutation locks.",
-  {},
-  async () => jsonText(listWorkspaceLocks()),
-);
-
-server.tool(
-  "projects_workspaces_migrate_legacy",
-  "Migrate rows from the legacy projects table into the generic workspace tables.",
-  {
-    dry_run: z.boolean().optional(),
-    db_path: z.string().optional(),
-    backup: z.boolean().optional(),
-    backup_dir: z.string().optional(),
-    backup_path: z.string().optional(),
-    report_path: z.string().optional(),
-  },
-  async (input) => {
-    try {
-      return jsonText(runWorkspaceLegacyMigration({
-        dbPath: input.db_path,
-        dryRun: input.dry_run,
-        backup: input.backup,
-        backupDir: input.backup_dir,
-        backupPath: input.backup_path,
-        reportPath: input.report_path,
-      }));
-    } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-);
-
-server.tool(
   "projects_agent_eval",
-  "Run workspace prompt-agent eval cases and return pass rate/confidence.",
+  "Run project prompt-agent eval cases and return pass rate/confidence.",
   {
     mock: z.boolean().optional(),
     model: z.string().optional(),
@@ -1010,7 +1417,7 @@ server.tool(
 
 server.tool(
   "projects_agent_prompt",
-  "Run the AI SDK/OpenRouter workspace agent prompt loop. Use dry_run unless explicit mutation is desired.",
+  "Run the AI SDK/OpenRouter project agent prompt loop. Use dry_run unless explicit mutation is desired.",
   {
     prompt: z.string(),
     yes: z.boolean().optional(),
@@ -1041,6 +1448,34 @@ server.tool(
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
+);
+
+server.tool(
+  "storage_status",
+  "Show projects storage sync configuration and local sync history.",
+  {},
+  async () => jsonText(getStorageStatus()),
+);
+
+server.tool(
+  "storage_push",
+  "Push local project data to storage PostgreSQL.",
+  { tables: z.array(z.string()).optional() },
+  async (input) => jsonText(await storagePush(input.tables ? { tables: input.tables } : undefined)),
+);
+
+server.tool(
+  "storage_pull",
+  "Pull project data from storage PostgreSQL to local SQLite.",
+  { tables: z.array(z.string()).optional() },
+  async (input) => jsonText(await storagePull(input.tables ? { tables: input.tables } : undefined)),
+);
+
+server.tool(
+  "storage_sync",
+  "Bidirectional project storage sync: pull then push.",
+  { tables: z.array(z.string()).optional() },
+  async (input) => jsonText(await storageSync(input.tables ? { tables: input.tables } : undefined)),
 );
 
 return server;

@@ -3,11 +3,17 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
-import { getDatabase, getDbPath, resolvePartialId, now, uuid } from "./database.js";
+import { closeDatabase, getDatabase, getDbPath, resolvePartialId, now, uuid } from "./database.js";
 import { runMigrations } from "./schema.js";
 import { createWorkspace } from "./workspaces.js";
 
 describe("database", () => {
+  afterEach(() => {
+    closeDatabase();
+    delete process.env["HASNA_WORKSPACES_DB_PATH"];
+    delete process.env["HASNA_PROJECTS_DB_PATH"];
+  });
+
   describe("getDatabase", () => {
     test("creates in-memory database", () => {
       const db = new Database(":memory:");
@@ -28,19 +34,47 @@ describe("database", () => {
       db.close();
       rmSync(tmp, { recursive: true });
     });
+
+    test("reopens the cached default database when HASNA_PROJECTS_DB_PATH changes", () => {
+      const tmp = mkdtempSync(join(tmpdir(), "db-switch-"));
+      const firstPath = join(tmp, "first.db");
+      const secondPath = join(tmp, "second.db");
+
+      process.env["HASNA_PROJECTS_DB_PATH"] = firstPath;
+      const first = getDatabase();
+      createWorkspace({ name: "First", slug: "first", kind: "generic" });
+
+      process.env["HASNA_PROJECTS_DB_PATH"] = secondPath;
+      const second = getDatabase();
+      createWorkspace({ name: "Second", slug: "second", kind: "generic" });
+
+      expect(first).not.toBe(second);
+      expect(resolvePartialId("second")).toBeTruthy();
+      expect(existsSync(firstPath)).toBe(true);
+      expect(existsSync(secondPath)).toBe(true);
+
+      rmSync(tmp, { recursive: true, force: true });
+    });
   });
 
   describe("getDbPath", () => {
-    test("uses HASNA_WORKSPACES_DB_PATH env var", () => {
-      process.env["HASNA_WORKSPACES_DB_PATH"] = "/custom/env.db";
+    test("uses HASNA_PROJECTS_DB_PATH env var", () => {
+      process.env["HASNA_PROJECTS_DB_PATH"] = "/custom/env.db";
       expect(getDbPath()).toBe("/custom/env.db");
-      delete process.env["HASNA_WORKSPACES_DB_PATH"];
+      delete process.env["HASNA_PROJECTS_DB_PATH"];
+    });
+
+    test("keeps HASNA_WORKSPACES_DB_PATH as a legacy fallback", () => {
+      process.env["HASNA_WORKSPACES_DB_PATH"] = "/custom/legacy.db";
+      expect(getDbPath()).toBe("/custom/legacy.db");
+      process.env["HASNA_PROJECTS_DB_PATH"] = "/custom/project.db";
+      expect(getDbPath()).toBe("/custom/project.db");
     });
 
     test("returns default path when no env vars", () => {
       const path = getDbPath();
       expect(path).toContain(".hasna");
-      expect(path).toContain("workspaces.db");
+      expect(path).toContain("projects.db");
     });
   });
 

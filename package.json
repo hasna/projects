@@ -1,7 +1,7 @@
 {
   "name": "@hasna/projects",
   "version": "0.1.55",
-  "description": "Generic workspace orchestration CLI, MCP server, and AI SDK agent loop for coding agents",
+  "description": "High-level project management CLI, MCP server, SDK, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "import": "./dist/storage.js"
     }
   },
   "files": [
@@ -21,16 +25,17 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts src/storage.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.ts",
     "dev:mcp": "bun run src/mcp/index.ts",
     "prepublishOnly": "bun run build",
-    "postinstall": "mkdir -p $HOME/.hasna/workspaces 2>/dev/null || true"
+    "postinstall": "mkdir -p $HOME/.hasna/projects 2>/dev/null || true"
   },
   "keywords": [
-    "workspaces",
+    "projects",
+    "project-management",
     "mcp",
     "ai",
     "coding-agent",
@@ -64,10 +69,12 @@
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "nanoid": "^5.0.9",
+    "pg": "^8.13.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bun": "^1.2.4",
+    "@types/pg": "^8.11.11",
     "typescript": "^5.7.3"
   }
 }

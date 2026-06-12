@@ -87,7 +87,7 @@ function buildReleaseChecklist(report: Omit<WorkspaceMigrationReport, "release_c
     {
       key: "mcp_config_review",
       status: "pending",
-      detail: "Review MCP client configs for the workspace-only projects-mcp tool surface.",
+      detail: "Review MCP client configs for the project-first projects-mcp tool surface.",
     },
     {
       key: "build_test_publish",

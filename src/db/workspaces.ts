@@ -15,6 +15,7 @@ import type {
   CreateTmuxProfileInput,
   CreateTmuxProfileWindowInput,
   CreateWorkspaceInput,
+  EventSource,
   JsonObject,
   Recipe,
   RecipeRow,
@@ -28,6 +29,8 @@ import type {
   UpdateWorkspaceInput,
   UpdateRootInput,
   Workspace,
+  WorkspaceAgentAssignment,
+  WorkspaceAgentAssignmentRow,
   WorkspaceEvent,
   WorkspaceEventRow,
   WorkspaceIntegrations,
@@ -140,6 +143,14 @@ function rowToLocation(row: WorkspaceLocationRow): WorkspaceLocation {
     is_primary: row.is_primary === 1,
     exists_at_create: row.exists_at_create === 1,
     metadata: parseJson<JsonObject>(row.metadata, {}),
+  };
+}
+
+function rowToWorkspaceAgentAssignment(row: WorkspaceAgentAssignmentRow, db: Database): WorkspaceAgentAssignment {
+  return {
+    ...row,
+    metadata: parseJson<JsonObject>(row.metadata, {}),
+    agent: getAgent(row.agent_id, db),
   };
 }
 
@@ -658,7 +669,7 @@ export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Wor
   }
 
   if (input.agent_id) {
-    assignAgentToWorkspace(id, input.agent_id, "creator", input.agent_id, d);
+    assignAgentToWorkspace(id, input.agent_id, "creator", input.agent_id, { source: input.source ?? "cli" }, d);
   }
 
   const workspace = getWorkspace(id, d)!;
@@ -689,10 +700,24 @@ export function getWorkspaceBySlug(slug: string, db?: Database): Workspace | nul
 }
 
 export function getWorkspaceByPath(path: string, db?: Database): Workspace | null {
+  return listWorkspacesByPath(path, db)[0] ?? null;
+}
+
+export function listWorkspacesByPath(path: string, db?: Database): Workspace[] {
   const d = db || getDatabase();
   const absPath = resolve(path);
-  const row = d.query("SELECT * FROM workspaces WHERE primary_path = ?").get(absPath) as WorkspaceRow | null;
-  return row ? rowToWorkspace(row) : null;
+  const rows = d
+    .query(`
+      SELECT DISTINCT w.*
+      FROM workspaces w
+      LEFT JOIN workspace_locations loc ON loc.workspace_id = w.id
+      WHERE w.primary_path = ? OR loc.path = ?
+      ORDER BY
+        CASE WHEN w.primary_path = ? THEN 0 ELSE 1 END,
+        w.name ASC
+    `)
+    .all(absPath, absPath, absPath) as WorkspaceRow[];
+  return rows.map(rowToWorkspace);
 }
 
 export interface WorkspaceFilter {
@@ -868,6 +893,10 @@ export interface AddWorkspaceLocationInput {
   kind?: string;
   is_primary?: boolean;
   metadata?: JsonObject;
+  agent_id?: string;
+  source?: EventSource;
+  prompt?: string;
+  command?: string;
 }
 
 export function addWorkspaceLocation(input: AddWorkspaceLocationInput, db?: Database): WorkspaceLocation {
@@ -913,7 +942,20 @@ export function addWorkspaceLocation(input: AddWorkspaceLocationInput, db?: Data
     .query("SELECT * FROM workspace_locations WHERE workspace_id = ? AND path = ? AND machine_id = ?")
     .get(input.workspace_id, path, machineId()) as WorkspaceLocationRow | null;
   if (!row) throw new Error(`Workspace location was not written: ${path}`);
-  return rowToLocation(row);
+  const location = rowToLocation(row);
+  if (input.source || input.agent_id || input.prompt || input.command) {
+    recordWorkspaceEvent({
+      workspace_id: input.workspace_id,
+      agent_id: input.agent_id,
+      event_type: "location_added",
+      source: input.source ?? "system",
+      prompt: input.prompt,
+      command: input.command,
+      after: location as unknown as JsonObject,
+      metadata: { primary: location.is_primary },
+    }, d);
+  }
+  return location;
 }
 
 export function listWorkspaceLocations(workspaceId: string, db?: Database): WorkspaceLocation[] {
@@ -924,20 +966,45 @@ export function listWorkspaceLocations(workspaceId: string, db?: Database): Work
   return rows.map(rowToLocation);
 }
 
+export function getWorkspaceLocationByPath(path: string, db?: Database): WorkspaceLocation | null {
+  const d = db || getDatabase();
+  const absPath = resolve(path);
+  const row = d
+    .query("SELECT * FROM workspace_locations WHERE path = ? ORDER BY is_primary DESC, created_at ASC LIMIT 1")
+    .get(absPath) as WorkspaceLocationRow | null;
+  return row ? rowToLocation(row) : null;
+}
+
 export function assignAgentToWorkspace(
   workspaceId: string,
   agentId: string,
   role = "contributor",
   assignedBy?: string,
+  metadata?: JsonObject,
   db?: Database,
-): void {
+): WorkspaceAgentAssignment {
   const d = db || getDatabase();
+  if (!getWorkspace(workspaceId, d)) throw new Error(`Workspace not found: ${workspaceId}`);
+  if (!getAgent(agentId, d)) throw new Error(`Agent not found: ${agentId}`);
   d.run(
-    `INSERT INTO workspace_agents (id, workspace_id, agent_id, role, assigned_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO workspace_agents (id, workspace_id, agent_id, role, assigned_by, metadata, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(workspace_id, agent_id, role) DO NOTHING`,
-    [uuid(), workspaceId, agentId, role, assignedBy ?? null, now()],
+    [uuid(), workspaceId, agentId, role, assignedBy ?? null, json(metadata ?? {}), now()],
   );
+  const row = d
+    .query("SELECT * FROM workspace_agents WHERE workspace_id = ? AND agent_id = ? AND role = ?")
+    .get(workspaceId, agentId, role) as WorkspaceAgentAssignmentRow | null;
+  if (!row) throw new Error(`Workspace agent assignment was not written: ${workspaceId}/${agentId}/${role}`);
+  return rowToWorkspaceAgentAssignment(row, d);
+}
+
+export function listWorkspaceAgents(workspaceId: string, db?: Database): WorkspaceAgentAssignment[] {
+  const d = db || getDatabase();
+  const rows = d
+    .query("SELECT * FROM workspace_agents WHERE workspace_id = ? ORDER BY role ASC, created_at ASC")
+    .all(workspaceId) as WorkspaceAgentAssignmentRow[];
+  return rows.map((row) => rowToWorkspaceAgentAssignment(row, d));
 }
 
 export function recordWorkspaceEvent(input: RecordWorkspaceEventInput, db?: Database): WorkspaceEvent {

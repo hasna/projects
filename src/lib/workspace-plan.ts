@@ -60,7 +60,7 @@ export interface WorkspaceCreationCleanupAction extends Omit<WorkspaceCreationPl
 }
 
 export interface WorkspaceCreationPlan {
-  kind: "workspace_creation";
+  kind: "project_creation";
   created_at: string;
   can_execute: boolean;
   warnings: string[];
@@ -332,11 +332,11 @@ function rollbackPlan(workspace: WorkspaceCreationPlan["workspace"], runtimeActi
 
 function verificationPlan(workspace: WorkspaceCreationPlan["workspace"], tmux: WorkspaceTmuxResult | null): WorkspaceCreationPlanAction[] {
   const checks: WorkspaceCreationPlanAction[] = [
-    { type: "verification", action: "run", target: `workspaces show ${workspace.slug} --json`, status: "planned" },
+    { type: "verification", action: "run", target: `projects show ${workspace.slug} --json`, status: "planned" },
   ];
   if (workspace.primary_path) {
     checks.push({ type: "verification", action: "check_path", target: workspace.primary_path, status: "planned" });
-    checks.push({ type: "verification", action: "run", target: `workspaces doctor ${workspace.slug} --json`, status: "planned" });
+    checks.push({ type: "verification", action: "run", target: `projects doctor ${workspace.slug} --json`, status: "planned" });
   }
   if (tmux) checks.push({ type: "verification", action: "run", target: `tmux list-windows -t ${tmux.session_name}`, status: "planned" });
   return checks;
@@ -352,7 +352,7 @@ export function planWorkspaceCreation(input: WorkspaceCreationPlanInput, options
   const commands = commandPlan(runtime.actions, tmux.result);
 
   return {
-    kind: "workspace_creation",
+    kind: "project_creation",
     created_at: createdAt,
     can_execute: warnings.length === 0,
     warnings,

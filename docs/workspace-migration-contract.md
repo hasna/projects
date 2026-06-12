@@ -1,10 +1,13 @@
-# Workspace Migration Contract
+# Legacy Storage Migration Contract
 
-## Final Domain
+This document is retained for the legacy storage migration only. It is not the
+current product contract. The app, package, binary, CLI, MCP, SDK, and prompt
+agent remain project-first. Workspace terminology below refers to current
+SQLite tables, marker files, locks, and migration internals.
 
-The replacement domain is workspace-first and has no public Project compatibility layer.
+## Storage Domain
 
-Core entities:
+Internal storage entities:
 
 - `Workspace`: any repository, app, docs folder, scaffold, experiment, remote-only repository, or project-like folder.
 - `Root`: a registered base path with tags, kind defaults, GitHub defaults, templates, allowed recipes, and allowed agents.
@@ -41,11 +44,11 @@ Core entities:
 - `project_workdirs` -> `workspace_locations`, preserving path, machine id, label, primary flag, creation time, and generated-doc metadata.
 - Legacy migration metadata is stored under `workspaces.metadata.migration_inference`.
 
-Dropped:
+Removed public legacy surfaces:
 
-- Public Project SDK/CLI/MCP APIs.
-- Project-specific sync/cloud command surface.
-- Compatibility aliases such as `Project`, `CreateProjectInput`, and `ProjectIntegrations`.
+- the nested workspace CLI group under the `projects` binary
+- workspace-prefixed MCP aliases
+- user-facing workspace-first documentation and examples
 
 ## Root Inventory
 
@@ -79,13 +82,15 @@ Kind is inferred from tags, path, and slug:
 
 ## Marker Strategy
 
-New runtime metadata uses `.workspace.json` with schema version `1`. It stores workspace id, slug, name, kind, root id, recipe id, primary path, git remote, tags, integrations, and generation time.
+New runtime metadata uses `.project.json` with schema version `1`. It stores project id, slug, name, kind, root id, recipe id, primary path, git remote, tags, integrations, and generation time.
 
-Legacy `.project.json` is not a public output. The import scanner can still treat legacy markers as signals during migration/import.
+Legacy `.workspace.json` is not a public output. The import scanner can still treat legacy markers as signals during migration/import.
 
 ## Verification Contract
 
-Migration must be run through `projects workspaces migrate-legacy`.
+Legacy migration is an internal storage operation, not a public CLI workflow.
+Use `runWorkspaceLegacyMigration` from the migration library or a dedicated
+one-off migration harness when a storage migration must be replayed.
 
 Required checks:
 
@@ -94,5 +99,5 @@ Required checks:
 - Validate `migration_map` accounts for every legacy project row.
 - Validate every legacy workdir row was migrated or explicitly skipped as already present/unmapped.
 - Review before/after counts and sample mappings in the JSON report.
-- Run `projects workspaces doctor --json` after migration.
+- Run `projects doctor --json` after migration.
 - Run typecheck, tests, build, MCP smoke, prompt eval, and package publish/update checks before release.

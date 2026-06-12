@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { getDatabase } from "../db/database.js";
 import {
@@ -145,8 +144,8 @@ export function doctorWorkspace(workspace: Workspace, options: { fix?: boolean; 
   if (options.fix) {
     const markerCheck = checks.find((check) => check.code.startsWith("WORKSPACE_MARKER_") && check.fixable);
     if (markerCheck && workspace.primary_path && existsSync(workspace.primary_path)) {
-      if (!dryRun) writeWorkspaceMarker(workspace, { source: "cli", command: "workspaces doctor --fix" });
-      fixes.push({ code: "FIX_WORKSPACE_MARKER", message: `${dryRun ? "Would write" : "Wrote"} ${join(workspace.primary_path, ".workspace.json")}`, changed: !dryRun, dryRun });
+      if (!dryRun) writeWorkspaceMarker(workspace, { source: "cli", command: "projects doctor --fix" });
+      fixes.push({ code: "FIX_WORKSPACE_MARKER", message: `${dryRun ? "Would write" : "Wrote"} ${workspaceMarkerPath(workspace)}`, changed: !dryRun, dryRun });
     }
     const locationCheck = checks.find((check) => check.code === "WORKSPACE_LOCATIONS_MISSING" && check.fixable);
     if (locationCheck && workspace.primary_path) {

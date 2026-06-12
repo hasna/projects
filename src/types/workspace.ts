@@ -19,6 +19,9 @@ export type WorkspaceKind = (typeof WORKSPACE_KINDS)[number];
 export const AGENT_KINDS = ["human", "ai", "service", "cli"] as const;
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+export const PROJECT_AGENT_ROLES = ["owner", "maintainer", "contributor", "service", "prompt-agent", "creator"] as const;
+export type ProjectAgentRole = (typeof PROJECT_AGENT_ROLES)[number];
+
 export const EVENT_SOURCES = ["cli", "mcp", "agent", "migration", "system"] as const;
 export type EventSource = (typeof EVENT_SOURCES)[number];
 
@@ -304,6 +307,27 @@ export interface WorkspaceLocationRow {
   kind: string;
   is_primary: number;
   exists_at_create: number;
+  metadata: string;
+  created_at: string;
+}
+
+export interface WorkspaceAgentAssignment {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  role: string;
+  assigned_by: string | null;
+  metadata: JsonObject;
+  created_at: string;
+  agent: Agent | null;
+}
+
+export interface WorkspaceAgentAssignmentRow {
+  id: string;
+  workspace_id: string;
+  agent_id: string;
+  role: string;
+  assigned_by: string | null;
   metadata: string;
   created_at: string;
 }

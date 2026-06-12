@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closeDatabase } from "../db/database.js";
 import {
   archiveWorkspace,
   createAgent,
@@ -16,7 +17,7 @@ import type { JsonObject } from "../types/workspace.js";
 export const WORKSPACE_AGENT_EVAL_CASE_IDS = [
   "create-explicit-path",
   "create-root-recipe-no-tmux",
-  "duplicate-existing-workspace",
+  "duplicate-existing-project",
   "root-create",
   "roots-list",
   "roots-match",
@@ -25,24 +26,24 @@ export const WORKSPACE_AGENT_EVAL_CASE_IDS = [
   "recipe-get",
   "agent-create",
   "agents-list",
-  "workspaces-list-query",
-  "workspace-show",
-  "workspace-events-list",
-  "workspace-event-record",
-  "workspace-verification-run",
+  "projects-list-query",
+  "project-show",
+  "project-events-list",
+  "project-event-record",
+  "project-verification-run",
   "import-existing-folder",
   "import-bulk",
   "scan-roots",
   "update-description",
   "update-tags",
-  "archive-workspace",
-  "unarchive-workspace",
-  "delete-workspace",
-  "hard-delete-workspace",
+  "archive-project",
+  "unarchive-project",
+  "delete-project",
+  "hard-delete-project",
   "cleanup-create",
   "tmux-apply-existing",
-  "github-publish-workspace",
-  "github-unpublish-workspace",
+  "github-publish-project",
+  "github-unpublish-project",
   "github-import-remote-only",
   "github-import-local-root",
   "integrations-link",
@@ -56,6 +57,7 @@ export interface WorkspaceAgentEvalOptions {
   maxSteps?: number;
   caseIds?: WorkspaceAgentEvalCaseId[];
   basePath?: string;
+  dbPath?: string;
 }
 
 export interface WorkspaceAgentEvalCheck {
@@ -91,6 +93,7 @@ export interface WorkspaceAgentEvalResult {
   mode: "ai" | "mock";
   model: string;
   base_path: string;
+  db_path: string;
   summary: WorkspaceAgentEvalSummary;
   cases: WorkspaceAgentEvalCaseResult[];
 }
@@ -136,8 +139,8 @@ function uniqueSuffix(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function setupFixtures(basePath?: string): EvalFixtures {
-  const base = basePath ?? mkdtempSync(join(tmpdir(), "workspace-agent-eval-"));
+function setupFixtures(basePath: string): EvalFixtures {
+  const base = basePath;
   mkdirSync(base, { recursive: true });
   const suffix = uniqueSuffix();
   const rootPath = join(base, "root");
@@ -151,7 +154,7 @@ function setupFixtures(basePath?: string): EvalFixtures {
   mkdirSync(bulkOnePath, { recursive: true });
   mkdirSync(bulkTwoPath, { recursive: true });
   writeFileSync(join(bulkOnePath, "package.json"), JSON.stringify({ name: `eval-bulk-one-${suffix}` }), "utf-8");
-  writeFileSync(join(bulkTwoPath, ".workspace.json"), JSON.stringify({ name: `Eval Bulk Two ${suffix}` }), "utf-8");
+  writeFileSync(join(bulkTwoPath, ".project.json"), JSON.stringify({ name: `Eval Bulk Two ${suffix}` }), "utf-8");
 
   const root = createRoot({
     name: `Eval Root ${suffix}`,
@@ -268,7 +271,7 @@ function setupFixtures(basePath?: string): EvalFixtures {
 
   return {
     basePath: base,
-    explicitPath: join(base, "explicit-workspace"),
+    explicitPath: join(base, "explicit-project"),
     rootPath,
     rootSlug: root.slug,
     rootId: root.id,
@@ -349,14 +352,14 @@ function outputPlan(call: JsonObject | undefined): JsonObject | undefined {
 const EVAL_CASES: EvalCase[] = [
   {
     id: "create-explicit-path",
-    prompt: (fixtures) => `Plan a generic workspace named Eval Explicit Path in ${fixtures.explicitPath}`,
+    prompt: (fixtures) => `Plan a generic project named Eval Explicit Path in ${fixtures.explicitPath}`,
     checks: (fixtures, run) => {
-      const call = firstToolCallAny(run, ["workspace_create", "workspace_plan_create"]);
+      const call = firstToolCallAny(run, ["projects_create", "projects_plan_create"]);
       const plan = outputPlan(call);
-      const primaryPath = nested(plan, ["workspace", "primary_path"]);
+      const primaryPath = nested(plan, ["project", "primary_path"]);
       return [
-        checkAnyTool(run, ["workspace_create", "workspace_plan_create"]),
-        check("dry-run-no-workspaces", run.workspaces.length === 0, "Dry-run must not create workspace rows"),
+        checkAnyTool(run, ["projects_create", "projects_plan_create"]),
+        check("dry-run-no-projects", run.projects.length === 0, "Dry-run must not create project rows"),
         check("explicit-path", primaryPath === fixtures.explicitPath, `Expected primary path ${fixtures.explicitPath}`, { primary_path: primaryPath }),
         check("directory-not-created", !existsSync(fixtures.explicitPath), "Dry-run must not create the target directory"),
       ];
@@ -364,7 +367,7 @@ const EVAL_CASES: EvalCase[] = [
   },
   {
     id: "create-root-recipe-no-tmux",
-    prompt: () => "Plan a docs workspace named Eval Root Recipe with tmux",
+    prompt: () => "Plan a docs project named Eval Root Recipe with tmux",
     options: (fixtures) => ({
       agent: fixtures.actorSlug,
       root: fixtures.rootSlug,
@@ -372,43 +375,43 @@ const EVAL_CASES: EvalCase[] = [
       tmux: false,
     }),
     checks: (fixtures, run) => {
-      const call = firstToolCallAny(run, ["workspace_create", "workspace_plan_create"]);
+      const call = firstToolCallAny(run, ["projects_create", "projects_plan_create"]);
       const plan = outputPlan(call);
-      const primaryPath = nested(plan, ["workspace", "primary_path"]);
-      const tags = nested(plan, ["workspace", "tags"]) as unknown[] | undefined;
+      const primaryPath = nested(plan, ["project", "primary_path"]);
+      const tags = nested(plan, ["project", "tags"]) as unknown[] | undefined;
       return [
-        checkAnyTool(run, ["workspace_create", "workspace_plan_create"]),
+        checkAnyTool(run, ["projects_create", "projects_plan_create"]),
         check("actor-agent", run.actor_agent_id === fixtures.actorId, "Prompt --agent should control mutation attribution", { expected: fixtures.actorId, actual: run.actor_agent_id }),
-        check("forced-root", nested(plan, ["workspace", "root_id"]) === fixtures.rootId, "Plan should use the forced root"),
-        check("forced-recipe", nested(plan, ["workspace", "recipe_id"]) === fixtures.recipeId, "Plan should use the forced recipe"),
+        check("forced-root", nested(plan, ["project", "root_id"]) === fixtures.rootId, "Plan should use the forced root"),
+        check("forced-recipe", nested(plan, ["project", "recipe_id"]) === fixtures.recipeId, "Plan should use the forced recipe"),
         check("root-template-path", primaryPath === join(fixtures.rootPath, "docs-eval-root-recipe"), "Plan should derive path from forced root template", { primary_path: primaryPath }),
-        check("recipe-kind", nested(plan, ["workspace", "kind"]) === "docs", "Recipe/root kind should be applied"),
+        check("recipe-kind", nested(plan, ["project", "kind"]) === "docs", "Recipe/root kind should be applied"),
         check("recipe-tags", Array.isArray(tags) && tags.includes("docs") && tags.includes("eval-recipe"), "Recipe tags should be applied"),
         check("tmux-disabled", nested(call, ["output", "plan", "tmux"]) === null, "Tmux should be disabled by --no-tmux"),
       ];
     },
   },
   {
-    id: "duplicate-existing-workspace",
+    id: "duplicate-existing-project",
     requiresLive: true,
-    prompt: (fixtures) => `Create a workspace named ${fixtures.duplicateWorkspaceSlug} in ${fixtures.duplicateWorkspacePath}`,
+    prompt: (fixtures) => `Create a project named ${fixtures.duplicateWorkspaceSlug} in ${fixtures.duplicateWorkspacePath}`,
     checks: (fixtures, run) => {
-      const call = firstToolCall(run, "workspace_create") ?? firstToolCall(run, "workspace_show");
+      const call = firstToolCall(run, "projects_create") ?? firstToolCall(run, "projects_show");
       return [
-        checkAnyTool(run, ["workspace_create", "workspace_show"]),
-        check("no-created-workspaces", run.workspaces.length === 0, "Duplicate dry-run must not create workspace rows"),
-        check("existing-detected", nested(call, ["output", "status"]) === "already_exists" || nested(call, ["output", "slug"]) === fixtures.duplicateWorkspaceSlug, "Existing workspace should be detected", { output: call?.output }),
+        checkAnyTool(run, ["projects_create", "projects_show"]),
+        check("no-created-projects", run.projects.length === 0, "Duplicate dry-run must not create project rows"),
+        check("existing-detected", nested(call, ["output", "status"]) === "already_exists" || nested(call, ["output", "slug"]) === fixtures.duplicateWorkspaceSlug, "Existing project should be detected", { output: call?.output }),
       ];
     },
   },
   {
     id: "root-create",
     requiresLive: true,
-    prompt: (fixtures) => `Register a new root named Eval Planned Root at ${join(fixtures.basePath, "planned-root")} for project workspaces with tag planned-root and path template {slug}`,
+    prompt: (fixtures) => `Register a new root named Eval Planned Root at ${join(fixtures.basePath, "planned-root")} for projects with tag planned-root and path template {slug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "root_create");
+      const call = firstToolCall(run, "projects_roots_add");
       return [
-        checkTool(run, "root_create"),
+        checkTool(run, "projects_roots_add"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Root creation should be planned in dry-run"),
       ];
     },
@@ -416,18 +419,18 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "roots-list",
     requiresLive: true,
-    prompt: () => "List the registered workspace roots and their templates",
-    checks: (_fixtures, run) => [checkTool(run, "roots_list")],
+    prompt: () => "List the registered project roots and their templates",
+    checks: (_fixtures, run) => [checkTool(run, "projects_roots_list")],
   },
   {
     id: "roots-match",
     requiresLive: true,
-    prompt: (fixtures) => `Match the best registered root for a docs workspace at ${join(fixtures.rootPath, "docs-match")} with tag eval-root`,
+    prompt: (fixtures) => `Match the best registered root for a docs project at ${join(fixtures.rootPath, "docs-match")} with tag eval-root`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "roots_match");
+      const call = firstToolCall(run, "projects_roots_match");
       const output = call?.output;
       return [
-        checkTool(run, "roots_match"),
+        checkTool(run, "projects_roots_match"),
         check("has-match", Array.isArray(output) && output.length > 0, "Root match should return at least one candidate"),
       ];
     },
@@ -435,11 +438,11 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "recipe-create",
     requiresLive: true,
-    prompt: () => "Create a docs workspace recipe named Eval Planned Recipe with tags docs and planned-recipe",
+    prompt: () => "Create a docs project recipe named Eval Planned Recipe with tags docs and planned-recipe",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "recipe_create");
+      const call = firstToolCall(run, "projects_recipes_add");
       return [
-        checkTool(run, "recipe_create"),
+        checkTool(run, "projects_recipes_add"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Recipe creation should be planned in dry-run"),
       ];
     },
@@ -449,9 +452,9 @@ const EVAL_CASES: EvalCase[] = [
     requiresLive: true,
     prompt: () => "Create a saved tmux profile named Eval Planned Profile with editor and server windows",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "tmux_profile_create");
+      const call = firstToolCall(run, "projects_tmux_profiles_add");
       return [
-        checkTool(run, "tmux_profile_create"),
+        checkTool(run, "projects_tmux_profiles_add"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Tmux profile creation should be planned in dry-run"),
       ];
     },
@@ -460,16 +463,16 @@ const EVAL_CASES: EvalCase[] = [
     id: "recipe-get",
     requiresLive: true,
     prompt: (fixtures) => `Show the full recipe metadata for recipe ${fixtures.recipeSlug}`,
-    checks: (_fixtures, run) => [checkTool(run, "recipe_get")],
+    checks: (_fixtures, run) => [checkTool(run, "projects_recipes_show")],
   },
   {
     id: "agent-create",
     requiresLive: true,
     prompt: () => "Record a human agent named Eval Planned Reviewer with role reviewer",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "agent_create");
+      const call = firstToolCall(run, "projects_agents_add");
       return [
-        checkTool(run, "agent_create"),
+        checkTool(run, "projects_agents_add"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Agent creation should be planned in dry-run"),
       ];
     },
@@ -477,73 +480,73 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "agents-list",
     requiresLive: true,
-    prompt: () => "List the registered agents that can own workspace changes",
-    checks: (_fixtures, run) => [checkTool(run, "agents_list")],
+    prompt: () => "List the registered agents that can own project changes",
+    checks: (_fixtures, run) => [checkTool(run, "projects_agents_list")],
   },
   {
-    id: "workspaces-list-query",
+    id: "projects-list-query",
     requiresLive: true,
-    prompt: () => "List existing workspaces matching security-cameras or family-security metadata",
+    prompt: () => "List existing projects matching security-cameras or family-security metadata",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspaces_list");
+      const call = firstToolCall(run, "projects_list");
       const output = call?.output;
       return [
-        checkTool(run, "workspaces_list"),
-        check("has-results", Array.isArray(output) && output.length > 0, "Workspace query should return matching metadata/tag rows"),
+        checkTool(run, "projects_list"),
+        check("has-results", Array.isArray(output) && output.length > 0, "Project query should return matching metadata/tag rows"),
       ];
     },
   },
   {
-    id: "workspace-show",
+    id: "project-show",
     requiresLive: true,
-    prompt: (fixtures) => `Show workspace ${fixtures.metadataWorkspaceSlug} with metadata and tags`,
+    prompt: (fixtures) => `Show project ${fixtures.metadataWorkspaceSlug} with metadata and tags`,
     checks: (fixtures, run) => {
-      const call = firstToolCall(run, "workspace_show");
+      const call = firstToolCall(run, "projects_show");
       return [
-        checkTool(run, "workspace_show"),
-        check("slug", nested(call, ["output", "slug"]) === fixtures.metadataWorkspaceSlug, "Workspace show should return requested workspace"),
+        checkTool(run, "projects_show"),
+        check("slug", nested(call, ["output", "slug"]) === fixtures.metadataWorkspaceSlug, "Project show should return requested project"),
       ];
     },
   },
   {
-    id: "workspace-events-list",
+    id: "project-events-list",
     requiresLive: true,
-    prompt: (fixtures) => `List audit events for workspace ${fixtures.updateWorkspaceSlug}`,
+    prompt: (fixtures) => `List audit events for project ${fixtures.updateWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_events_list");
+      const call = firstToolCall(run, "projects_events_list");
       const output = call?.output;
       return [
-        checkTool(run, "workspace_events_list"),
+        checkTool(run, "projects_events_list"),
         check("has-events", Array.isArray(output) && output.length > 0, "Events list should return creation event"),
       ];
     },
   },
   {
-    id: "workspace-event-record",
+    id: "project-event-record",
     requiresLive: true,
-    prompt: (fixtures) => `Record a custom audit event security_review_planned for workspace ${fixtures.metadataWorkspaceSlug}`,
+    prompt: (fixtures) => `Record a custom audit event security_review_planned for project ${fixtures.metadataWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_event_record");
+      const call = firstToolCall(run, "projects_event_record");
       return [
-        checkTool(run, "workspace_event_record"),
+        checkTool(run, "projects_event_record"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Event record should be planned in dry-run"),
       ];
     },
   },
   {
-    id: "workspace-verification-run",
+    id: "project-verification-run",
     requiresLive: true,
-    prompt: (fixtures) => `Run workspace verification checks for ${fixtures.metadataWorkspaceSlug}`,
-    checks: (_fixtures, run) => [checkTool(run, "workspace_verification_run")],
+    prompt: (fixtures) => `Run project verification checks for ${fixtures.metadataWorkspaceSlug}`,
+    checks: (_fixtures, run) => [checkTool(run, "projects_doctor")],
   },
   {
     id: "import-existing-folder",
     requiresLive: true,
-    prompt: (fixtures) => `Import folder ${fixtures.importPath} as a workspace`,
+    prompt: (fixtures) => `Import folder ${fixtures.importPath} as a project`,
     checks: (fixtures, run) => {
-      const call = firstToolCall(run, "workspace_import");
+      const call = firstToolCall(run, "projects_import");
       return [
-        checkTool(run, "workspace_import"),
+        checkTool(run, "projects_import"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Import should be planned in dry-run"),
         check("preview-path", nested(call, ["output", "preview", "path"]) === fixtures.importPath, "Import preview path should match fixture"),
       ];
@@ -552,11 +555,11 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "import-bulk",
     requiresLive: true,
-    prompt: (fixtures) => `Bulk import the direct child folders under ${fixtures.bulkImportPath} as workspaces`,
+    prompt: (fixtures) => `Bulk import the direct child folders under ${fixtures.bulkImportPath} as projects`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_import");
+      const call = firstToolCall(run, "projects_import");
       return [
-        checkTool(run, "workspace_import"),
+        checkTool(run, "projects_import"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Bulk import should be planned in dry-run"),
       ];
     },
@@ -566,9 +569,9 @@ const EVAL_CASES: EvalCase[] = [
     requiresLive: true,
     prompt: () => "Scan all registered roots and preview importing direct child folders",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_scan_roots");
+      const call = firstToolCall(run, "projects_scan_roots");
       return [
-        checkTool(run, "workspace_scan_roots"),
+        checkTool(run, "projects_scan_roots"),
         check("dry-run", Boolean(nested(call, ["output", "dry_run"])) || nested(call, ["output", "status"]) === "planned", "Scan roots should run as a dry-run preview"),
       ];
     },
@@ -576,12 +579,12 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "update-description",
     requiresLive: true,
-    prompt: (fixtures) => `Update workspace ${fixtures.updateWorkspaceSlug} description to "eval updated description"`,
+    prompt: (fixtures) => `Update project ${fixtures.updateWorkspaceSlug} description to "eval updated description"`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_update");
+      const call = firstToolCall(run, "projects_update");
       const description = nested(call, ["output", "input", "description"]);
       return [
-        checkTool(run, "workspace_update"),
+        checkTool(run, "projects_update"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Update should be planned in dry-run"),
         check("description", typeof description === "string" && description.includes("eval updated description"), "Planned update should include requested description", { description }),
       ];
@@ -590,64 +593,64 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "update-tags",
     requiresLive: true,
-    prompt: (fixtures) => `Update workspace ${fixtures.updateWorkspaceSlug} tags to alpha, beta, and family-security`,
+    prompt: (fixtures) => `Update project ${fixtures.updateWorkspaceSlug} tags to alpha, beta, and family-security`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_update");
+      const call = firstToolCall(run, "projects_update");
       const tags = nested(call, ["output", "input", "tags"]);
       return [
-        checkTool(run, "workspace_update"),
+        checkTool(run, "projects_update"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Update should be planned in dry-run"),
         check("tags", Array.isArray(tags) && tags.includes("family-security"), "Planned update should include requested tags", { tags }),
       ];
     },
   },
   {
-    id: "archive-workspace",
+    id: "archive-project",
     requiresLive: true,
-    prompt: (fixtures) => `Archive workspace ${fixtures.archiveWorkspaceSlug}`,
+    prompt: (fixtures) => `Archive project ${fixtures.archiveWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_archive");
+      const call = firstToolCall(run, "projects_archive");
       return [
-        checkTool(run, "workspace_archive"),
+        checkTool(run, "projects_archive"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Archive should be planned in dry-run"),
         check("next-status", nested(call, ["output", "next_status"]) === "archived", "Archive plan should set next_status archived"),
       ];
     },
   },
   {
-    id: "unarchive-workspace",
+    id: "unarchive-project",
     requiresLive: true,
-    prompt: (fixtures) => `Unarchive workspace ${fixtures.unarchiveWorkspaceSlug}`,
+    prompt: (fixtures) => `Unarchive project ${fixtures.unarchiveWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_unarchive");
+      const call = firstToolCall(run, "projects_unarchive");
       return [
-        checkTool(run, "workspace_unarchive"),
+        checkTool(run, "projects_unarchive"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Unarchive should be planned in dry-run"),
         check("next-status", nested(call, ["output", "next_status"]) === "active", "Unarchive plan should set next_status active"),
       ];
     },
   },
   {
-    id: "delete-workspace",
+    id: "delete-project",
     requiresLive: true,
-    prompt: (fixtures) => `Delete workspace ${fixtures.deleteWorkspaceSlug}`,
+    prompt: (fixtures) => `Delete project ${fixtures.deleteWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_delete");
+      const call = firstToolCall(run, "projects_delete");
       return [
-        checkTool(run, "workspace_delete"),
+        checkTool(run, "projects_delete"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Delete should be planned in dry-run"),
         check("next-status", nested(call, ["output", "next_status"]) === "deleted", "Delete plan should mark next_status deleted"),
       ];
     },
   },
   {
-    id: "hard-delete-workspace",
+    id: "hard-delete-project",
     requiresLive: true,
-    prompt: (fixtures) => `Hard delete workspace ${fixtures.hardDeleteWorkspaceSlug}`,
+    prompt: (fixtures) => `Hard delete project ${fixtures.hardDeleteWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_delete");
+      const call = firstToolCall(run, "projects_delete");
       return [
-        checkTool(run, "workspace_delete"),
+        checkTool(run, "projects_delete"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Hard delete should be planned in dry-run"),
         check("hard", nested(call, ["output", "hard"]) === true, "Hard delete plan should set hard=true"),
       ];
@@ -656,11 +659,11 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "cleanup-create",
     requiresLive: true,
-    prompt: (fixtures) => `Preview cleanup for workspace creation artifacts of ${fixtures.cleanupWorkspaceSlug}`,
+    prompt: (fixtures) => `Preview cleanup for project creation artifacts of ${fixtures.cleanupWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_cleanup_create");
+      const call = firstToolCall(run, "projects_cleanup_create");
       return [
-        checkTool(run, "workspace_cleanup_create"),
+        checkTool(run, "projects_cleanup_create"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Cleanup should be planned in dry-run"),
       ];
     },
@@ -668,25 +671,25 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "tmux-apply-existing",
     requiresLive: true,
-    prompt: (fixtures) => `Plan a tmux session for existing workspace ${fixtures.tmuxWorkspaceSlug} with an editor window`,
+    prompt: (fixtures) => `Plan a tmux session for existing project ${fixtures.tmuxWorkspaceSlug} with an editor window`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_tmux_apply");
+      const call = firstToolCall(run, "projects_tmux_profiles_apply");
       return [
-        checkTool(run, "workspace_tmux_apply"),
-        check("no-extra-create", !firstToolCall(run, "workspace_create"), "Tmux eval should not trigger workspace_create fallback"),
+        checkTool(run, "projects_tmux_profiles_apply"),
+        check("no-extra-create", !firstToolCall(run, "projects_create"), "Tmux eval should not trigger projects_create fallback"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Tmux apply should be planned in dry-run"),
         check("tmux-result", nested(call, ["output", "result", "session_action"]) === "planned", "Tmux result should be dry-run planned"),
       ];
     },
   },
   {
-    id: "github-publish-workspace",
+    id: "github-publish-project",
     requiresLive: true,
-    prompt: (fixtures) => `Plan publishing workspace ${fixtures.githubWorkspaceSlug} to GitHub as a public repository`,
+    prompt: (fixtures) => `Plan publishing project ${fixtures.githubWorkspaceSlug} to GitHub as a public repository`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_github_publish");
+      const call = firstToolCall(run, "projects_github_publish");
       return [
-        checkTool(run, "workspace_github_publish"),
+        checkTool(run, "projects_github_publish"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "GitHub publish should be planned in dry-run"),
         check("visibility", nested(call, ["output", "visibility"]) === "public", "GitHub publish should use public visibility"),
         check("repo-full-name", typeof nested(call, ["output", "full_name"]) === "string", "GitHub publish should return a full repo name"),
@@ -694,13 +697,13 @@ const EVAL_CASES: EvalCase[] = [
     },
   },
   {
-    id: "github-unpublish-workspace",
+    id: "github-unpublish-project",
     requiresLive: true,
-    prompt: (fixtures) => `Plan unpublishing GitHub metadata from workspace ${fixtures.githubPublishedWorkspaceSlug} and clear GitHub integrations`,
+    prompt: (fixtures) => `Plan unpublishing GitHub metadata from project ${fixtures.githubPublishedWorkspaceSlug} and clear GitHub integrations`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_github_unpublish");
+      const call = firstToolCall(run, "projects_github_unpublish");
       return [
-        checkTool(run, "workspace_github_unpublish"),
+        checkTool(run, "projects_github_unpublish"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "GitHub unpublish should be planned in dry-run"),
         check("clear-integrations", nested(call, ["output", "integrations_cleared"]) === true, "Unpublish should plan clearing integrations"),
       ];
@@ -709,13 +712,13 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "github-import-remote-only",
     requiresLive: true,
-    prompt: () => "Import GitHub repository hasna/eval-remote-only as a remote-only workspace",
+    prompt: () => "Import GitHub repository hasna/eval-remote-only as a remote-only project",
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_github_import");
+      const call = firstToolCall(run, "projects_import_github");
       return [
-        checkTool(run, "workspace_github_import"),
+        checkTool(run, "projects_import_github"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "GitHub import should be planned in dry-run"),
-        check("remote-only", nested(call, ["output", "remote_only"]) === true, "GitHub import should plan a remote-only workspace"),
+        check("remote-only", nested(call, ["output", "remote_only"]) === true, "GitHub import should plan a remote-only project"),
         check("repo-full-name", nested(call, ["output", "full_name"]) === "hasna/eval-remote-only", "GitHub import should preserve org/repo"),
       ];
     },
@@ -725,22 +728,22 @@ const EVAL_CASES: EvalCase[] = [
     requiresLive: true,
     prompt: (fixtures) => `Import GitHub repository hasna/eval-local-import under root ${fixtures.rootSlug} as a local project without cloning`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_github_import");
+      const call = firstToolCall(run, "projects_import_github");
       return [
-        checkTool(run, "workspace_github_import"),
+        checkTool(run, "projects_import_github"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "GitHub local import should be planned in dry-run"),
-        check("local", nested(call, ["output", "remote_only"]) === false, "GitHub import with a root should plan a local workspace"),
+        check("local", nested(call, ["output", "remote_only"]) === false, "GitHub import with a root should plan a local project"),
       ];
     },
   },
   {
     id: "integrations-link",
     requiresLive: true,
-    prompt: (fixtures) => `Link todos project id todo_eval_123 to workspace ${fixtures.githubWorkspaceSlug}`,
+    prompt: (fixtures) => `Link todos project id todo_eval_123 to project ${fixtures.githubWorkspaceSlug}`,
     checks: (_fixtures, run) => {
-      const call = firstToolCall(run, "workspace_integrations_link");
+      const call = firstToolCall(run, "projects_link");
       return [
-        checkTool(run, "workspace_integrations_link"),
+        checkTool(run, "projects_link"),
         check("dry-run-planned", nested(call, ["output", "status"]) === "planned", "Integration link should be planned in dry-run"),
         check("todos-id", nested(call, ["output", "integrations", "todos_project_id"]) === "todo_eval_123", "Integration link should include todos_project_id"),
       ];
@@ -786,64 +789,83 @@ export function parseWorkspaceAgentEvalCaseIds(value: string | undefined): Works
 }
 
 export async function runWorkspaceAgentEval(options: WorkspaceAgentEvalOptions = {}): Promise<WorkspaceAgentEvalResult> {
-  const fixtures = setupFixtures(options.basePath);
-  const cases = selectedCases(options.caseIds);
-  const results: WorkspaceAgentEvalCaseResult[] = [];
+  const basePath = options.basePath ?? mkdtempSync(join(tmpdir(), "project-agent-eval-"));
+  mkdirSync(basePath, { recursive: true });
+  const dbPath = options.dbPath ?? join(basePath, "eval-projects.db");
+  const hadPreviousDbPath = Object.prototype.hasOwnProperty.call(process.env, "HASNA_PROJECTS_DB_PATH");
+  const previousDbPath = process.env["HASNA_PROJECTS_DB_PATH"];
 
-  for (const evalCase of cases) {
-    const prompt = evalCase.prompt(fixtures);
-    if (options.mock && evalCase.requiresLive) {
-      results.push({
-        id: evalCase.id,
-        prompt,
-        skipped: true,
-        skip_reason: "requires live AI model",
-        passed: false,
-        confidence: 0,
-        checks: [],
-      });
-      continue;
+  process.env["HASNA_PROJECTS_DB_PATH"] = dbPath;
+  closeDatabase();
+
+  try {
+    const fixtures = setupFixtures(basePath);
+    const cases = selectedCases(options.caseIds);
+    const results: WorkspaceAgentEvalCaseResult[] = [];
+
+    for (const evalCase of cases) {
+      const prompt = evalCase.prompt(fixtures);
+      if (options.mock && evalCase.requiresLive) {
+        results.push({
+          id: evalCase.id,
+          prompt,
+          skipped: true,
+          skip_reason: "requires live AI model",
+          passed: false,
+          confidence: 0,
+          checks: [],
+        });
+        continue;
+      }
+
+      try {
+        const run = await runWorkspaceAgentPrompt({
+          prompt,
+          dryRun: true,
+          approve: false,
+          mock: options.mock,
+          model: options.model,
+          maxSteps: options.maxSteps ?? 8,
+          ...evalCase.options?.(fixtures),
+        });
+        const checks = evalCase.checks(fixtures, run);
+        const confidence = caseConfidence(checks);
+        results.push({
+          id: evalCase.id,
+          prompt,
+          skipped: false,
+          passed: checks.every((item) => item.passed),
+          confidence,
+          checks,
+          run,
+        });
+      } catch (err) {
+        results.push({
+          id: evalCase.id,
+          prompt,
+          skipped: false,
+          passed: false,
+          confidence: 0,
+          checks: [],
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
-    try {
-      const run = await runWorkspaceAgentPrompt({
-        prompt,
-        dryRun: true,
-        approve: false,
-        mock: options.mock,
-        model: options.model,
-        maxSteps: options.maxSteps ?? 8,
-        ...evalCase.options?.(fixtures),
-      });
-      const checks = evalCase.checks(fixtures, run);
-      const confidence = caseConfidence(checks);
-      results.push({
-        id: evalCase.id,
-        prompt,
-        skipped: false,
-        passed: checks.every((item) => item.passed),
-        confidence,
-        checks,
-        run,
-      });
-    } catch (err) {
-      results.push({
-        id: evalCase.id,
-        prompt,
-        skipped: false,
-        passed: false,
-        confidence: 0,
-        checks: [],
-        error: err instanceof Error ? err.message : String(err),
-      });
+    return {
+      mode: options.mock ? "mock" : "ai",
+      model: options.model ?? "openai/gpt-4o-mini",
+      base_path: fixtures.basePath,
+      db_path: dbPath,
+      summary: summary(results),
+      cases: results,
+    };
+  } finally {
+    closeDatabase();
+    if (hadPreviousDbPath) {
+      process.env["HASNA_PROJECTS_DB_PATH"] = previousDbPath;
+    } else {
+      delete process.env["HASNA_PROJECTS_DB_PATH"];
     }
   }
-
-  return {
-    mode: options.mock ? "mock" : "ai",
-    model: options.model ?? "openai/gpt-4o-mini",
-    base_path: fixtures.basePath,
-    summary: summary(results),
-    cases: results,
-  };
 }

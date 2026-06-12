@@ -1,16 +1,17 @@
 import type { Command } from "commander";
 
 const BASH_COMPLETION = `
-# open-projects bash completion
-_workspace_completion() {
+# projects bash completion
+_projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="workspaces roots recipes agents tmux-profiles completion"
-  local workspace_commands="create cleanup-create import import-github scan-roots publish unpublish link list show update archive unarchive delete doctor lock unlock locks migrate-legacy"
+  local commands="start status create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
+  local location_commands="add list"
+  local event_commands="list record"
   local root_commands="add list show update delete match"
   local recipe_commands="add list built-ins seed-defaults"
-  local agent_commands="add list"
+  local agent_commands="add list assign"
   local tmux_profile_commands="add window-add list show apply"
 
   case "$prev" in
@@ -18,8 +19,12 @@ _workspace_completion() {
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
       return 0
       ;;
-    workspaces)
-      COMPREPLY=( $(compgen -W "$workspace_commands" -- "$cur") )
+    locations)
+      COMPREPLY=( $(compgen -W "$location_commands" -- "$cur") )
+      return 0
+      ;;
+    events)
+      COMPREPLY=( $(compgen -W "$event_commands" -- "$cur") )
       return 0
       ;;
     roots)
@@ -38,10 +43,10 @@ _workspace_completion() {
       COMPREPLY=( $(compgen -W "$tmux_profile_commands" -- "$cur") )
       return 0
       ;;
-    show|update|archive|unarchive|delete|doctor|lock)
-      # Complete with workspace slugs
+    start|status|cleanup-create|show|update|tag|untag|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|list|record)
+      # Complete with project slugs
       local slugs
-      slugs=$(projects workspaces list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
+      slugs=$(projects list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
       COMPREPLY=( $(compgen -W "$slugs" -- "$cur") )
       return 0
       ;;
@@ -61,19 +66,45 @@ _workspace_completion() {
 
   COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
 }
-complete -F _workspace_completion projects
+complete -F _projects_completion projects
 `;
 
 const ZSH_COMPLETION = `
-# open-projects zsh completion
+# projects zsh completion
 _project() {
   local -a commands
   commands=(
-    'workspaces:Manage generic workspaces'
-    'roots:Manage workspace root folders'
-    'recipes:Manage workspace recipes'
-    'agents:Manage workspace agents'
-    'tmux-profiles:Manage tmux profiles'
+    'start:Start a project tmux session'
+    'status:Show project launch and tmux status'
+    'create:Create or plan a project'
+    'cleanup-create:Clean up files and DB rows from a project creation run'
+    'cleanup-evals:Preview or remove prompt-agent eval fixture records'
+    'import:Import an existing folder as a project'
+    'import-github:Import a GitHub repository as a project'
+    'list:List registered projects'
+    'show:Show project details'
+    'events:Inspect and record project audit events'
+    'update:Update project metadata'
+    'tag:Add project tags'
+    'untag:Remove project tags'
+    'link:Link external integrations'
+    'unlink:Clear external integrations'
+    'publish:Plan or publish a project to GitHub'
+    'unpublish:Remove local GitHub publication metadata from a project'
+    'archive:Archive a project'
+    'unarchive:Unarchive a project'
+    'delete:Delete a project'
+    'lock:Acquire a project mutation lock'
+    'locks:List active project mutation locks'
+    'unlock:Release a project mutation lock'
+    'doctor:Validate project records'
+    'agent-eval:Run project prompt-agent eval cases'
+    'locations:Manage project folder locations'
+    'roots:Manage project root folders'
+    'recipes:Manage project recipes'
+    'agents:Manage project agents'
+    'tmux-profiles:Manage project tmux profiles'
+    'storage:Storage sync commands'
     'completion:Print shell completion script'
   )
 
@@ -85,19 +116,19 @@ compdef _project projects
 
 const WORKON_FUNCTION = [
   "",
-  "# workon — cd into a workspace directory",
+  "# workon — cd into a project directory",
   "# Usage: workon [slug]   (no arg = interactive fzf picker if available)",
   "workon() {",
   '  if [ -z "$1" ]; then',
   "    if command -v fzf >/dev/null 2>&1; then",
       "      local slug",
-  '      slug=$(projects workspaces list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="workspace> ")',
-  '      [ -n "$slug" ] && cd "$(projects workspaces show "$slug" --json | bun -e \'const fs=require("fs"); const input=JSON.parse(fs.readFileSync(0,"utf8")); console.log(input.workspace.primary_path || ".")\')"',
+  '      slug=$(projects list 2>/dev/null | grep -v \'^  \' | awk \'{print $1}\' | fzf --prompt="project> ")',
+  '      [ -n "$slug" ] && cd "$(projects show "$slug" --json | bun -e \'const fs=require("fs"); const input=JSON.parse(fs.readFileSync(0,"utf8")); console.log(input.project.primary_path || ".")\')"',
   "    else",
-      "      projects workspaces list",
+      "      projects list",
   "    fi",
   "  else",
-  '    cd "$(projects workspaces show "$1" --json | bun -e \'const fs=require("fs"); const input=JSON.parse(fs.readFileSync(0,"utf8")); console.log(input.workspace.primary_path || ".")\')"',
+  '    cd "$(projects show "$1" --json | bun -e \'const fs=require("fs"); const input=JSON.parse(fs.readFileSync(0,"utf8")); console.log(input.project.primary_path || ".")\')"',
   "  fi",
   "}",
   "",
