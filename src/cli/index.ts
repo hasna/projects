@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
+import { registerEventsCommands } from "@hasna/events/commander";
 import chalk from "chalk";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -179,6 +180,7 @@ Prompt mode options:
 registerWorkspaceCommands(program);
 registerStorageCommands(program);
 registerCompletionCommand(program);
+registerEventsCommands(program, { source: "projects", eventsCommandName: "hasna-events" });
 
 preparePromptFlags();
 await program.parseAsync(process.argv);

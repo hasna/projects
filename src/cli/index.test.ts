@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,18 +25,25 @@ describe("project-first CLI surface", () => {
   });
 
   test("help exposes project commands and hides the legacy workspace group", () => {
-    const result = runProjects(["--help"]);
-    const stdout = text(result.stdout);
+    const eventsDir = mkdtempSync(join(tmpdir(), "projects-events-"));
+    try {
+      const result = runProjects(["--help"], { HASNA_EVENTS_DIR: eventsDir });
+      const stdout = text(result.stdout);
 
-    expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("High-level project management and launcher CLI");
-    expect(stdout).toContain("start");
-    expect(stdout).toContain("create");
-    expect(stdout).toContain("list");
-    expect(stdout).toContain("show");
-    expect(stdout).not.toContain("workspaces");
-    expect(stdout).toContain("roots");
-    expect(stdout).toContain("tmux-profiles");
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toContain("High-level project management and launcher CLI");
+      expect(stdout).toContain("start");
+      expect(stdout).toContain("create");
+      expect(stdout).toContain("list");
+      expect(stdout).toContain("show");
+      expect(stdout).not.toContain("workspaces");
+      expect(stdout).toContain("roots");
+      expect(stdout).toContain("tmux-profiles");
+      expect(stdout).toContain("hasna-events");
+      expect(stdout).toContain("webhooks");
+    } finally {
+      rmSync(eventsDir, { recursive: true, force: true });
+    }
   });
 
   test("completion emits project commands", () => {
