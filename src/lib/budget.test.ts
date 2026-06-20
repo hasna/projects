@@ -7,8 +7,11 @@ import { createWorkspace } from "../db/workspaces.js";
 import {
   BudgetExceededError,
   assertProjectBudgets,
+  assertProjectBudgetsAfterSpend,
   createProjectBudget,
+  estimateProjectCostUsd,
   getProjectBudgetStatuses,
+  normalizeProjectUsage,
   recordProjectSpend,
 } from "./budget.js";
 
@@ -74,5 +77,38 @@ describe("project budgets", () => {
     });
 
     expect(() => assertProjectBudgets({ workspace_id: project.id })).toThrow(BudgetExceededError);
+  });
+
+  test("fails closed for hard USD budgets when model pricing is unknown", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-budget-unknown-cost-"));
+    process.env["HASNA_PROJECTS_DB_PATH"] = join(root, "projects.db");
+    const project = createWorkspace({ name: "Unpriced App", slug: "unpriced-app", kind: "project" });
+    createProjectBudget({
+      scope_type: "project",
+      scope_id: project.id,
+      window: "lifetime",
+      mode: "hard",
+      max_usd: 0.01,
+    });
+
+    const usage = normalizeProjectUsage({ inputTokens: 2, outputTokens: 1 });
+    const usd = estimateProjectCostUsd(usage, "unknown/model");
+    expect(usd).toBeUndefined();
+    recordProjectSpend({
+      workspace_id: project.id,
+      run_id: "run_unknown_cost",
+      provider: "openrouter",
+      model: "unknown/model",
+      usd,
+      cost_unknown: usd === undefined,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      total_tokens: usage.total_tokens,
+    });
+
+    const [status] = getProjectBudgetStatuses({ workspace_id: project.id });
+    expect(status?.spent.unknown_cost_events).toBe(1);
+    expect(status?.warnings.join("\n")).toContain("USD budget cannot be verified");
+    expect(() => assertProjectBudgetsAfterSpend({ workspace_id: project.id })).toThrow(BudgetExceededError);
   });
 });

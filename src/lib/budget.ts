@@ -54,6 +54,7 @@ export interface ProjectSpendInput {
   provider?: string;
   model?: string;
   usd?: number;
+  cost_unknown?: boolean;
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
@@ -83,6 +84,7 @@ export interface ProjectBudgetTotals {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  unknown_cost_events: number;
 }
 
 export interface ProjectBudgetStatus {
@@ -123,6 +125,7 @@ const zeroTotals: ProjectBudgetTotals = {
   input_tokens: 0,
   output_tokens: 0,
   total_tokens: 0,
+  unknown_cost_events: 0,
 };
 
 function json(value: unknown): string {
@@ -267,6 +270,11 @@ export function recordProjectSpend(input: ProjectSpendInput, db?: Database): Pro
   const d = db || getDatabase();
   const id = `spend_${nanoid()}`;
   const totalTokens = input.total_tokens ?? (input.input_tokens ?? 0) + (input.output_tokens ?? 0);
+  const costUnknown = input.cost_unknown ?? (input.usd === undefined && totalTokens > 0);
+  const metadata = {
+    ...(input.metadata ?? {}),
+    ...(costUnknown ? { cost_unknown: true } : {}),
+  };
   d.run(
     `INSERT INTO project_budget_spend (
       id, workspace_id, run_id, provider, model, usd, input_tokens,
@@ -282,7 +290,7 @@ export function recordProjectSpend(input: ProjectSpendInput, db?: Database): Pro
       input.input_tokens ?? 0,
       input.output_tokens ?? 0,
       totalTokens,
-      json(input.metadata ?? {}),
+      json(metadata),
       now(),
     ],
   );
@@ -321,7 +329,8 @@ function totalsForBudget(budget: ProjectBudget, db: Database): ProjectBudgetTota
       COALESCE(SUM(usd), 0) as usd,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
-      COALESCE(SUM(total_tokens), 0) as total_tokens
+      COALESCE(SUM(total_tokens), 0) as total_tokens,
+      COALESCE(SUM(CASE WHEN json_extract(metadata, '$.cost_unknown') = 1 THEN 1 ELSE 0 END), 0) as unknown_cost_events
     FROM project_budget_spend
     WHERE workspace_id = ?
   `;
@@ -330,7 +339,8 @@ function totalsForBudget(budget: ProjectBudget, db: Database): ProjectBudgetTota
       COALESCE(SUM(usd), 0) as usd,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
-      COALESCE(SUM(total_tokens), 0) as total_tokens
+      COALESCE(SUM(total_tokens), 0) as total_tokens,
+      COALESCE(SUM(CASE WHEN json_extract(metadata, '$.cost_unknown') = 1 THEN 1 ELSE 0 END), 0) as unknown_cost_events
     FROM project_budget_spend
     WHERE workspace_id = ? AND created_at >= ?
   `;
@@ -339,7 +349,8 @@ function totalsForBudget(budget: ProjectBudget, db: Database): ProjectBudgetTota
       COALESCE(SUM(usd), 0) as usd,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
-      COALESCE(SUM(total_tokens), 0) as total_tokens
+      COALESCE(SUM(total_tokens), 0) as total_tokens,
+      COALESCE(SUM(CASE WHEN json_extract(metadata, '$.cost_unknown') = 1 THEN 1 ELSE 0 END), 0) as unknown_cost_events
     FROM project_budget_spend
     WHERE run_id = ?
   `;
@@ -348,7 +359,8 @@ function totalsForBudget(budget: ProjectBudget, db: Database): ProjectBudgetTota
       COALESCE(SUM(usd), 0) as usd,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
-      COALESCE(SUM(total_tokens), 0) as total_tokens
+      COALESCE(SUM(total_tokens), 0) as total_tokens,
+      COALESCE(SUM(CASE WHEN json_extract(metadata, '$.cost_unknown') = 1 THEN 1 ELSE 0 END), 0) as unknown_cost_events
     FROM project_budget_spend
     WHERE run_id = ? AND created_at >= ?
   `;
@@ -364,6 +376,7 @@ function totalsForBudget(budget: ProjectBudget, db: Database): ProjectBudgetTota
     input_tokens: row.input_tokens,
     output_tokens: row.output_tokens,
     total_tokens: row.total_tokens,
+    unknown_cost_events: row.unknown_cost_events,
   };
 }
 
@@ -386,6 +399,9 @@ function exhausted(limit: number | null, spent: number): boolean {
 function warningsFor(budget: ProjectBudget, spent: ProjectBudgetTotals): string[] {
   const threshold = budget.warning_threshold ?? (budget.mode === "soft" ? 0.8 : null);
   const warnings: string[] = [];
+  if (budget.max_usd !== null && spent.unknown_cost_events > 0) {
+    warnings.push("USD budget cannot be verified because model pricing is missing");
+  }
   const check = (label: string, limit: number | null, value: number) => {
     if (limit === null) return;
     if (value > limit) warnings.push(`${label} budget exceeded`);
@@ -402,22 +418,27 @@ function warningsFor(budget: ProjectBudget, spent: ProjectBudgetTotals): string[
 
 function statusForBudget(budget: ProjectBudget, db: Database): ProjectBudgetStatus {
   const spent = totalsForBudget(budget, db);
+  const unknownCostBlocksUsdBudget = budget.max_usd !== null && spent.unknown_cost_events > 0;
   return {
     budget,
     spent,
     remaining: {
-      ...(budget.max_usd === null ? {} : { usd: remainingNumber(budget.max_usd, spent.usd) }),
+      ...(budget.max_usd === null
+        ? {}
+        : { usd: unknownCostBlocksUsdBudget ? 0 : remainingNumber(budget.max_usd, spent.usd) }),
       ...(budget.max_input_tokens === null ? {} : { input_tokens: remainingTokens(budget.max_input_tokens, spent.input_tokens) }),
       ...(budget.max_output_tokens === null ? {} : { output_tokens: remainingTokens(budget.max_output_tokens, spent.output_tokens) }),
       ...(budget.max_total_tokens === null ? {} : { total_tokens: remainingTokens(budget.max_total_tokens, spent.total_tokens) }),
     },
     window_start: windowStartFor(budget),
     exhausted:
+      unknownCostBlocksUsdBudget ||
       exhausted(budget.max_usd, spent.usd) ||
       exhausted(budget.max_input_tokens, spent.input_tokens) ||
       exhausted(budget.max_output_tokens, spent.output_tokens) ||
       exhausted(budget.max_total_tokens, spent.total_tokens),
     exceeded:
+      unknownCostBlocksUsdBudget ||
       exceeded(budget.max_usd, spent.usd) ||
       exceeded(budget.max_input_tokens, spent.input_tokens) ||
       exceeded(budget.max_output_tokens, spent.output_tokens) ||
@@ -504,11 +525,11 @@ export function estimateProjectCostUsd(
   usage: ProjectUsage,
   model: string,
   providerMetadata?: unknown,
-): number {
+): number | undefined {
   const metadataCost = openRouterCostFromMetadata(providerMetadata);
   if (metadataCost !== undefined) return metadataCost;
   const price = modelPricing(model);
-  if (!price) return 0;
+  if (!price) return undefined;
   return roundMoney(
     (usage.input_tokens * price.inputUsdPerMillionTokens + usage.output_tokens * price.outputUsdPerMillionTokens) / 1_000_000,
   );

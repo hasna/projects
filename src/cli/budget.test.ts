@@ -78,4 +78,26 @@ describe("project budget CLI", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("fails prompt mode when an explicit budget project cannot be resolved", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-budget-cli-missing-"));
+    try {
+      const env = {
+        HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+        WORKSPACES_AGENT_MOCK: "1",
+      };
+
+      const blocked = runProjects([
+        "--budget-project",
+        "missing-budget-project",
+        "--json",
+        "create a project named Budget Target Typo",
+      ], env);
+
+      expect(blocked.exitCode).toBe(1);
+      expect(text(blocked.stderr)).toContain("Budget project not found: missing-budget-project");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

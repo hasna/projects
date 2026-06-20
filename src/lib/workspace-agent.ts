@@ -1002,6 +1002,9 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
   const forcedRootId = resolveRootId(options.root);
   const forcedRecipeId = resolveRecipeId(options.recipe);
   const budgetProject = resolveProjectTarget(options.budgetProject);
+  if (options.budgetProject && !budgetProject) {
+    throw new Error(`Budget project not found: ${options.budgetProject}`);
+  }
   const tmuxAllowed = options.tmux !== false;
   const command = promptCommand(options);
   const runLock = acquireWorkspaceLock({
@@ -2164,6 +2167,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           provider: "openrouter",
           model,
           usd,
+          cost_unknown: usd === undefined && usage.total_tokens > 0,
           input_tokens: usage.input_tokens,
           output_tokens: usage.output_tokens,
           total_tokens: usage.total_tokens,
