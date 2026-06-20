@@ -730,6 +730,70 @@ describe("project-first CLI surface", () => {
     expect(statusPayload.launch_defaults.session_policy).toBe("error-if-running");
   });
 
+  test("top-level start accepts exact requested tmux windows as JSON", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-start-windows-json-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+
+    expect(runProjects([
+      "tmux-profiles",
+      "add",
+      "--name",
+      "Dev",
+      "--slug",
+      "dev",
+      "--session-template",
+      "{slug}-dev",
+      "--windows-json",
+      "[{\"name\":\"server\",\"command\":\"bun run dev\"}]",
+      "--json",
+    ], env).exitCode).toBe(0);
+
+    expect(runProjects([
+      "create",
+      "--name",
+      "Requested Windows",
+      "--slug",
+      "requested-windows",
+      "--path",
+      join(root, "requested-windows"),
+      "--launch-profile",
+      "dev",
+      "--start-agent",
+      "claude",
+      "--start-windows-json",
+      "[{\"name\":\"notes\",\"command\":\"vim NOTES.md\"}]",
+      "--json",
+    ], env).exitCode).toBe(0);
+
+    const started = runProjects([
+      "start",
+      "requested-windows",
+      "--windows-json",
+      "[{\"name\":\"editor\",\"command\":\"code .\"},{\"name\":\"logs\",\"command\":\"tail -f app.log\"}]",
+      "--dry-run",
+      "--json",
+    ], env);
+
+    expect(started.exitCode).toBe(0);
+    const payload = JSON.parse(text(started.stdout)) as {
+      launch_defaults: { used_windows: boolean };
+      tmux: {
+        session_name: string;
+        windows: Array<{ target: string; metadata?: { command?: string } }>;
+      };
+    };
+    expect(payload.tmux.session_name).toBe("requested-windows-dev");
+    expect(payload.launch_defaults.used_windows).toBe(false);
+    expect(payload.tmux.windows.map((window) => window.target)).toEqual([
+      "requested-windows-dev:editor",
+      "requested-windows-dev:logs",
+    ]);
+    expect(payload.tmux.windows.map((window) => window.metadata?.command)).toEqual([
+      "code .",
+      "tail -f app.log",
+    ]);
+  });
+
   test("top-level status reports expected project tmux session", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-status-"));
     const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };

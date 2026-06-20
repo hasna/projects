@@ -136,12 +136,22 @@ Default behavior:
 4. Load saved launch defaults from the project record: `start_agent`, `start_command`, `start_session_policy`, `launch_profile`, and `start_windows`.
 5. Create or reuse a tmux session in the project path.
 6. Start the selected coding tool or saved command in a named window.
-7. Apply saved tmux profile windows and saved start windows unless the command provides explicit overrides.
+7. Apply saved tmux profile windows and saved start windows unless the command provides exact requested windows.
 8. Reuse existing sessions/windows by default.
 9. Record a project event with source, agent, session, selected tool, and reuse result.
 
 Explicit `--reuse`, `--new`, and `--error-if-running` flags override the saved
 `start_session_policy`; when no flag is passed, the project default is used.
+
+Exact requested windows:
+
+```bash
+projects start <target> --windows-json '[{"name":"editor","command":"code ."},{"name":"server","command":"bun run dev"}]'
+```
+
+When exact windows are provided, the start/status operation creates or previews
+that tmux window set by name instead of adding saved profile/default windows.
+MCP and SDK callers use the `windows` array on `projects_start`.
 
 Agent choices:
 

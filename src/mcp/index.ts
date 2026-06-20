@@ -52,6 +52,11 @@ import {
   startProject,
 } from "../lib/project-start.js";
 import { projectTmuxStatus } from "../lib/project-tmux-status.js";
+import {
+  createProjectBudget,
+  getProjectBudgetStatuses,
+  recordProjectSpend,
+} from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
 import {
@@ -925,7 +930,7 @@ server.tool(
 
 server.tool(
   "projects_start",
-  "Start a project by creating or reusing a tmux session and launching a coding tool.",
+  "Start a project by creating or reusing a tmux session and launching a coding tool. The windows field, when provided, is the exact tmux window set to create.",
   {
     target: z.string().optional(),
     agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
@@ -950,7 +955,7 @@ server.tool(
         session: input.session,
         sessionPolicy: input.session_policy,
         windowName: input.window_name,
-        extraWindows: input.windows,
+        requestedWindows: input.windows,
         register: input.register,
         importTags: input.tags,
         importMetadata: input.metadata as JsonObject | undefined,
@@ -986,7 +991,7 @@ server.tool(
         agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
         command: input.command,
         windowName: input.window_name,
-        extraWindows: input.windows,
+        requestedWindows: input.windows,
       }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1429,6 +1434,11 @@ server.tool(
     recipe: z.string().optional(),
     tmux: z.boolean().optional(),
     mock: z.boolean().optional(),
+    budget_project: z.string().optional(),
+    run_budget_usd: z.number().nonnegative().optional(),
+    run_budget_input_tokens: z.number().int().nonnegative().optional(),
+    run_budget_output_tokens: z.number().int().nonnegative().optional(),
+    run_budget_total_tokens: z.number().int().nonnegative().optional(),
   },
   async (input) => {
     try {
@@ -1443,7 +1453,118 @@ server.tool(
         recipe: input.recipe,
         tmux: input.tmux,
         mock: input.mock,
+        budgetProject: input.budget_project,
+        runBudget: {
+          maxUsd: input.run_budget_usd,
+          maxInputTokens: input.run_budget_input_tokens,
+          maxOutputTokens: input.run_budget_output_tokens,
+          maxTotalTokens: input.run_budget_total_tokens,
+        },
       }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_budgets_set",
+  "Create or update a hard/soft money and token budget for a project or agent run.",
+  {
+    project: z.string().optional(),
+    run_id: z.string().optional(),
+    id: z.string().optional(),
+    window: z.enum(["daily", "monthly", "lifetime"]).optional(),
+    mode: z.enum(["hard", "soft"]).optional(),
+    max_usd: z.number().nonnegative().optional(),
+    max_input_tokens: z.number().int().nonnegative().optional(),
+    max_output_tokens: z.number().int().nonnegative().optional(),
+    max_total_tokens: z.number().int().nonnegative().optional(),
+    warning_threshold: z.number().min(0).max(1).optional(),
+  },
+  async (input) => {
+    try {
+      const project = input.project ? findProjectTarget(input.project) : null;
+      if (input.project && !project) return errorText(`Project not found: ${input.project}`);
+      if (!project && !input.run_id) return errorText("Pass project or run_id");
+      if (project && input.run_id) return errorText("Choose only one scope: project or run_id");
+      const scopeType = project ? "project" : "run";
+      const scopeId = project?.id ?? input.run_id!;
+      return jsonText({
+        budget: createProjectBudget({
+          id: input.id ?? `${scopeType}-${scopeId}`,
+          scope_type: scopeType,
+          scope_id: scopeId,
+          window: input.window,
+          mode: input.mode,
+          max_usd: input.max_usd,
+          max_input_tokens: input.max_input_tokens,
+          max_output_tokens: input.max_output_tokens,
+          max_total_tokens: input.max_total_tokens,
+          warning_threshold: input.warning_threshold,
+          metadata: { project_slug: project?.slug },
+        }),
+      });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_budgets_remaining",
+  "Return remaining money and token budget for a project, run, or budget id.",
+  {
+    project: z.string().optional(),
+    run_id: z.string().optional(),
+    budget_id: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = input.project ? findProjectTarget(input.project) : null;
+      if (input.project && !project) return errorText(`Project not found: ${input.project}`);
+      return jsonText(getProjectBudgetStatuses({
+        workspace_id: project?.id,
+        run_id: input.run_id,
+        budget_id: input.budget_id,
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_budgets_spend",
+  "Record audited project or run spend in USD and tokens.",
+  {
+    project: z.string().optional(),
+    run_id: z.string().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    usd: z.number().nonnegative().optional(),
+    input_tokens: z.number().int().nonnegative().optional(),
+    output_tokens: z.number().int().nonnegative().optional(),
+    total_tokens: z.number().int().nonnegative().optional(),
+  },
+  async (input) => {
+    try {
+      const project = input.project ? findProjectTarget(input.project) : null;
+      if (input.project && !project) return errorText(`Project not found: ${input.project}`);
+      if (!project && !input.run_id) return errorText("Pass project or run_id");
+      return jsonText({
+        spend: recordProjectSpend({
+          workspace_id: project?.id,
+          run_id: input.run_id,
+          provider: input.provider,
+          model: input.model,
+          usd: input.usd,
+          input_tokens: input.input_tokens,
+          output_tokens: input.output_tokens,
+          total_tokens: input.total_tokens,
+          metadata: { source: "mcp" },
+        }),
+      });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }

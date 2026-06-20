@@ -48,6 +48,7 @@ projects create --name "My App" --path /path/to/my-app --stage active --priority
 projects create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
 projects start my-app --agent codewith
 projects start /path/to/existing --agent claude --window-name editor
+projects start my-app --windows-json '[{"name":"editor","command":"code ."},{"name":"server","command":"bun run dev"}]'
 projects start /path/to/new-folder --tags family,security --metadata-json '{"domain":"home-security"}' --dry-run --json
 projects start my-app --profile dev --agent claude --new
 projects start my-app --error-if-running --agent none
@@ -70,6 +71,11 @@ projects archive my-app
 projects unarchive my-app
 projects delete my-app
 
+# Budgets
+projects budgets set --project my-app --max-usd 5 --max-total-tokens 100000 --json
+projects budgets remaining --project my-app --json
+projects --budget-project my-app --run-budget-tokens 2000 --json "Plan the next release"
+
 # Project checks
 projects doctor my-app --fix --dry-run --json
 
@@ -87,7 +93,9 @@ Projects stores high-level management fields directly on the project record:
 `stage`, `priority`, `owner`, `launch_profile`, `start_agent`,
 `start_command`, `start_session_policy`, `start_windows`, todos links, and
 brief links. `projects start` and `projects status` use those launch defaults
-unless the command passes an explicit override. Detailed execution still belongs
+unless the command passes an explicit override. Pass `--windows-json` or the
+MCP/API `windows` field to request the exact tmux window names for a single
+start/status operation. Detailed execution still belongs
 in `todos`; long-form specs and decisions still belong in `brief`.
 
 ## Storage Sync
@@ -148,7 +156,7 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_list` / `projects_show` | Search and inspect projects |
 | `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
 | `projects_create` | Plan or create a project anywhere on disk |
-| `projects_start` | Open or reuse a tmux session and launch Codewith, Claude, OpenCode, Cursor, or no tool |
+| `projects_start` | Open or reuse a tmux session and launch Codewith, Claude, OpenCode, Cursor, or no tool, with optional exact tmux windows |
 | `projects_tmux_status` | Inspect expected and current tmux session/window status for a project |
 | `projects_cleanup_create` | Clean up DB/files created by a project creation run using rollback records |
 | `projects_import` / `projects_scan_roots` | Import existing folders as projects |

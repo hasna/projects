@@ -75,6 +75,13 @@ import {
 } from "../../lib/project-start.js";
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
 import {
+  createProjectBudget,
+  getProjectBudgetStatuses,
+  listProjectBudgets,
+  recordProjectSpend,
+  resetProjectBudget,
+} from "../../lib/budget.js";
+import {
   PROJECT_PRIORITIES,
   PROJECT_START_AGENTS,
   PROJECT_START_SESSION_POLICIES,
@@ -210,6 +217,13 @@ function parsePositiveInteger(value: string | undefined, label: string): number 
   if (value === undefined) return undefined;
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`);
+  return parsed;
+}
+
+function parseNonNegativeNumber(value: string | undefined, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative number`);
   return parsed;
 }
 
@@ -528,11 +542,159 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectStartCommand(program);
   registerProjectStatusCommand(program);
   registerProjectCommands(program);
+  registerBudgetCommands(program);
   registerLocationsCommand(program);
   registerRootsCommand(program);
   registerRecipesCommand(program);
   registerAgentsCommand(program);
   registerTmuxProfilesCommand(program);
+}
+
+function registerBudgetCommands(program: Command): void {
+  const cmd = program
+    .command("budgets")
+    .description("Define, inspect, and account for project/run money and token budgets");
+
+  cmd
+    .command("set")
+    .description("Create or update a project or run budget")
+    .option("--id <id>", "Budget id")
+    .option("--project <project>", "Project id, slug, name, or path")
+    .option("--run-id <run>", "Agent run id")
+    .option("--window <window>", "Budget window: daily, monthly, lifetime", "lifetime")
+    .option("--mode <mode>", "Budget mode: hard or soft", "hard")
+    .option("--max-usd <amount>", "USD budget")
+    .option("--max-input-tokens <n>", "Input token budget")
+    .option("--max-output-tokens <n>", "Output token budget")
+    .option("--max-total-tokens <n>", "Total token budget")
+    .option("--warning-threshold <ratio>", "Soft warning threshold ratio, e.g. 0.8")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        if (!project && !opts.runId) throw new Error("Pass --project or --run-id");
+        if (opts.project && opts.runId) throw new Error("Choose only one scope: --project or --run-id");
+        const scopeType = project ? "project" : "run";
+        const scopeId = project?.id ?? opts.runId;
+        const budget = createProjectBudget({
+          id: opts.id ?? `${scopeType}-${scopeId}`,
+          scope_type: scopeType,
+          scope_id: scopeId,
+          window: opts.window,
+          mode: opts.mode,
+          max_usd: parseNonNegativeNumber(opts.maxUsd, "--max-usd"),
+          max_input_tokens: parseNonNegativeNumber(opts.maxInputTokens, "--max-input-tokens"),
+          max_output_tokens: parseNonNegativeNumber(opts.maxOutputTokens, "--max-output-tokens"),
+          max_total_tokens: parseNonNegativeNumber(opts.maxTotalTokens, "--max-total-tokens"),
+          warning_threshold: parseNonNegativeNumber(opts.warningThreshold, "--warning-threshold"),
+          metadata: { project_slug: project?.slug },
+        });
+        const payload = { budget, project: project ? projectPayload(project) : null };
+        if (wantsJson(opts)) { printObject(payload, opts); return; }
+        console.log(chalk.green(`✓ Budget saved: ${budget.id}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("list")
+    .description("List configured budgets")
+    .option("--project <project>", "Project id, slug, name, or path")
+    .option("--run-id <run>", "Agent run id")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        const budgets = listProjectBudgets({ workspace_id: project?.id, run_id: opts.runId });
+        if (wantsJson(opts)) { printObject(budgets, opts); return; }
+        printRows(budgets.map((budget) => ({
+          id: budget.id,
+          scope: `${budget.scope_type}:${budget.scope_id}`,
+          mode: budget.mode,
+          window: budget.window,
+        })), ["id", "scope", "mode", "window"]);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("remaining")
+    .description("Show remaining money and token budget")
+    .option("--id <id>", "Budget id")
+    .option("--project <project>", "Project id, slug, name, or path")
+    .option("--run-id <run>", "Agent run id")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        const statuses = getProjectBudgetStatuses({ workspace_id: project?.id, run_id: opts.runId, budget_id: opts.id });
+        if (wantsJson(opts)) { printObject(statuses, opts); return; }
+        printRows(statuses.map((status) => ({
+          id: status.budget.id,
+          usd: status.remaining.usd ?? "",
+          input: status.remaining.input_tokens ?? "",
+          output: status.remaining.output_tokens ?? "",
+          total: status.remaining.total_tokens ?? "",
+        })), ["id", "usd", "input", "output", "total"]);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("reset <id>")
+    .description("Reset a budget window from now")
+    .option("-j, --json", "Output JSON")
+    .action((id, opts) => {
+      try {
+        const budget = resetProjectBudget(id);
+        if (wantsJson(opts)) { printObject({ budget }, opts); return; }
+        console.log(chalk.green(`✓ Budget reset: ${budget.id}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("spend")
+    .description("Record audited project/run spend")
+    .option("--project <project>", "Project id, slug, name, or path")
+    .option("--run-id <run>", "Agent run id")
+    .option("--provider <provider>", "Provider name", "openrouter")
+    .option("--model <model>", "Model id")
+    .option("--usd <amount>", "USD spend", "0")
+    .option("--input-tokens <n>", "Input tokens", "0")
+    .option("--output-tokens <n>", "Output tokens", "0")
+    .option("--total-tokens <n>", "Total tokens")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        if (!project && !opts.runId) throw new Error("Pass --project or --run-id");
+        const spend = recordProjectSpend({
+          workspace_id: project?.id,
+          run_id: opts.runId,
+          provider: opts.provider,
+          model: opts.model,
+          usd: parseNonNegativeNumber(opts.usd, "--usd"),
+          input_tokens: parseNonNegativeNumber(opts.inputTokens, "--input-tokens"),
+          output_tokens: parseNonNegativeNumber(opts.outputTokens, "--output-tokens"),
+          total_tokens: parseNonNegativeNumber(opts.totalTokens, "--total-tokens"),
+          metadata: { source: "cli" },
+        });
+        if (wantsJson(opts)) { printObject({ spend }, opts); return; }
+        console.log(chalk.green(`✓ Spend recorded: ${spend.id}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
 }
 
 function registerProjectStatusCommand(program: Command): void {
@@ -545,15 +707,18 @@ function registerProjectStatusCommand(program: Command): void {
     .option("--command <command>", "Expected command for the primary window")
     .option("--window-name <name>", "Expected primary window name")
     .option("--window <name:command>", "Expected additional tmux window; repeatable", collectOption, [])
+    .option("--windows-json <json>", "Exact expected tmux windows JSON array")
     .option("-j, --json", "Output JSON")
     .action(async (target, opts) => {
       try {
+        const requestedWindows = parseTmuxWindowsJson(opts.windowsJson, "--windows-json");
         const result = await projectTmuxStatus(target, {
           profile: opts.profile,
           session: opts.session,
           agentTool: opts.agent ? parseProjectStartAgent(opts.agent) : undefined,
           command: opts.command,
           windowName: opts.windowName,
+          requestedWindows,
           extraWindows: parseStartWindows(opts.window),
         });
         if (wantsJson(opts)) { printObject(result, opts); return; }
@@ -603,6 +768,7 @@ function registerProjectStartCommand(program: Command): void {
     .option("--error-if-running", "Fail if the resolved tmux session already exists")
     .option("--window-name <name>", "Main tmux window name")
     .option("--window <name:command>", "Additional tmux window; repeatable", collectOption, [])
+    .option("--windows-json <json>", "Exact tmux windows JSON array to create for this start")
     .option("--tags <tags>", "Tags to apply when registering an unknown folder")
     .option("--metadata-json <json>", "Metadata JSON to apply when registering an unknown folder")
     .option("--actor <id-or-slug>", "Projects agent credited for the start event")
@@ -623,12 +789,14 @@ function registerProjectStartCommand(program: Command): void {
         }
 
         const agentId = opts.actor ? resolveAgentId(opts.actor) : ensureCliAgent().id;
+        const requestedWindows = parseTmuxWindowsJson(opts.windowsJson, "--windows-json");
         const commonOptions = {
           agentTool: opts.agent ? parseProjectStartAgent(opts.agent) : undefined,
           toolCommand: opts.command,
           profile: opts.profile,
           sessionPolicy: parseStartSessionPolicyOptions(opts),
           windowName: opts.windowName,
+          requestedWindows,
           extraWindows: parseStartWindows(opts.window),
           register: opts.register,
           importTags: splitList(opts.tags),

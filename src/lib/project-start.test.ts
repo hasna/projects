@@ -209,6 +209,51 @@ describe("project start service", () => {
     db.close();
   });
 
+  test("requested start windows override profile and saved default windows", async () => {
+    const db = makeDb();
+    const path = mkdtempSync(join(tmpdir(), "project-start-requested-windows-"));
+    createWorkspace({
+      name: "Requested Windows Project",
+      slug: "requested-windows-project",
+      kind: "project",
+      primary_path: path,
+      metadata: {
+        launch_profile: "dev",
+        start_agent: "claude",
+        start_windows: [{ name: "notes", command: "vim NOTES.md" }],
+      },
+    }, db);
+    createTmuxProfile({
+      name: "Dev",
+      slug: "dev",
+      session_template: "{slug}-dev",
+      windows: [{ window_name_template: "server", command: "bun run dev" }],
+    }, db);
+
+    const result = await startProject("requested-windows-project", {
+      requestedWindows: [
+        { name: "editor", command: "code ." },
+        { name: "logs", command: "tail -f app.log" },
+      ],
+      dryRun: true,
+      db,
+    });
+
+    expect(result.tmux.session_name).toBe("requested-windows-project-dev");
+    expect(result.launch_defaults.used_windows).toBe(false);
+    expect(result.tmux.windows.map((window) => window.target)).toEqual([
+      "requested-windows-project-dev:editor",
+      "requested-windows-project-dev:logs",
+    ]);
+    expect(result.tmux.windows.map((window) => window.metadata?.command)).toEqual([
+      "code .",
+      "tail -f app.log",
+    ]);
+
+    rmSync(path, { recursive: true, force: true });
+    db.close();
+  });
+
   test("maps supported start agents to their default commands", () => {
     expect(projectStartCommand("codewith")).toBe("codewith");
     expect(projectStartCommand("claude")).toBe("claude");

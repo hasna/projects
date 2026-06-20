@@ -20,6 +20,7 @@ export interface ProjectTmuxStatusOptions {
   agentTool?: ProjectStartAgent;
   command?: string;
   windowName?: string;
+  requestedWindows?: WorkspaceTmuxWindowSpec[];
   extraWindows?: WorkspaceTmuxWindowSpec[];
   db?: Database;
 }
@@ -94,6 +95,9 @@ export async function projectTmuxStatus(
   const profileSpec = profile
     ? tmuxProfileToSpec(project, profile, listTmuxProfileWindows(profile.id, options.db))
     : null;
+  if (options.requestedWindows && options.requestedWindows.length === 0) {
+    throw new Error("Requested start windows must include at least one window");
+  }
   const windowName = options.windowName?.trim() || (agentTool === "none" ? project.slug : agentTool);
   const primaryWindow = !profileSpec || command !== undefined || options.windowName
     ? {
@@ -103,12 +107,14 @@ export async function projectTmuxStatus(
       detached: true,
     } satisfies WorkspaceTmuxWindowSpec
     : undefined;
-  const expectedWindows = mergeWindows(
-    primaryWindow ? [primaryWindow] : undefined,
-    profileSpec?.windows,
-    defaultWindows,
-    options.extraWindows,
-  );
+  const expectedWindows = options.requestedWindows
+    ? mergeWindows(options.requestedWindows)
+    : mergeWindows(
+      primaryWindow ? [primaryWindow] : undefined,
+      profileSpec?.windows,
+      defaultWindows,
+      options.extraWindows,
+    );
   const expectedSession = options.session?.trim() || profileSpec?.session || project.slug;
   const baseResult = {
     project,
@@ -127,7 +133,7 @@ export async function projectTmuxStatus(
       used_tool_command: options.command === undefined && Boolean(defaults.start_command),
       used_tmux_profile: options.profile === undefined && Boolean(defaults.launch_profile),
       used_session_policy: Boolean(defaults.start_session_policy),
-      used_windows: defaultWindows.length > 0,
+      used_windows: options.requestedWindows === undefined && defaultWindows.length > 0,
     },
     errors: [],
   };

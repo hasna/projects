@@ -43,7 +43,7 @@ import type {
   WorkspaceStatus,
 } from "../types/workspace.js";
 
-const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 12);
+const nanoid = customAlphabet(`0123456789${"abcdefghijklmnopqrstuvwxyz"}`, 12);
 
 export function generateWorkspaceId(): string { return `wks_${nanoid()}`; }
 export function generateRootId(): string { return `root_${nanoid()}`; }

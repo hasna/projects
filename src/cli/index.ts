@@ -29,10 +29,26 @@ const promptOptions: {
   root?: string;
   recipe?: string;
   tmux?: boolean;
+  budgetProject?: string;
+  runBudgetUsd?: string;
+  runBudgetInputTokens?: string;
+  runBudgetOutputTokens?: string;
+  runBudgetTotalTokens?: string;
 } = {};
 
 function firstPositionalArg(argv: string[]): string | undefined {
-  const optionsWithValues = new Set(["--model", "--max-steps", "--agent", "--root", "--recipe"]);
+  const optionsWithValues = new Set([
+    "--model",
+    "--max-steps",
+    "--agent",
+    "--root",
+    "--recipe",
+    "--budget-project",
+    "--run-budget-usd",
+    "--run-budget-input-tokens",
+    "--run-budget-output-tokens",
+    "--run-budget-tokens",
+  ]);
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--") return argv[i + 1];
@@ -102,6 +118,26 @@ function preparePromptFlags(): void {
       promptOptions.recipe = process.argv[++i];
       continue;
     }
+    if (arg === "--budget-project") {
+      promptOptions.budgetProject = process.argv[++i];
+      continue;
+    }
+    if (arg === "--run-budget-usd") {
+      promptOptions.runBudgetUsd = process.argv[++i];
+      continue;
+    }
+    if (arg === "--run-budget-input-tokens") {
+      promptOptions.runBudgetInputTokens = process.argv[++i];
+      continue;
+    }
+    if (arg === "--run-budget-output-tokens") {
+      promptOptions.runBudgetOutputTokens = process.argv[++i];
+      continue;
+    }
+    if (arg === "--run-budget-tokens") {
+      promptOptions.runBudgetTotalTokens = process.argv[++i];
+      continue;
+    }
     if (arg === "--no-tmux") {
       promptOptions.tmux = false;
       continue;
@@ -132,6 +168,9 @@ Prompt mode options:
   --agent <id-or-slug>  Existing agent to attribute prompt-mode project mutations to
   --root <id-or-slug>   Required root for prompt-mode project creation
   --recipe <id-or-slug> Required recipe for prompt-mode project creation
+  --budget-project <id> Charge/enforce this project budget for prompt mode
+  --run-budget-usd <n>  Hard USD cap for this single prompt-agent run
+  --run-budget-tokens <n> Hard total-token cap for this single prompt-agent run
   --no-tmux             Disable tmux planning and tmux changes in prompt mode`)
   .action(async (promptParts: string[]) => {
     if (!promptParts.length) {
@@ -144,6 +183,15 @@ Prompt mode options:
       console.error(chalk.red("--max-steps must be a positive integer"));
       process.exit(1);
     }
+    const parseBudgetNumber = (value: string | undefined, label: string): number | undefined => {
+      if (value === undefined) return undefined;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        console.error(chalk.red(`${label} must be a non-negative number`));
+        process.exit(1);
+      }
+      return parsed;
+    };
 
     try {
       const result = await runWorkspaceAgentPrompt({
@@ -156,6 +204,13 @@ Prompt mode options:
         root: promptOptions.root,
         recipe: promptOptions.recipe,
         tmux: promptOptions.tmux,
+        budgetProject: promptOptions.budgetProject,
+        runBudget: {
+          maxUsd: parseBudgetNumber(promptOptions.runBudgetUsd, "--run-budget-usd"),
+          maxInputTokens: parseBudgetNumber(promptOptions.runBudgetInputTokens, "--run-budget-input-tokens"),
+          maxOutputTokens: parseBudgetNumber(promptOptions.runBudgetOutputTokens, "--run-budget-output-tokens"),
+          maxTotalTokens: parseBudgetNumber(promptOptions.runBudgetTotalTokens, "--run-budget-tokens"),
+        },
       });
 
       if (process.env["PROJECTS_JSON"] || process.env["WORKSPACES_JSON"]) {

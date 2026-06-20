@@ -244,6 +244,34 @@ export type {
   WorkspaceAgentPromptResult as ProjectAgentPromptResult,
 } from "./lib/workspace-agent.js";
 export {
+  BudgetExceededError,
+  assertProjectBudgets,
+  assertProjectBudgetsAfterSpend,
+  createProjectBudget,
+  estimateProjectCostUsd,
+  getProjectBudget,
+  getProjectBudgetStatuses,
+  listProjectBudgets,
+  modelPricing,
+  normalizeProjectUsage,
+  openRouterCostFromMetadata,
+  recordProjectSpend,
+  resetProjectBudget,
+} from "./lib/budget.js";
+export type {
+  CreateProjectBudgetInput,
+  ProjectBudget,
+  ProjectBudgetContext,
+  ProjectBudgetMode,
+  ProjectBudgetScopeType,
+  ProjectBudgetSpend,
+  ProjectBudgetStatus,
+  ProjectBudgetTotals,
+  ProjectBudgetWindow,
+  ProjectSpendInput,
+  ProjectUsage,
+} from "./lib/budget.js";
+export {
   WORKSPACE_AGENT_EVAL_CASE_IDS as PROJECT_AGENT_EVAL_CASE_IDS,
   parseWorkspaceAgentEvalCaseIds as parseProjectAgentEvalCaseIds,
   runWorkspaceAgentEval as runProjectAgentEval,

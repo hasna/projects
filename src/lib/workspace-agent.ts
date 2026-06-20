@@ -66,6 +66,17 @@ import { projectTmuxStatus } from "./project-tmux-status.js";
 import { filterProjectEvalArtifacts } from "./project-eval-artifacts.js";
 import { resolveRegisteredProjectTarget } from "./project-resolver.js";
 import {
+  BudgetExceededError,
+  assertProjectBudgets,
+  assertProjectBudgetsAfterSpend,
+  createProjectBudget,
+  estimateProjectCostUsd,
+  getProjectBudgetStatuses,
+  normalizeProjectUsage,
+  recordProjectSpend,
+  type ProjectBudgetStatus,
+} from "./budget.js";
+import {
   PROJECT_PRIORITIES,
   PROJECT_STAGES,
   PROJECT_START_AGENTS,
@@ -157,6 +168,13 @@ export interface WorkspaceAgentPromptOptions {
   root?: string;
   recipe?: string;
   tmux?: boolean;
+  budgetProject?: string;
+  runBudget?: {
+    maxUsd?: number;
+    maxInputTokens?: number;
+    maxOutputTokens?: number;
+    maxTotalTokens?: number;
+  };
 }
 
 export interface WorkspaceAgentPromptResult {
@@ -173,6 +191,7 @@ export interface WorkspaceAgentPromptResult {
   tool_calls: JsonObject[];
   mutation_audit?: ProjectAgentMutationAudit;
   usage?: JsonObject;
+  budget_statuses?: JsonObject[];
 }
 
 function pickModel(model?: string): string {
@@ -376,7 +395,7 @@ export function buildWorkspaceAgentSystemPrompt(input: {
     "Use projects_plan_create for explicit no-write planning, projects_update for requested metadata changes, projects_tag/projects_untag for additive tag changes, projects_archive/projects_unarchive for status changes, projects_delete for lifecycle deletion, projects_cleanup_create for cleaning up a partial or unwanted creation run, projects_import for one-folder import requests, projects_scan_roots for broad registered-root scans/imports, projects_import_github for GitHub repository imports, projects_github_publish/projects_github_unpublish for GitHub publication state, projects_link/projects_unlink for external IDs, projects_doctor for checks, projects_event_record for custom audit events, projects_tmux_status for launch/runtime inspection, projects_start for open/start/resume requests, and projects_create for new projects.",
     "For projects_import_github, set remote_only=true only when the user explicitly wants a remote-only record and did not provide a root, path, or clone request. A root/path/clone request means local project registration.",
     "When a user asks to inspect running project sessions or tmux state, call projects_tmux_status.",
-    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, and can launch codewith, claude, opencode, cursor, or no tool.",
+    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, can launch codewith, claude, opencode, cursor, or no tool, and can use windows to request the exact tmux window names to create.",
     "When a user asks for tmux or mentions a saved tmux profile, call projects_tmux_profiles_list before projects_create or projects_tmux_profiles_apply. The tools reject saved profile usage until profiles have been inspected.",
     "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in projects_create, even if the user mentions tmux.",
     "When creating a local project directory, write a .project.json marker unless the user explicitly asks not to. The marker name is a current storage detail.",
@@ -982,6 +1001,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
   const actorAgent = resolvePromptAgent(options.agent) ?? runAgent;
   const forcedRootId = resolveRootId(options.root);
   const forcedRecipeId = resolveRecipeId(options.recipe);
+  const budgetProject = resolveProjectTarget(options.budgetProject);
   const tmuxAllowed = options.tmux !== false;
   const command = promptCommand(options);
   const runLock = acquireWorkspaceLock({
@@ -992,6 +1012,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
   });
   const run = startAgentRun({
     agent_id: runAgent.id,
+    workspace_id: budgetProject?.id,
     provider: "openrouter",
     model,
     prompt: options.prompt,
@@ -1002,9 +1023,40 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       actor_agent_id: actorAgent.id,
       root_id: forcedRootId,
       recipe_id: forcedRecipeId,
+      budget_project_id: budgetProject?.id,
+      run_budget: options.runBudget as JsonObject | undefined,
       tmux_allowed: tmuxAllowed,
     },
   });
+
+  if (options.runBudget && (
+    options.runBudget.maxUsd !== undefined ||
+    options.runBudget.maxInputTokens !== undefined ||
+    options.runBudget.maxOutputTokens !== undefined ||
+    options.runBudget.maxTotalTokens !== undefined
+  )) {
+    createProjectBudget({
+      id: `run-${run.id}`,
+      scope_type: "run",
+      scope_id: run.id,
+      window: "lifetime",
+      mode: "hard",
+      max_usd: options.runBudget.maxUsd,
+      max_input_tokens: options.runBudget.maxInputTokens,
+      max_output_tokens: options.runBudget.maxOutputTokens,
+      max_total_tokens: options.runBudget.maxTotalTokens,
+      metadata: { source: "prompt-run" },
+    });
+  }
+
+  try {
+    assertProjectBudgets({ workspace_id: budgetProject?.id, run_id: run.id });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    completeAgentRun(run.id, { status: "failed", error, result: { error } });
+    releaseWorkspaceLock(runLock.lock_key);
+    throw err;
+  }
 
   if (mock) {
     try {
@@ -1033,6 +1085,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
 
   const createdWorkspaces: Workspace[] = [];
   const observedToolCalls: JsonObject[] = [];
+  const observedBudgetStatuses: ProjectBudgetStatus[] = [];
   let inspectedTmuxProfiles = false;
   const provider = createOpenRouter({
     apiKey,
@@ -1919,7 +1972,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_start: tool({
-      description: "Start, open, resume, or launch a project in tmux and optionally run codewith, claude, opencode, cursor, or no tool.",
+      description: "Start, open, resume, or launch a project in tmux and optionally run codewith, claude, opencode, cursor, or no tool. Provide windows to request the exact tmux window set.",
       inputSchema: z.object({
         target: z.string().optional().describe("Project id, slug, exact name, or path. Omit for current directory."),
         agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
@@ -1928,7 +1981,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         session: z.string().optional(),
         session_policy: z.enum(PROJECT_START_SESSION_POLICIES).optional(),
         window_name: z.string().optional(),
-        windows: z.array(tmuxWindowSchema).optional(),
+        windows: z.array(tmuxWindowSchema).optional().describe("Exact tmux windows to create for this start; overrides saved/profile windows when provided"),
         register: z.boolean().optional().describe("Register an untracked folder before starting; default true"),
         tags: z.array(z.string()).optional().describe("Tags to apply if an unknown folder is registered before start"),
         metadata: z.record(z.string(), z.unknown()).optional().describe("Metadata to apply if an unknown folder is registered before start"),
@@ -1942,7 +1995,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           session: input.session,
           sessionPolicy: input.session_policy,
           windowName: input.window_name,
-          extraWindows: input.windows as WorkspaceTmuxWindowSpec[] | undefined,
+          requestedWindows: input.windows as WorkspaceTmuxWindowSpec[] | undefined,
           register: input.register,
           importTags: input.tags,
           importMetadata: input.metadata as JsonObject | undefined,
@@ -1965,7 +2018,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
         command: z.string().optional(),
         window_name: z.string().optional(),
-        windows: z.array(tmuxWindowSchema).optional(),
+        windows: z.array(tmuxWindowSchema).optional().describe("Exact expected tmux windows for this status check; overrides saved/profile windows when provided"),
       }),
       execute: async (input) => {
         if (!tmuxAllowed) return { error: "Tmux is disabled for this prompt run by --no-tmux." };
@@ -1975,7 +2028,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
           command: input.command,
           windowName: input.window_name,
-          extraWindows: input.windows as WorkspaceTmuxWindowSpec[] | undefined,
+          requestedWindows: input.windows as WorkspaceTmuxWindowSpec[] | undefined,
         }));
       },
     }),
@@ -2102,6 +2155,29 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       tools,
       stopWhen: stepCountIs(options.maxSteps ?? 6),
       temperature: 0.2,
+      onStepFinish: async (event) => {
+        const usage = normalizeProjectUsage(event.usage);
+        const usd = estimateProjectCostUsd(usage, model, event.providerMetadata);
+        recordProjectSpend({
+          workspace_id: budgetProject?.id,
+          run_id: run.id,
+          provider: "openrouter",
+          model,
+          usd,
+          input_tokens: usage.input_tokens,
+          output_tokens: usage.output_tokens,
+          total_tokens: usage.total_tokens,
+          metadata: {
+            step_number: event.stepNumber,
+            finish_reason: event.finishReason,
+          },
+        });
+        observedBudgetStatuses.splice(
+          0,
+          observedBudgetStatuses.length,
+          ...assertProjectBudgetsAfterSpend({ workspace_id: budgetProject?.id, run_id: run.id }),
+        );
+      },
       experimental_onToolCallFinish: (event) => {
         observedToolCalls.push({
           name: event.toolCall.toolName,
@@ -2141,15 +2217,19 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
     }
     const text = fallback ? `${result.text}\n\n${fallback.text}` : result.text;
     const usage = result.totalUsage as unknown as JsonObject;
+    const budgetStatuses = observedBudgetStatuses.length > 0
+      ? observedBudgetStatuses
+      : getProjectBudgetStatuses({ workspace_id: budgetProject?.id, run_id: run.id });
     completeAgentRun(run.id, {
       status: "completed",
-      workspace_id: createdWorkspaces[0]?.id,
+      workspace_id: budgetProject?.id ?? createdWorkspaces[0]?.id,
       tool_calls: toolCalls,
       result: {
         text,
         projects: createdWorkspaces.map(compactProject),
         mutation_audit: mutationAudit as unknown as JsonObject,
         usage,
+        budget_statuses: budgetStatuses as unknown as JsonObject[],
       },
     });
 
@@ -2167,10 +2247,19 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       tool_calls: toolCalls,
       mutation_audit: mutationAudit,
       usage,
+      budget_statuses: budgetStatuses as unknown as JsonObject[],
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    completeAgentRun(run.id, { status: "failed", error, tool_calls: observedToolCalls, result: { error } });
+    completeAgentRun(run.id, {
+      status: "failed",
+      error,
+      tool_calls: observedToolCalls,
+      result: {
+        error,
+        ...(err instanceof BudgetExceededError ? { budget_statuses: err.statuses as unknown as JsonObject[] } : {}),
+      },
+    });
     throw err;
   } finally {
     releaseWorkspaceLock(runLock.lock_key);
