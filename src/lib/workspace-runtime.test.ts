@@ -27,51 +27,39 @@ function workspace(slug = "runtime-project"): Workspace {
   };
 }
 
-function unquote(value: string): string {
-  return value.startsWith("'") && value.endsWith("'")
-    ? value.slice(1, -1).replace(/'\\''/g, "'")
-    : value;
-}
-
-function parseFlag(cmd: string, flag: string): string | null {
-  const match = cmd.match(new RegExp(`${flag} ('[^']*'|\\S+)`));
-  return match ? unquote(match[1]!) : null;
+function parseFlag(args: string[], flag: string): string | null {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] ?? null : null;
 }
 
 function createTmuxMock(initial: Record<string, string[]> = {}) {
   const sessions = new Map<string, string[]>(
     Object.entries(initial).map(([name, windows]) => [name, [...windows]]),
   );
-  const commands: string[] = [];
-  const runner = (cmd: string): string => {
-    commands.push(cmd);
-    if (cmd.startsWith("tmux list-sessions")) {
+  const commands: string[][] = [];
+  const runner = (args: string[]): string => {
+    commands.push(args);
+    if (args[0] === "list-sessions") {
       return Array.from(sessions.entries())
         .map(([name, windows]) => `${name}::${windows.length}:0`)
         .join("\n");
     }
-    if (cmd.startsWith("tmux new-session")) {
-      const session = parseFlag(cmd, "-s");
-      const window = parseFlag(cmd, "-n");
+    if (args[0] === "new-session") {
+      const session = parseFlag(args, "-s");
+      const window = parseFlag(args, "-n");
       if (session && !sessions.has(session)) sessions.set(session, [window || session]);
       return "";
     }
-    if (cmd.includes("list-windows") && cmd.includes("#{window_id}:#{window_name}")) {
-      const session = parseFlag(cmd, "-t");
-      return (session ? sessions.get(session) ?? [] : [])
-        .map((name, index) => `%${index}:${name}`)
-        .join("\n");
-    }
-    if (cmd.includes("list-windows")) {
-      const session = parseFlag(cmd, "-t");
+    if (args[0] === "list-windows") {
+      const session = parseFlag(args, "-t");
       return (session ? sessions.get(session) ?? [] : [])
         .map((name, index) => `${session}:${index}:${name}:${index === 0 ? 1 : 0}`)
         .join("\n");
     }
-    if (cmd.startsWith("tmux new-window")) {
-      const target = parseFlag(cmd, "-t");
+    if (args[0] === "new-window") {
+      const target = parseFlag(args, "-t");
       const session = target?.split(":")[0] ?? "";
-      const window = parseFlag(cmd, "-n");
+      const window = parseFlag(args, "-n");
       if (session && window) {
         const windows = sessions.get(session) ?? [];
         if (!windows.includes(window)) windows.push(window);
@@ -79,8 +67,13 @@ function createTmuxMock(initial: Record<string, string[]> = {}) {
       }
       return "";
     }
-    if (cmd.startsWith("tmux send-keys")) return "";
-    throw new Error(`Unexpected tmux command: ${cmd}`);
+    if (args[0] === "kill-session") {
+      const session = parseFlag(args, "-t");
+      if (session) sessions.delete(session);
+      return "";
+    }
+    if (args[0] === "send-keys") return "";
+    throw new Error(`Unexpected tmux command: ${args.join(" ")}`);
   };
   return { sessions, commands, runner };
 }
@@ -103,8 +96,8 @@ describe("workspace tmux runtime", () => {
     ]);
     expect(result.windows.map((window) => window.status)).toEqual(["completed", "completed"]);
     expect(tmux.sessions.get("runtime-project")).toEqual(["01", "02"]);
-    expect(tmux.commands.some((cmd) => cmd.includes("new-session") && cmd.includes("-n '01'"))).toBe(true);
-    expect(tmux.commands.some((cmd) => cmd.includes("new-window") && cmd.includes("-n '02'"))).toBe(true);
+    expect(tmux.commands.some((args) => args[0] === "new-session" && parseFlag(args, "-n") === "01")).toBe(true);
+    expect(tmux.commands.some((args) => args[0] === "new-window" && parseFlag(args, "-n") === "02")).toBe(true);
   });
 
   test("reuses existing sessions and preserves unrelated windows", () => {
@@ -124,25 +117,20 @@ describe("workspace tmux runtime", () => {
       ["runtime-project:02", "completed"],
     ]);
     expect(tmux.sessions.get("runtime-project")).toEqual(["01", "custom", "02"]);
-    expect(tmux.commands.some((cmd) => cmd.includes("kill-window"))).toBe(false);
-    expect(tmux.commands.some((cmd) => cmd.includes("rename-window"))).toBe(false);
+    expect(tmux.commands.some((args) => args[0] === "kill-window")).toBe(false);
+    expect(tmux.commands.some((args) => args[0] === "rename-window")).toBe(false);
   });
 
-  test("escapes project paths in tmux send-keys without outer double quotes", () => {
+  test("passes project paths through tmux cwd arguments without shell evaluation", () => {
     const tmux = createTmuxMock();
     const projectPath = "/tmp/project-$(touch /tmp/owned)";
 
     withTmuxCommandRunnerForTest(tmux.runner, () => createSession("escape-project", projectPath, "01"));
     withTmuxCommandRunnerForTest(tmux.runner, () => restartSession("escape-project", projectPath, "01"));
 
-    const sendKeys = tmux.commands.filter((cmd) => cmd.startsWith("tmux send-keys"));
-    expect(sendKeys).toHaveLength(2);
-    for (const cmd of sendKeys) {
-      expect(cmd).toContain("'cd -- ");
-      expect(cmd).toContain("/tmp/project-$(touch /tmp/owned)");
-      expect(cmd).toContain("'\\''");
-      expect(cmd).not.toContain('"cd ');
-    }
+    const sessions = tmux.commands.filter((args) => args[0] === "new-session");
+    expect(sessions.map((args) => parseFlag(args, "-c"))).toEqual([projectPath, projectPath]);
+    expect(tmux.commands.some((args) => args[0] === "send-keys" && args.some((arg) => arg.includes("cd --")))).toBe(false);
   });
 
 });

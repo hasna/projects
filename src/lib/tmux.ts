@@ -1,9 +1,9 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
-type TmuxCommandRunner = (cmd: string) => string;
+type TmuxCommandRunner = (args: string[]) => string;
 
-function defaultRunner(cmd: string): string {
-  return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
+function defaultRunner(args: string[]): string {
+  return execFileSync("tmux", args, { encoding: "utf-8", env: process.env, stdio: "pipe" }).trim();
 }
 
 let commandRunner: TmuxCommandRunner = defaultRunner;
@@ -18,26 +18,12 @@ export function withTmuxCommandRunnerForTest<T>(runner: TmuxCommandRunner, fn: (
   }
 }
 
-function run(cmd: string): string {
-  return commandRunner(cmd).trim();
+function runTmux(args: string[]): string {
+  return commandRunner(args).trim();
 }
 
-function cdCommand(path: string): string {
-  return `cd -- ${shellEscape(path)}`;
-}
-
-function findWindowId(session: string, windowName: string): string {
-  const output = run(
-    `tmux list-windows -t ${shellEscape(session)} -F '#{window_id}:#{window_name}'`,
-  );
-  for (const line of output.split("\n").filter(Boolean)) {
-    const colonPos = line.indexOf(":");
-    if (colonPos === -1) continue;
-    const id = line.substring(0, colonPos);
-    const name = line.substring(colonPos + 1);
-    if (name === windowName) return id;
-  }
-  return "";
+function tmuxFormatLiteral(value: string): string {
+  return value.replace(/#/g, "##");
 }
 
 export interface TmuxSession {
@@ -116,7 +102,7 @@ export function listGroups(): TmuxGroup[] {
 
 export function createGroup(name: string): void {
   try {
-    run(`tmux new-session -d -s ${shellEscape(name)}`);
+    runTmux(["new-session", "-d", "-s", name]);
   } catch {
     // Group already exists
   }
@@ -124,7 +110,7 @@ export function createGroup(name: string): void {
 
 export function destroyGroup(name: string): void {
   try {
-    run(`tmux kill-session -t ${shellEscape(name)}`);
+    runTmux(["kill-session", "-t", name]);
   } catch {
     // ignore
   }
@@ -133,9 +119,7 @@ export function destroyGroup(name: string): void {
 export function listSessions(): TmuxSession[] {
   let output = "";
   try {
-    output = run(
-      "tmux list-sessions -F '#{session_name}:#{session_group}:#{session_windows}:#{session_attached}'",
-    );
+    output = runTmux(["list-sessions", "-F", "#{session_name}:#{session_group}:#{session_windows}:#{session_attached}"]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("no server running")) return [];
@@ -156,10 +140,9 @@ export function listSessions(): TmuxSession[] {
 }
 
 export function listWindows(session?: string): TmuxWindow[] {
-  const target = session ? `-t ${shellEscape(session)}` : "-a";
-  const output = run(
-    `tmux list-windows ${target} -F '#{session_name}:#{window_index}:#{window_name}:#{window_active}'`,
-  );
+  const output = runTmux(session
+    ? ["list-windows", "-t", session, "-F", "#{session_name}:#{window_index}:#{window_name}:#{window_active}"]
+    : ["list-windows", "-a", "-F", "#{session_name}:#{window_index}:#{window_name}:#{window_active}"]);
   return output
     .split("\n")
     .filter(Boolean)
@@ -208,32 +191,31 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 
   // Create standalone session with the desired window name directly (avoids duplicate default window)
   try {
-    run(`tmux new-session -d -s ${shellEscape(name)} -n ${shellEscape(win)}`);
+    const args = ["new-session", "-d", "-s", name, "-n", win];
+    if (projectPath) args.push("-c", tmuxFormatLiteral(projectPath));
+    runTmux(args);
   } catch {
     // Session already exists
     return;
-  }
-
-  if (projectPath) {
-    const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 
 export function createWindow(session: string, name: string, command?: string, options: CreateWindowOptions = {}): void {
   const target = typeof options.index === "number" ? `${session}:${options.index}` : session;
-  const detached = options.detached === true ? " -d" : "";
-  const cwd = options.cwd ? ` -c ${shellEscape(options.cwd)}` : "";
-  const initialCommand = command ? ` ${shellEscape(wrapInteractiveCommand(command))}` : "";
-  run(`tmux new-window${detached} -t ${shellEscape(target)} -n ${shellEscape(name)}${cwd}${initialCommand}`);
+  const args = ["new-window"];
+  if (options.detached === true) args.push("-d");
+  args.push("-t", target, "-n", name);
+  if (options.cwd) args.push("-c", tmuxFormatLiteral(options.cwd));
+  if (command) args.push(wrapInteractiveCommand(command));
+  runTmux(args);
 }
 
 export function killSession(name: string): void {
-  run(`tmux kill-session -t ${shellEscape(name)}`);
+  runTmux(["kill-session", "-t", name]);
 }
 
 export function killWindow(session: string, name: string): void {
-  run(`tmux kill-window -t ${shellEscape(`${session}:${name}`)}`);
+  runTmux(["kill-window", "-t", `${session}:${name}`]);
 }
 
 export function reviveWindow(session: string, window: string, options: ReviveWindowOptions = {}): ReviveWindowResult {
@@ -300,14 +282,11 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
 
   // Create standalone session with the desired window name directly
   try {
-    run(`tmux new-session -d -s ${shellEscape(name)} -n ${shellEscape(win)}`);
+    const args = ["new-session", "-d", "-s", name, "-n", win];
+    if (projectPath) args.push("-c", tmuxFormatLiteral(projectPath));
+    runTmux(args);
   } catch {
     return;
-  }
-
-  if (projectPath) {
-    const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 
@@ -319,7 +298,7 @@ export function reviveSession(name: string): boolean {
   const windows = listWindows(name);
   for (const w of windows) {
     try {
-      const output = run(`tmux capture-pane -t ${shellEscape(`${name}:${w.index}`)} -p`);
+      const output = runTmux(["capture-pane", "-t", `${name}:${w.index}`, "-p"]);
       if (output.includes("Takumi") || output.includes("takumi") || output.includes("$ ")) {
         return true;
       }
@@ -345,22 +324,22 @@ export function findDeadSessions(sessions?: TmuxSession[]): string[] {
 }
 
 export function attachSession(name: string): void {
-  run(`tmux attach-session -t ${shellEscape(name)}`);
+  runTmux(["attach-session", "-t", name]);
 }
 
 export function focusWindow(session: string, window: string): void {
-  run(`tmux select-window -t ${shellEscape(`${session}:${window}`)}`);
+  runTmux(["select-window", "-t", `${session}:${window}`]);
 }
 
 export function renameWindow(session: string, oldName: string, newName: string): void {
-  run(`tmux rename-window -t ${shellEscape(`${session}:${oldName}`)} ${shellEscape(newName)}`);
+  runTmux(["rename-window", "-t", `${session}:${oldName}`, newName]);
 }
 
 export function renameSession(oldName: string, newName: string): void {
-  run(`tmux rename-session -t ${shellEscape(oldName)} ${shellEscape(newName)}`);
+  runTmux(["rename-session", "-t", oldName, newName]);
 }
 
-function shellEscape(s: string): string {
+function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
@@ -378,14 +357,13 @@ function missingWindowHealth(session: string, window: string): TmuxWindowHealth 
 }
 
 function listPanes(session: string, windowIndex: number): TmuxPaneStatus[] {
-  return parsePaneOutput(run(
-    `tmux list-panes -t ${shellEscape(`${session}:${windowIndex}`)} -F ${shellEscape(paneFormat())}`,
-  ));
+  return parsePaneOutput(runTmux(["list-panes", "-t", `${session}:${windowIndex}`, "-F", paneFormat()]));
 }
 
 function listPanesForTarget(session?: string): TmuxPaneStatus[] {
-  const target = session ? `-s -t ${shellEscape(session)}` : "-a";
-  return parsePaneOutput(run(`tmux list-panes ${target} -F ${shellEscape(paneFormat())}`));
+  return parsePaneOutput(runTmux(session
+    ? ["list-panes", "-s", "-t", session, "-F", paneFormat()]
+    : ["list-panes", "-a", "-F", paneFormat()]));
 }
 
 function paneFormat(): string {
@@ -474,7 +452,7 @@ function firstPanePath(health: TmuxWindowHealth): string | undefined {
 function selectFallbackWindow(session: string, excludedIndex: number): void {
   const fallback = listWindows(session).find((window) => window.index !== excludedIndex);
   if (fallback) {
-    run(`tmux select-window -t ${shellEscape(`${session}:${fallback.index}`)}`);
+    runTmux(["select-window", "-t", `${session}:${fallback.index}`]);
   }
 }
 
@@ -531,12 +509,12 @@ function relatedTmuxSessions(session: string): TmuxSession[] {
 }
 
 function sendKeys(target: string, command: string): void {
-  run(`tmux send-keys -t ${shellEscape(target)} ${shellEscape(command)} Enter`);
+  runTmux(["send-keys", "-t", target, command, "Enter"]);
 }
 
 function wrapInteractiveCommand(command: string): string {
   const fallbackShell = process.env.SHELL || "/bin/bash";
-  return `sh -lc ${shellEscape(`${command}; exec ${shellEscape(fallbackShell)} -l`)}`;
+  return `sh -lc ${shellQuote(`${command}; exec ${shellQuote(fallbackShell)} -l`)}`;
 }
 
 export function execInWindow(session: string, window: string, command: string): void {
