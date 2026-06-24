@@ -246,12 +246,11 @@ projects doctor --limit 20 --verbose
 projects events list my-app --limit 10 --verbose
 ```
 
-MCP list tools follow the same gradual disclosure model: list tools return
-compact summaries by default and accept `limit` plus `verbose: true` for full
-records where supported. `projects_show` returns a compact project detail summary
-by default; pass `verbose: true` for full locations, agents, and event history.
-Prompt-agent tools use the same compact project/event summaries by default;
-agent tools expose `verbose: true` for explicit detail retrieval.
+MCP tools keep their existing full-record defaults for client compatibility.
+Where supported, pass `compact: true` to receive compact summaries; compact MCP
+calls accept `limit`, and `verbose: true` returns full records. Prompt-agent
+tools use compact project/event summaries by default; agent tools expose
+`verbose: true` for explicit detail retrieval.
 
 ## Data Model
 

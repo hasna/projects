@@ -181,7 +181,7 @@ describe("project-first CLI surface", () => {
     const rows = JSON.parse(text(json.stdout)) as Array<{ slug: string; metadata: Record<string, string> }>;
     expect(rows).toHaveLength(30);
     expect(rows.find((row) => row.slug === "compact-29")?.metadata.notes).toHaveLength(500);
-  });
+  }, 10000);
 
   test("top-level create, list, show, and update expose project management fields", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-management-"));

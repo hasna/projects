@@ -76,20 +76,21 @@ describe("projects MCP HTTP transport", () => {
     expect(result.isError).not.toBe(true);
     const content = result.content as Array<{ type: string; text?: string }> | undefined;
     expect(content?.[0]?.type).toBe("text");
-    const payload = JSON.parse(content?.[0]?.text ?? "{}") as {
+    const payload = JSON.parse(content?.[0]?.text ?? "[]") as Array<{ slug: string; metadata?: { notes?: string } }>;
+    expect(payload.find((item) => item.slug === "http-compact-project")?.metadata?.notes).toHaveLength(500);
+
+    const compact = await client.callTool({ name: "projects_list", arguments: { compact: true, limit: 1 } });
+    expect(compact.isError).not.toBe(true);
+    const compactContent = compact.content as Array<{ type: string; text?: string }> | undefined;
+    const compactPayload = JSON.parse(compactContent?.[0]?.text ?? "{}") as {
       projects?: Array<{ slug: string; metadata?: unknown }>;
       count?: number;
       next_steps?: string;
     };
-    expect(payload.projects?.[0]?.slug).toBe("http-compact-project");
-    expect(payload.projects?.[0]?.metadata).toBeUndefined();
-    expect(payload.count).toBe(1);
-    expect(payload.next_steps).toContain("verbose=true");
-
-    const verbose = await client.callTool({ name: "projects_list", arguments: { verbose: true } });
-    const verboseContent = verbose.content as Array<{ type: string; text?: string }> | undefined;
-    const verbosePayload = JSON.parse(verboseContent?.[0]?.text ?? "[]") as Array<{ slug: string; metadata?: { notes?: string } }>;
-    expect(verbosePayload.find((item) => item.slug === "http-compact-project")?.metadata?.notes).toHaveLength(500);
+    expect(compactPayload.projects?.[0]?.slug).toBe("http-compact-project");
+    expect(compactPayload.projects?.[0]?.metadata).toBeUndefined();
+    expect(compactPayload.count).toBe(1);
+    expect(compactPayload.next_steps).toContain("full records");
     await client.close();
   });
 });
