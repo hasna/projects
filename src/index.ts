@@ -281,3 +281,27 @@ export {
   filterProjectEvalArtifacts,
   isProjectEvalArtifact,
 } from "./lib/project-eval-artifacts.js";
+
+export {
+  syncWorkspaceGitHubRoots,
+  type WorkspaceGitHubRootSyncOptions,
+  type WorkspaceGitHubRootSyncResult,
+  type WorkspaceGitHubRootSyncRootResult,
+} from "./lib/workspace-github.js";
+
+export {
+  PROJECT_RENDER_SCHEMA_VERSION,
+  projectsJsonRenderCatalog,
+  projectsJsonRenderSchema,
+  validateProjectsRenderSpec,
+  isProjectsRenderSpec,
+  buildProjectListRender,
+  buildProjectDetailPayload,
+  buildProjectSessionsPayload,
+  buildProjectStartRender,
+  buildProjectStartBulkRender,
+  buildProjectStatusRender,
+  buildRootsRender,
+  buildRecipesRender,
+  type ProjectsJsonRenderSpec,
+} from "./lib/project-render.js";

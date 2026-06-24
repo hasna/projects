@@ -52,6 +52,7 @@ import {
   startProject,
 } from "../lib/project-start.js";
 import { projectTmuxStatus } from "../lib/project-tmux-status.js";
+import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../lib/project-render.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -83,6 +84,7 @@ import { doctorWorkspace } from "../lib/workspace-doctor.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
+  syncWorkspaceGitHubRoots,
   linkWorkspaceExternalIntegrations,
   publishWorkspaceToGitHub,
   unpublishWorkspaceFromGitHub,
@@ -895,6 +897,145 @@ server.tool(
 );
 
 server.tool(
+  "projects_render_list",
+  "Return a validated JSON Render spec for the projects list surface.",
+  {
+    kind: z.string().optional(),
+    status: z.enum(["active", "archived", "deleted"]).optional(),
+    query: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    include_evals: z.boolean().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  },
+  async (input) => jsonText(buildProjectListRender(filterProjectEvalArtifacts(listWorkspaces({
+    kind: input.kind as WorkspaceKind | undefined,
+    status: input.status,
+    query: input.query,
+    tags: input.tags,
+    exclude_eval_artifacts: !input.include_evals,
+    limit: input.limit,
+  }), input.include_evals))),
+);
+
+server.tool(
+  "projects_render_show",
+  "Return a validated JSON Render spec for one project detail surface.",
+  { id: z.string() },
+  async (input) => {
+    const project = findProjectTarget(input.id);
+    if (!project) return errorText(`Project not found: ${input.id}`);
+    const payload = buildProjectDetailPayload({
+      project: projectWithManagement(project),
+      agents: listWorkspaceAgents(project.id),
+      locations: listWorkspaceLocations(project.id),
+      events: listWorkspaceEvents(project.id),
+    });
+    return jsonText(payload.render);
+  },
+);
+
+server.tool(
+  "projects_render_sessions",
+  "Return a validated JSON Render spec for recent project start sessions.",
+  { project: z.string(), limit: z.number().int().positive().max(100).optional(), unrenamed: z.boolean().optional() },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText(buildProjectSessionsPayload({
+      project,
+      events: listWorkspaceEvents(project.id),
+      limit: input.limit,
+      unrenamedOnly: input.unrenamed,
+    }).render);
+  },
+);
+
+server.tool(
+  "projects_render_start",
+  "Dry-run start and return the validated JSON Render spec for the start surface.",
+  {
+    target: z.string().optional(),
+    agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
+    command: z.string().optional(),
+    profile: z.string().optional(),
+    session: z.string().optional(),
+    session_policy: z.enum(PROJECT_START_SESSION_POLICIES).optional(),
+    window_name: z.string().optional(),
+    windows: z.array(tmuxWindowInput).optional(),
+    register: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const result = await startProject(input.target, {
+        agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
+        toolCommand: input.command,
+        profile: input.profile,
+        session: input.session,
+        sessionPolicy: input.session_policy,
+        windowName: input.window_name,
+        requestedWindows: input.windows,
+        register: input.register,
+        importTags: input.tags,
+        importMetadata: input.metadata as JsonObject | undefined,
+        dryRun: true,
+        attach: false,
+        agentId: input.agent ? agentId(input.agent) : ensureCliAgent().id,
+        source: "mcp",
+        auditCommand: "projects_render_start",
+      });
+      return jsonText(result.render);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_render_status",
+  "Return a validated JSON Render spec for project tmux status.",
+  {
+    target: z.string().optional(),
+    profile: z.string().optional(),
+    session: z.string().optional(),
+    agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
+    command: z.string().optional(),
+    window_name: z.string().optional(),
+    windows: z.array(tmuxWindowInput).optional(),
+  },
+  async (input) => {
+    try {
+      const result = await projectTmuxStatus(input.target, {
+        profile: input.profile,
+        session: input.session,
+        agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
+        command: input.command,
+        windowName: input.window_name,
+        requestedWindows: input.windows,
+      });
+      return jsonText(result.render);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_render_roots",
+  "Return a validated JSON Render spec for registered project roots.",
+  {},
+  async () => jsonText(buildRootsRender(listRoots())),
+);
+
+server.tool(
+  "projects_render_recipes",
+  "Return a validated JSON Render spec for project recipes.",
+  {},
+  async () => jsonText(buildRecipesRender(listRecipes())),
+);
+server.tool(
   "projects_locations_list",
   "List registered folder locations for a project. Compact by default; pass verbose=true for full location records.",
   {
@@ -1106,7 +1247,74 @@ server.tool(
 
 server.tool(
   "projects_scan_roots",
-  "Scan registered roots and preview or import direct child folders as projects. Dry-run by default.",
+  "Dry-run import plans for repositories in configured GitHub roots.",
+  {
+    root: z.string().optional(),
+    repo_prefix: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    clone: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    remote_protocol: z.enum(["https", "ssh"]).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const owner = input.agent ? agentId(input.agent) : undefined;
+      return jsonText(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
+        dryRun: true,
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_scan_roots",
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_sync_roots",
+  "Import and optionally clone repositories from configured GitHub roots. Mutates by default unless dry_run=true.",
+  {
+    root: z.string().optional(),
+    repo_prefix: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    clone: z.boolean().optional(),
+    dry_run: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    remote_protocol: z.enum(["https", "ssh"]).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const owner = input.agent ? agentId(input.agent) : undefined;
+      return jsonText(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
+        dryRun: Boolean(input.dry_run),
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_sync_roots",
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_scan_local_roots",
+  "Scan registered local root folders and preview/import direct child folders as projects. Dry-run by default.",
   {
     apply: z.boolean().optional(),
     tags: z.array(z.string()).optional(),
@@ -1194,7 +1402,7 @@ server.tool(
 
 server.tool(
   "projects_start",
-  "Start a project by creating or reusing a tmux session and launching a coding tool. The windows field, when provided, is the exact tmux window set to create.",
+  "Start a project by creating or reusing a tmux session, ensuring default 01/02 windows, and launching a coding tool. The windows field, when provided, is the exact tmux window set to create.",
   {
     target: z.string().optional(),
     agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
@@ -1237,7 +1445,7 @@ server.tool(
 
 server.tool(
   "projects_tmux_status",
-  "Inspect the expected and current tmux session/window status for a project.",
+  "Inspect the expected and current tmux session/window status for a project, including default 01/02 windows unless exact windows are provided.",
   {
     target: z.string().optional(),
     profile: z.string().optional(),

@@ -46,8 +46,11 @@ describe("project tmux status", () => {
     expect(result.project.slug).toBe("status-project");
     expect(result.expected.session_name).toBe("status-project-dev");
     expect(result.expected.profile?.slug).toBe("dev");
-    expect(result.expected.windows.map((window) => window.name)).toEqual(["claude", "server"]);
-    expect(result.expected.windows.map((window) => window.command)).toEqual(["claude", "bun run dev"]);
+    expect(result.expected.windows.map((window) => window.name)).toEqual(["01", "02", "server"]);
+    expect(result.expected.windows.map((window) => window.command)).toEqual(["claude --name 'Status Project'", undefined, "bun run dev"]);
+    expect(result.rename_report[0]?.status).toBe("configured");
+    expect(result.schema_version).toBe(1);
+    expect(result.kind).toBe("projects.tmux_status");
     expect(typeof result.exists).toBe("boolean");
     expect(Array.isArray(result.windows)).toBe(true);
 
@@ -88,8 +91,9 @@ describe("project tmux status", () => {
     expect(result.launch_defaults.used_session_policy).toBe(true);
     expect(result.launch_defaults.session_policy).toBe("error-if-running");
     expect(result.launch_defaults.used_windows).toBe(true);
-    expect(result.expected.windows.map((window) => window.name)).toEqual(["opencode", "server", "logs"]);
-    expect(result.expected.windows.map((window) => window.command)).toEqual(["opencode run", "bun run dev", "tail -f app.log"]);
+    expect(result.expected.windows.map((window) => window.name)).toEqual(["01", "02", "server", "logs"]);
+    expect(result.expected.windows.map((window) => window.command)).toEqual(["opencode run", undefined, "bun run dev", "tail -f app.log"]);
+    expect(result.rename_report[0]?.status).toBe("unsupported");
 
     rmSync(path, { recursive: true, force: true });
     db.close();

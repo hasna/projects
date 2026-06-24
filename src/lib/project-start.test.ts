@@ -15,7 +15,7 @@ function makeDb(): Database {
 }
 
 describe("project start service", () => {
-  test("resolves a registered project by slug and plans a codewith tmux window", async () => {
+  test("resolves a registered project by slug and plans compact 01/02 tmux windows", async () => {
     const db = makeDb();
     const path = mkdtempSync(join(tmpdir(), "project-start-registered-"));
     const project = createWorkspace({
@@ -31,9 +31,16 @@ describe("project start service", () => {
     expect(result.resolution.source).toBe("id-or-slug");
     expect(result.agent_tool).toBe("codewith");
     expect(result.tool_command).toBe("codewith");
+    expect(result.rename_report[0]?.status).toBe("manual");
     expect(result.tmux.session_name).toBe("registered-project");
-    expect(result.tmux.windows[0]?.target).toBe("registered-project:codewith");
+    expect(result.tmux.windows.map((window) => window.target)).toEqual([
+      "registered-project:01",
+      "registered-project:02",
+    ]);
     expect(result.tmux.windows[0]?.status).toBe("planned");
+    expect(result.schema_version).toBe(1);
+    expect(result.kind).toBe("projects.start");
+    expect((result.render.elements as Record<string, { props?: { title?: string } }>).root?.props?.title).toBe("Start Registered Project");
 
     rmSync(path, { recursive: true, force: true });
     db.close();
@@ -58,8 +65,12 @@ describe("project start service", () => {
     expect(result.project.metadata.domain).toBe("family-security");
     expect(result.resolution.preview?.metadata.domain).toBe("family-security");
     expect(result.agent_tool).toBe("claude");
-    expect(result.tool_command).toBe("claude");
-    expect(result.tmux.windows[0]?.target).toBe(`${result.project.slug}:claude`);
+    expect(result.tool_command?.startsWith("claude --name ")).toBe(true);
+    expect(result.rename_report[0]?.status).toBe("configured");
+    expect(result.tmux.windows.map((window) => window.target)).toEqual([
+      `${result.project.slug}:01`,
+      `${result.project.slug}:02`,
+    ]);
     expect(getWorkspaceByPath(path, db)).toBeNull();
 
     rmSync(path, { recursive: true, force: true });
@@ -151,11 +162,13 @@ describe("project start service", () => {
     expect(result.tmux_profile?.slug).toBe("dev");
     expect(result.tmux.session_name).toBe("profiled-project-dev");
     expect(result.tmux.windows.map((window) => window.target)).toEqual([
-      "profiled-project-dev:claude",
+      "profiled-project-dev:01",
+      "profiled-project-dev:02",
       "profiled-project-dev:server",
     ]);
-    expect(result.tmux.windows[0]?.metadata?.command).toBe("claude");
-    expect(result.tmux.windows[1]?.metadata?.command).toBe("bun run dev");
+    expect(result.tmux.windows[0]?.metadata?.command).toBe("claude --name 'Profiled Project'");
+    expect(result.tmux.windows[1]?.metadata?.command).toBeUndefined();
+    expect(result.tmux.windows[2]?.metadata?.command).toBe("bun run dev");
 
     rmSync(path, { recursive: true, force: true });
     db.close();
@@ -187,7 +200,7 @@ describe("project start service", () => {
     const result = await startProject("defaulted-project", { dryRun: true, db });
 
     expect(result.agent_tool).toBe("claude");
-    expect(result.tool_command).toBe("claude --resume");
+    expect(result.tool_command).toBe("claude --name 'Defaulted Project' --resume");
     expect(result.session_policy).toBe("new");
     expect(result.tmux_profile?.slug).toBe("dev");
     expect(result.launch_defaults.used_agent_tool).toBe(true);
@@ -198,12 +211,13 @@ describe("project start service", () => {
     expect(result.launch_defaults.used_windows).toBe(true);
     expect(result.tmux.session_name).toBe("defaulted-project-dev");
     expect(result.tmux.windows.map((window) => window.target)).toEqual([
-      "defaulted-project-dev:claude",
+      "defaulted-project-dev:01",
+      "defaulted-project-dev:02",
       "defaulted-project-dev:server",
       "defaulted-project-dev:notes",
     ]);
-    expect(result.tmux.windows[0]?.metadata?.command).toBe("claude --resume");
-    expect(result.tmux.windows[2]?.metadata?.command).toBe("vim NOTES.md");
+    expect(result.tmux.windows[0]?.metadata?.command).toBe("claude --name 'Defaulted Project' --resume");
+    expect(result.tmux.windows[3]?.metadata?.command).toBe("vim NOTES.md");
 
     rmSync(path, { recursive: true, force: true });
     db.close();
@@ -241,6 +255,8 @@ describe("project start service", () => {
 
     expect(result.tmux.session_name).toBe("requested-windows-project-dev");
     expect(result.launch_defaults.used_windows).toBe(false);
+    expect(result.tool_command).toBe("claude");
+    expect(result.rename_report[0]?.status).toBe("skipped");
     expect(result.tmux.windows.map((window) => window.target)).toEqual([
       "requested-windows-project-dev:editor",
       "requested-windows-project-dev:logs",

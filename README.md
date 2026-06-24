@@ -2,6 +2,13 @@
 
 High-level project management CLI, MCP server, and SDK for AI coding agents. A project can be any repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder. Projects tracks roots, recipes, agents, tmux profiles, immutable project events, and prompt-driven AI agent runs.
 
+## Project Resources
+
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+
 ## Install
 
 ```bash
@@ -46,17 +53,25 @@ projects create --name "My App" --path /path/to/my-app --stage active --priority
   --start-windows-json '[{"name":"server","command":"bun run dev"}]' \
   --todos-project-id todo_123 --brief-id brief_123 --mkdir --git-init --marker --json
 projects create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
+projects start                              # from inside a registered repo
+projects start open-notes                  # by slug/id/name/path
+projects start --json                      # operational structured output
+projects start --render-spec               # validated JSON Render spec
 projects start my-app --agent codewith
-projects start /path/to/existing --agent claude --window-name editor
+projects start /path/to/existing --agent claude
 projects start my-app --windows-json '[{"name":"editor","command":"code ."},{"name":"server","command":"bun run dev"}]'
 projects start /path/to/new-folder --tags family,security --metadata-json '{"domain":"home-security"}' --dry-run --json
 projects start my-app --profile dev --agent claude --new
 projects start my-app --error-if-running --agent none
+projects start --rename-report --agent codewith
+projects sessions my-app --unrenamed --json
 projects start --bulk my-app docs-site service-api --agent opencode --dry-run --json
 projects start --bulk-file ./project-targets.json --agent claude --dry-run --json
 projects status my-app --profile dev --json
 projects import /path/to/existing --json
 projects import-github hasna/example --root open-source --clone --dry-run --json
+projects scan-roots --root open-source --repo-prefix project- --clone --json
+projects sync-roots --root open-source --repo-prefix project- --tags open-source,project --json
 projects import /path/to/root --bulk --dry-run --json
 projects list --query app --tags web,ts
 projects list --limit 50 --verbose
@@ -64,6 +79,7 @@ projects list --query app --tags web,ts --json
 projects show my-app --json
 projects show my-app --verbose
 projects events list my-app --limit 10 --verbose
+projects get my-app --json
 projects update my-app --description "New description" --tags web,ts --priority critical --launch-profile dev
 projects tag my-app security cameras
 projects untag my-app cameras
@@ -97,10 +113,26 @@ Projects stores high-level management fields directly on the project record:
 `stage`, `priority`, `owner`, `launch_profile`, `start_agent`,
 `start_command`, `start_session_policy`, `start_windows`, todos links, and
 brief links. `projects start` and `projects status` use those launch defaults
-unless the command passes an explicit override. Pass `--windows-json` or the
-MCP/API `windows` field to request the exact tmux window names for a single
-start/status operation. Detailed execution still belongs
-in `todos`; long-form specs and decisions still belong in `brief`.
+unless the command passes an explicit override. By default, `projects start`
+detects the current repo/project, creates or reuses the project tmux session,
+and ensures base windows named `01` and `02`. Window `01` is the managed
+coding-agent/work window when a start command is launched; `02` is the
+secondary workspace. Existing unrelated tmux windows are left alone. Pass
+`--windows-json` or the MCP/API `windows` field to request the exact tmux
+window names for a single start/status operation.
+
+Machine-readable outputs for `projects list`, `projects show`/`projects get`,
+`projects status`, `projects start`, `projects sessions`, `projects roots list`,
+and `projects recipes list` can emit validated JSON Render specs with
+`--render-spec`. Existing `--json` payloads preserve their operational fields and
+render specs are available from `--render-spec` and matching `projects_render_*`
+MCP tools. Claude starts are annotated with `--name` when safe.
+Codewith, Cursor, and OpenCode rename support is reported as manual or
+unsupported unless a stable programmatic rename path is available; Open Projects
+does not force text into unknown panes. Use `projects start --rename-report` or
+`projects sessions <project> --unrenamed` to inspect rename status. Detailed
+execution still belongs in `todos`; long-form specs and decisions still belong
+in `brief`.
 
 ## Storage Sync
 
@@ -158,13 +190,14 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_agents_list` / `projects_agents_add` | Register human, CLI, service, and AI agents |
 | `projects_tmux_profiles_list` / `projects_tmux_profiles_add` / `projects_tmux_profiles_apply` | Manage reusable tmux sessions/windows |
 | `projects_list` / `projects_show` | Search and inspect projects |
+| `projects_render_list` / `projects_render_show` / `projects_render_start` / `projects_render_status` / `projects_render_sessions` / `projects_render_roots` / `projects_render_recipes` | Emit validated JSON Render specs for project surfaces |
 | `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
 | `projects_create` | Plan or create a project anywhere on disk |
-| `projects_start` | Open or reuse a tmux session and launch Codewith, Claude, OpenCode, Cursor, or no tool, with optional exact tmux windows |
+| `projects_start` | Open or reuse a tmux session, ensure default `01`/`02` windows, and launch Codewith, Claude, OpenCode, Cursor, or no tool, with optional exact tmux windows |
 | `projects_tmux_status` | Inspect expected and current tmux session/window status for a project |
 | `projects_cleanup_create` | Clean up DB/files created by a project creation run using rollback records |
-| `projects_import` / `projects_scan_roots` | Import existing folders as projects |
-| `projects_import_github` | Import GitHub repos as local or remote-only projects |
+| `projects_import` / `projects_scan_local_roots` | Import existing folders as projects |
+| `projects_import_github` / `projects_scan_roots` / `projects_sync_roots` | Import GitHub repos as local or remote-only projects, including configured GitHub root scans/syncs |
 | `projects_github_publish` / `projects_github_unpublish` | Publish/unlink GitHub project metadata |
 | `projects_link` | Merge external service IDs into project integrations |
 | `projects_unlink` | Clear external service IDs from project integrations |
