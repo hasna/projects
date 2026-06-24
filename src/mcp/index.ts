@@ -82,6 +82,7 @@ import { doctorWorkspace } from "../lib/workspace-doctor.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
+  syncWorkspaceGitHubRoots,
   linkWorkspaceExternalIntegrations,
   publishWorkspaceToGitHub,
   unpublishWorkspaceFromGitHub,
@@ -167,6 +168,11 @@ function projectPayload(value: unknown): unknown {
 
 function jsonProjectText(value: unknown) {
   return jsonText(projectPayload(value));
+}
+
+function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "render" | "schema_version" | "kind"> {
+  const { render: _render, schema_version: _schemaVersion, kind: _kind, ...rest } = value;
+  return rest;
 }
 
 function rootId(idOrSlug: string | undefined): string | undefined {
@@ -635,12 +641,12 @@ server.tool(
   async (input) => {
     const project = findProjectTarget(input.id);
     if (!project) return errorText(`Project not found: ${input.id}`);
-    return jsonText(buildProjectDetailPayload({
+    return jsonText(withoutRender(buildProjectDetailPayload({
       project: projectWithManagement(project),
       agents: listWorkspaceAgents(project.id),
       locations: listWorkspaceLocations(project.id),
       events: listWorkspaceEvents(project.id),
-    }));
+    })));
   },
 );
 
@@ -978,7 +984,74 @@ server.tool(
 
 server.tool(
   "projects_scan_roots",
-  "Scan registered roots and preview or import direct child folders as projects. Dry-run by default.",
+  "Dry-run import plans for repositories in configured GitHub roots.",
+  {
+    root: z.string().optional(),
+    repo_prefix: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    clone: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    remote_protocol: z.enum(["https", "ssh"]).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const owner = input.agent ? agentId(input.agent) : undefined;
+      return jsonText(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
+        dryRun: true,
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_scan_roots",
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_sync_roots",
+  "Import and optionally clone repositories from configured GitHub roots. Mutates by default unless dry_run=true.",
+  {
+    root: z.string().optional(),
+    repo_prefix: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    clone: z.boolean().optional(),
+    dry_run: z.boolean().optional(),
+    tags: z.array(z.string()).optional(),
+    remote_protocol: z.enum(["https", "ssh"]).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const owner = input.agent ? agentId(input.agent) : undefined;
+      return jsonText(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol as GitHubRemoteProtocol | undefined,
+        dryRun: Boolean(input.dry_run),
+        agent_id: owner,
+        source: "mcp",
+        command: "projects_sync_roots",
+      }));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_scan_local_roots",
+  "Scan registered local root folders and preview/import direct child folders as projects. Dry-run by default.",
   {
     apply: z.boolean().optional(),
     tags: z.array(z.string()).optional(),

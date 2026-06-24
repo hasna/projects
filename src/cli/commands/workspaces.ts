@@ -129,6 +129,11 @@ function printRenderSpec(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
+function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "render" | "schema_version" | "kind"> {
+  const { render: _render, schema_version: _schemaVersion, kind: _kind, ...rest } = value;
+  return rest;
+}
+
 function projectPayload(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => projectPayload(item));
   if (!value || typeof value !== "object") return value;
@@ -1377,7 +1382,7 @@ function registerProjectCommands(program: Command): void {
       const events = listWorkspaceEvents(project.id);
       const payload = buildProjectDetailPayload({ project, agents, locations, events });
       if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
-      if (wantsJson(opts)) { printObject(payload, opts); return; }
+      if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
       console.log(`${chalk.bold(project.name)} ${chalk.dim(`(${project.slug})`)} ${chalk.green(`[${project.status}]`)}`);
       console.log(`  ${chalk.dim("id:")}   ${project.id}`);
       console.log(`  ${chalk.dim("kind:")} ${project.kind}`);

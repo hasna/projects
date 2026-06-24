@@ -161,11 +161,24 @@ export function validateProjectsRenderSpec(spec: unknown): ProjectsJsonRenderSpe
   if (!result.success) {
     throw new Error(`Invalid Projects JSON Render spec: ${result.error?.message ?? "validation failed"}`);
   }
-  return result.data! as unknown as ProjectsJsonRenderSpec;
+  const validated = result.data! as unknown as ProjectsJsonRenderSpec;
+  for (const [id, element] of Object.entries(validated.elements)) {
+    const component = projectsJsonRenderCatalog.data.components[element.type];
+    const propsResult = (component.props as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }).safeParse(element.props);
+    if (!propsResult.success) {
+      throw new Error(`Invalid props for Projects JSON Render element ${id} (${element.type})`);
+    }
+  }
+  return validated;
 }
 
 export function isProjectsRenderSpec(value: unknown): value is ProjectsJsonRenderSpec {
-  return projectsJsonRenderCatalog.validate(value).success;
+  try {
+    validateProjectsRenderSpec(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function objectRow(item: unknown): Record<string, unknown> {

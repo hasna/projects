@@ -98,9 +98,9 @@ describe("project-first CLI surface", () => {
     expect(shown.project?.slug).toBe("surface-app");
     expect(shown.project?.primary_path).toBe(targetPath);
     expect(shown.workspace).toBeUndefined();
-    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).schema_version).toBe(1);
-    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).kind).toBe("projects.project");
-    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).render).toBeTruthy();
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).schema_version).toBeUndefined();
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).kind).toBeUndefined();
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).render).toBeUndefined();
 
     const get = runProjects(["get", "surface-app", "--json"], env);
     expect(get.exitCode).toBe(0);
@@ -919,6 +919,47 @@ describe("project-first CLI surface", () => {
     const payload = JSON.parse(text(started.stdout)) as { root?: string; elements?: Record<string, unknown>; metadata?: { kind?: string } };
     expect(payload.root).toBe("root");
     expect(payload.metadata?.kind).toBe("projects.list");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+
+  test("required commands emit JSON Render specs with --render-spec", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-render-spec-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    expect(runProjects(["roots", "add", "--name", "Render Root", "--slug", "render-root", "--path", join(root, "root"), "--kind", "project", "--github-org", "hasnaxyz", "--path-template", "{slug}", "--json"], env).exitCode).toBe(0);
+    expect(runProjects(["recipes", "seed-defaults", "--json"], env).exitCode).toBe(0);
+    expect(runProjects(["create", "--name", "Render Spec App", "--path", join(root, "root", "render-spec-app"), "--json"], env).exitCode).toBe(0);
+
+    const commands = [
+      ["list", "--render-spec"],
+      ["show", "render-spec-app", "--render-spec"],
+      ["status", "render-spec-app", "--render-spec"],
+      ["start", "render-spec-app", "--dry-run", "--render-spec"],
+      ["sessions", "render-spec-app", "--render-spec"],
+      ["roots", "list", "--render-spec"],
+      ["recipes", "list", "--render-spec"],
+    ];
+    for (const command of commands) {
+      const result = runProjects(command, env);
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(text(result.stdout)) as { root?: string; elements?: Record<string, unknown>; metadata?: { kind?: string } };
+      expect(payload.root).toBe("root");
+      expect(payload.elements?.root).toBeTruthy();
+      expect(payload.metadata?.kind).toStartWith("projects.");
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("sync-roots CLI mutates by default and scan-roots stays dry-run on empty GitHub roots", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-sync-roots-empty-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const scan = runProjects(["scan-roots", "--json"], env);
+    expect(scan.exitCode).toBe(0);
+    expect((JSON.parse(text(scan.stdout)) as { dry_run: boolean }).dry_run).toBe(true);
+
+    const sync = runProjects(["sync-roots", "--json"], env);
+    expect(sync.exitCode).toBe(0);
+    expect((JSON.parse(text(sync.stdout)) as { dry_run: boolean }).dry_run).toBe(false);
     rmSync(root, { recursive: true, force: true });
   });
 

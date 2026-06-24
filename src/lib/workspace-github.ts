@@ -13,6 +13,7 @@ import {
   getWorkspaceBySlug,
   inferWorkspaceKind,
   listRoots,
+  listWorkspaces,
   linkWorkspaceIntegrations,
   matchRootForPath,
   recordWorkspaceEvent,
@@ -421,7 +422,7 @@ export function planWorkspaceGitHubImport(repoInput: string, options: WorkspaceG
   const targetPath = remoteOnly
     ? null
     : explicitPath ?? (root ? rootDerivedPath(root, slug, parsed.repo, kind, parsed.org) : resolve(parsed.repo));
-  const commands = shouldClone && targetPath ? [shellCommand("gh", ["repo", "clone", parsed.fullName, targetPath])] : [];
+  const commands = shouldClone && targetPath ? [shellCommand("gh", ["repo", "clone", remote, targetPath])] : [];
 
   return {
     status: "planned",
@@ -441,6 +442,51 @@ export function planWorkspaceGitHubImport(repoInput: string, options: WorkspaceG
   };
 }
 
+function findExistingGitHubWorkspace(plan: WorkspaceGitHubImportResult, db?: Database): Workspace | null {
+  const remotes = githubRemoteSet(plan);
+  const normalizedFullName = plan.full_name.toLowerCase();
+  return listWorkspaces({ limit: 10000 }, db).find((workspace) => {
+    const repo = workspace.integrations.github_repo?.toLowerCase();
+    if (repo === normalizedFullName) return true;
+    const url = workspace.integrations.github_url?.toLowerCase();
+    if (url === plan.url.toLowerCase()) return true;
+    return workspace.git_remote ? remotes.has(workspace.git_remote) : false;
+  }) ?? null;
+}
+
+function githubRemoteSet(plan: WorkspaceGitHubImportResult): Set<string> {
+  return new Set([plan.remote, remoteFor(plan.full_name, "https"), remoteFor(plan.full_name, "ssh")]);
+}
+
+function gitOrigin(path: string): string | null {
+  try {
+    return git(path, ["remote", "get-url", "origin"]) || null;
+  } catch {
+    return null;
+  }
+}
+
+function existingPathSkipReason(plan: WorkspaceGitHubImportResult): string | null {
+  if (!plan.path || !existsSync(plan.path)) return null;
+  if (!isGitRepo(plan.path)) return "path-exists-not-git";
+  const origin = gitOrigin(plan.path);
+  if (!origin) return "path-exists-git-without-origin";
+  if (!githubRemoteSet(plan).has(origin)) return "path-exists-git-remote-mismatch";
+  return null;
+}
+
+function reconciledGitHubWorkspace(workspace: Workspace, plan: WorkspaceGitHubImportResult, options: WorkspaceGitHubImportOptions): Workspace {
+  const integrations = { ...workspace.integrations, ...workspaceGithubIntegrations(plan.full_name, plan.url) };
+  return updateWorkspace(workspace.id, {
+    git_remote: workspace.git_remote ?? plan.remote,
+    integrations,
+    agent_id: options.agent_id,
+    source: options.source ?? "cli",
+    prompt: options.prompt,
+    command: options.command ?? "workspaces import-github",
+  }, options.db);
+}
+
 export async function importWorkspaceFromGitHub(repoInput: string, options: WorkspaceGitHubImportOptions = {}): Promise<WorkspaceGitHubImportResult> {
   const plan = planWorkspaceGitHubImport(repoInput, options);
   if (options.dryRun) return plan;
@@ -456,15 +502,30 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
       }, options.db));
     }
 
-    if (plan.path && getWorkspaceByPath(plan.path, options.db)) {
-      return { ...plan, status: "skipped", dry_run: false, skipped: "path-already-registered" };
+    const existingByIdentity = findExistingGitHubWorkspace(plan, options.db);
+    if (existingByIdentity) {
+      const workspace = reconciledGitHubWorkspace(existingByIdentity, plan, options);
+      return { ...plan, status: "skipped", dry_run: false, workspace, skipped: "github-already-registered" };
     }
-    if (!plan.path && getWorkspaceBySlug(workspaceSlugify(plan.repo_name), options.db)) {
-      return { ...plan, status: "skipped", dry_run: false, skipped: "slug-already-registered" };
+    if (plan.path) {
+      const existingByPath = getWorkspaceByPath(plan.path, options.db);
+      if (existingByPath) {
+        return { ...plan, status: "skipped", dry_run: false, workspace: existingByPath, skipped: "path-already-registered" };
+      }
+      const existingPathReason = existingPathSkipReason(plan);
+      if (existingPathReason) {
+        return { ...plan, status: "skipped", dry_run: false, skipped: existingPathReason };
+      }
+    }
+    const existingBySlug = getWorkspaceBySlug(workspaceSlugify(plan.repo_name), options.db);
+    if (existingBySlug) {
+      return { ...plan, status: "skipped", dry_run: false, workspace: existingBySlug, skipped: "slug-already-registered" };
     }
 
+    let cloned = false;
     if (options.clone && plan.path && !existsSync(plan.path)) {
-      gh(["repo", "clone", plan.full_name, plan.path]);
+      gh(["repo", "clone", plan.remote, plan.path]);
+      cloned = true;
     }
 
     const workspace = createWorkspace({
@@ -480,7 +541,7 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
         github_imported: true,
         github_full_name: plan.full_name,
         remote_only: plan.remote_only,
-        cloned: Boolean(options.clone && plan.path),
+        cloned,
       },
       agent_id: options.agent_id,
       source: options.source ?? "cli",

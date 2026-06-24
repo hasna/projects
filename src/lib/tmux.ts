@@ -22,6 +22,10 @@ function run(cmd: string): string {
   return commandRunner(cmd).trim();
 }
 
+function cdCommand(path: string): string {
+  return `cd -- ${shellEscape(path)}`;
+}
+
 function findWindowId(session: string, windowName: string): string {
   const output = run(
     `tmux list-windows -t ${shellEscape(session)} -F '#{window_id}:#{window_name}'`,
@@ -212,7 +216,7 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(projectPath)}" Enter`);
+    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 
@@ -303,7 +307,7 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(projectPath)}" Enter`);
+    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 

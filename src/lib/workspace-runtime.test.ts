@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { applyWorkspaceTmux } from "./workspace-runtime.js";
-import { withTmuxCommandRunnerForTest } from "./tmux.js";
+import { createSession, restartSession, withTmuxCommandRunnerForTest } from "./tmux.js";
 import type { Workspace } from "../types/workspace.js";
 
 function workspace(slug = "runtime-project"): Workspace {
@@ -127,4 +127,22 @@ describe("workspace tmux runtime", () => {
     expect(tmux.commands.some((cmd) => cmd.includes("kill-window"))).toBe(false);
     expect(tmux.commands.some((cmd) => cmd.includes("rename-window"))).toBe(false);
   });
+
+  test("escapes project paths in tmux send-keys without outer double quotes", () => {
+    const tmux = createTmuxMock();
+    const projectPath = "/tmp/project-$(touch /tmp/owned)";
+
+    withTmuxCommandRunnerForTest(tmux.runner, () => createSession("escape-project", projectPath, "01"));
+    withTmuxCommandRunnerForTest(tmux.runner, () => restartSession("escape-project", projectPath, "01"));
+
+    const sendKeys = tmux.commands.filter((cmd) => cmd.startsWith("tmux send-keys"));
+    expect(sendKeys).toHaveLength(2);
+    for (const cmd of sendKeys) {
+      expect(cmd).toContain("'cd -- ");
+      expect(cmd).toContain("/tmp/project-$(touch /tmp/owned)");
+      expect(cmd).toContain("'\\''");
+      expect(cmd).not.toContain('"cd ');
+    }
+  });
+
 });

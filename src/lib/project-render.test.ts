@@ -39,4 +39,21 @@ describe("Projects JSON Render specs", () => {
     expect(projectsJsonRenderCatalog.validate(spec).success).toBe(true);
     db.close();
   });
+
+  test("rejects component props that do not match the selected component", () => {
+    const invalid = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Card",
+          props: { columns: ["a"], rows: [] },
+          children: [],
+        },
+      },
+      metadata: { kind: "projects.invalid" },
+    };
+
+    expect(() => validateProjectsRenderSpec(invalid)).toThrow("Invalid props");
+  });
+
 });
