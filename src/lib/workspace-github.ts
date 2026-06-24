@@ -133,7 +133,7 @@ function gh(args: string[], cwd?: string): string {
 }
 
 function shellCommand(command: string, args: string[]): string {
-  return [command, ...args.map((arg) => arg.includes(" ") ? JSON.stringify(arg) : arg)].join(" ");
+  return [command, ...args.map((arg) => /^[A-Za-z0-9_/:=@%+.,-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`)].join(" ");
 }
 
 function isGitRepo(path: string): boolean {

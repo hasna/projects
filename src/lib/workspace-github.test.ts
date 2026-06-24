@@ -192,6 +192,18 @@ describe("workspace GitHub services", () => {
     db.close();
   });
 
+  test("quotes metacharacters in planned GitHub command strings", () => {
+    const db = makeDb();
+    const rootPath = mkdtempSync(join(tmpdir(), "workspace-github-command-quote-") + "a;b-");
+    const root = createRoot({ name: "Quoted Root", slug: "quoted-root", base_path: rootPath, github_org: "hasna" }, db);
+    const plan = planWorkspaceGitHubImport("hasna/example", { root: root.id, clone: true, db });
+
+    expect(plan.commands[0]).toContain(`'${rootPath}/example'`);
+    expect(plan.commands[0]).not.toContain(` ${rootPath}/example`);
+    rmSync(rootPath, { recursive: true, force: true });
+    db.close();
+  });
+
   test("sync roots is idempotent by GitHub identity and avoids duplicate slugs", async () => {
     const db = makeDb();
     const rootPath = mkdtempSync(join(tmpdir(), "workspace-github-idempotent-"));
