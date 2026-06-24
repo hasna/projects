@@ -2,6 +2,13 @@
 
 High-level project management CLI, MCP server, and SDK for AI coding agents. A project can be any repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder. Projects tracks roots, recipes, agents, tmux profiles, immutable project events, and prompt-driven AI agent runs.
 
+## Project Resources
+
+- [Changelog](CHANGELOG.md)
+- [Security policy](SECURITY.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+
 ## Install
 
 ```bash
