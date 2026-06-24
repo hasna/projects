@@ -56,6 +56,8 @@ import {
   createProjectBudget,
   getProjectBudgetStatuses,
   recordProjectSpend,
+  type ProjectBudget,
+  type ProjectBudgetStatus,
 } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
@@ -95,7 +97,10 @@ import {
   type WorkspaceCreationPlanAction,
 } from "../lib/workspace-plan.js";
 import { applyWorkspaceTmuxProfile, workspaceMarkerPath } from "../lib/workspace-runtime.js";
-import { PROJECT_AGENT_ROLES, type AgentKind, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
+import { PROJECT_AGENT_ROLES, type AgentKind, type JsonObject, type Workspace, type WorkspaceEvent, type WorkspaceIntegrations, type WorkspaceKind, type WorkspaceLocation, type WorkspaceLock } from "../types/workspace.js";
+
+const DEFAULT_MCP_LIST_LIMIT = 25;
+const DEFAULT_MCP_EVENT_LIMIT = 20;
 
 function getPkgVersion(): string {
   try {
@@ -166,6 +171,137 @@ function projectPayload(value: unknown): unknown {
 
 function jsonProjectText(value: unknown) {
   return jsonText(projectPayload(value));
+}
+
+function compactText(value: string | null | undefined, max = 120): string {
+  if (!value) return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  if (max <= 3) return normalized.slice(0, max);
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
+function mcpLimit(value: number | undefined, fallback: number): number {
+  return Math.max(1, Math.min(value ?? fallback, 500));
+}
+
+function compactProject(project: Workspace) {
+  const management = projectManagementSummary(project);
+  const externalLinks = projectExternalLinksSummary(project);
+  const dashboard = projectDashboardSummary(project);
+  return {
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    kind: project.kind,
+    status: project.status,
+    stage: management.stage,
+    priority: management.priority,
+    owner: management.owner,
+    path: compactText(project.primary_path, 160) || null,
+    path_health: dashboard.path_health.status,
+    tags: project.tags,
+    links: {
+      todos: externalLinks.todos.linked,
+      brief: externalLinks.brief.linked,
+    },
+  };
+}
+
+function compactEvent(event: WorkspaceEvent, verbose = false) {
+  const payload: Record<string, unknown> = {
+    id: event.id,
+    type: event.event_type,
+    source: event.source,
+    agent_id: event.agent_id,
+    created_at: event.created_at,
+  };
+  if (verbose) {
+    payload.prompt = compactText(event.prompt, 160);
+    payload.command = compactText(event.command, 200);
+    payload.metadata_keys = Object.keys(event.metadata);
+  }
+  return payload;
+}
+
+function compactLocation(location: WorkspaceLocation) {
+  return {
+    id: location.id,
+    label: location.label,
+    kind: location.kind,
+    primary: location.is_primary,
+    machine: location.machine_id,
+    path: compactText(location.path, 160),
+    exists_at_create: location.exists_at_create,
+  };
+}
+
+function compactLock(lock: WorkspaceLock) {
+  return {
+    lock_key: lock.lock_key,
+    project_id: lock.workspace_id,
+    agent_id: lock.agent_id,
+    reason: compactText(lock.reason, 100) || null,
+    created_at: lock.created_at,
+    expires_at: lock.expires_at,
+  };
+}
+
+function compactBudget(budget: ProjectBudget) {
+  return {
+    id: budget.id,
+    scope: `${budget.scope_type}:${budget.scope_id}`,
+    window: budget.window,
+    mode: budget.mode,
+    limits: {
+      usd: budget.max_usd,
+      input_tokens: budget.max_input_tokens,
+      output_tokens: budget.max_output_tokens,
+      total_tokens: budget.max_total_tokens,
+    },
+  };
+}
+
+function compactBudgetStatus(status: ProjectBudgetStatus) {
+  return {
+    budget: compactBudget(status.budget),
+    remaining: status.remaining,
+    spent: status.spent,
+    exhausted: status.exhausted,
+    exceeded: status.exceeded,
+    warnings: status.warnings,
+  };
+}
+
+function compactDoctorResult(result: ReturnType<typeof doctorWorkspace>) {
+  const issues = result.checks.filter((check) => check.status !== "ok");
+  return {
+    project: compactProject(result.workspace),
+    ok: result.ok,
+    checks: {
+      ok: result.checks.filter((check) => check.status === "ok").length,
+      warn: result.checks.filter((check) => check.status === "warn").length,
+      error: result.checks.filter((check) => check.status === "error").length,
+    },
+    issues: issues.map((check) => ({
+      code: check.code,
+      status: check.status,
+      message: compactText(check.message, 160),
+      fixable: Boolean(check.fixable),
+    })),
+    fixes: result.fixes,
+  };
+}
+
+function compactListPayload<T>(items: T[], visible: unknown[], limit: number, nextSteps: string) {
+  return {
+    items: visible,
+    count: visible.length,
+    total_returned: items.length,
+    limit,
+    has_more: items.length > visible.length,
+    next_steps: nextSteps,
+  };
 }
 
 function rootId(idOrSlug: string | undefined): string | undefined {
@@ -250,8 +386,23 @@ function cleanupTargetFromWorkspace(workspace: Workspace, rollbackActions?: Work
 server.tool(
   "projects_roots_list",
   "List registered root folders and path templates for projects.",
-  {},
-  async () => jsonText(listRoots()),
+  {
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
+  async (input) => {
+    const roots = listRoots();
+    if (input.verbose) return jsonText(roots);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    return jsonText(compactListPayload(roots, roots.slice(0, limit).map((root) => ({
+      id: root.id,
+      slug: root.slug,
+      name: root.name,
+      kind: root.default_kind,
+      path: compactText(root.base_path, 160),
+      tags: root.tags,
+    })), limit, "Use projects_roots_show with an id, or projects_roots_list verbose=true for full root records."));
+  },
 );
 
 server.tool(
@@ -377,8 +528,23 @@ server.tool(
 server.tool(
   "projects_recipes_list",
   "List project recipes for agent-visible creation defaults.",
-  {},
-  async () => jsonText(listRecipes()),
+  {
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
+  async (input) => {
+    const recipes = listRecipes();
+    if (input.verbose) return jsonText(recipes);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    return jsonText(compactListPayload(recipes, recipes.slice(0, limit).map((recipe) => ({
+      id: recipe.id,
+      slug: recipe.slug,
+      name: recipe.name,
+      kind: recipe.kind,
+      version: recipe.version,
+      tags: recipe.default_tags,
+    })), limit, "Use projects_recipes_list verbose=true for full recipe records including steps."));
+  },
 );
 
 server.tool(
@@ -411,8 +577,21 @@ server.tool(
 server.tool(
   "projects_recipes_built_ins",
   "List built-in project recipe definitions.",
-  {},
-  async () => jsonText(builtInWorkspaceRecipes()),
+  {
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
+  async (input) => {
+    const recipes = builtInWorkspaceRecipes();
+    if (input.verbose) return jsonText(recipes);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    return jsonText(compactListPayload(recipes, recipes.slice(0, limit).map((recipe) => ({
+      slug: recipe.slug,
+      name: recipe.name,
+      kind: recipe.kind,
+      tags: recipe.default_tags ?? [],
+    })), limit, "Use projects_recipes_built_ins verbose=true for full built-in recipe definitions."));
+  },
 );
 
 server.tool(
@@ -427,12 +606,34 @@ server.tool(
   "List registered agents, or agents assigned to a specific project.",
   {
     project: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
   },
   async (input) => {
-    if (!input.project) return jsonText(listAgents());
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    if (!input.project) {
+      const agents = listAgents();
+      if (input.verbose) return jsonText(agents);
+      return jsonText(compactListPayload(agents, agents.slice(0, limit).map((agent) => ({
+        id: agent.id,
+        slug: agent.slug,
+        name: agent.name,
+        kind: agent.kind,
+        provider: agent.provider,
+        model: agent.model,
+        role: agent.role,
+      })), limit, "Use projects_agents_list verbose=true for full agent records."));
+    }
     const project = findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    return jsonText(listWorkspaceAgents(project.id));
+    const assignments = listWorkspaceAgents(project.id);
+    if (input.verbose) return jsonText(assignments);
+    return jsonText(compactListPayload(assignments, assignments.slice(0, limit).map((assignment) => ({
+      agent: assignment.agent?.slug ?? assignment.agent_id,
+      role: assignment.role,
+      kind: assignment.agent?.kind ?? null,
+      created_at: assignment.created_at,
+    })), limit, "Use projects_agents_list verbose=true for full assignment records."));
   },
 );
 
@@ -512,8 +713,24 @@ server.tool(
 server.tool(
   "projects_tmux_profiles_list",
   "List saved project tmux profiles.",
-  {},
-  async () => jsonText(listTmuxProfiles().map((profile) => ({ ...profile, windows: listTmuxProfileWindows(profile.id) }))),
+  {
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
+  async (input) => {
+    const profiles = listTmuxProfiles();
+    const full = profiles.map((profile) => ({ ...profile, windows: listTmuxProfileWindows(profile.id) }));
+    if (input.verbose) return jsonText(full);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    return jsonText(compactListPayload(full, full.slice(0, limit).map((profile) => ({
+      id: profile.id,
+      slug: profile.slug,
+      name: profile.name,
+      session: profile.session_template,
+      attach: profile.attach,
+      windows: profile.windows.length,
+    })), limit, "Use projects_tmux_profiles_list verbose=true or projects_tmux_profiles_apply dry_run=true for details."));
+  },
 );
 
 server.tool(
@@ -609,7 +826,7 @@ function projectDoctorPayload(result: ReturnType<typeof doctorWorkspace>) {
 
 server.tool(
   "projects_list",
-  "List registered projects across all roots and arbitrary paths.",
+  "List registered projects across all roots and arbitrary paths. Compact by default; pass verbose=true for full records.",
   {
     kind: z.string().optional(),
     status: z.enum(["active", "archived", "deleted"]).optional(),
@@ -617,43 +834,90 @@ server.tool(
     tags: z.array(z.string()).optional(),
     include_evals: z.boolean().optional(),
     limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
   },
-  async (input) => jsonText(filterProjectEvalArtifacts(listWorkspaces({
-    kind: input.kind as WorkspaceKind | undefined,
-    status: input.status,
-    query: input.query,
-    tags: input.tags,
-    limit: input.limit,
-  }), input.include_evals).map(projectWithManagement)),
+  async (input) => {
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    const projects = filterProjectEvalArtifacts(listWorkspaces({
+      kind: input.kind as WorkspaceKind | undefined,
+      status: input.status,
+      query: input.query,
+      tags: input.tags,
+      exclude_eval_artifacts: !input.include_evals,
+      limit: input.verbose ? input.limit : limit + 1,
+    }), input.include_evals);
+    if (input.verbose) return jsonText(projects.map(projectWithManagement));
+    const visible = projects.slice(0, limit);
+    return jsonText({
+      projects: visible.map(compactProject),
+      count: visible.length,
+      limit,
+      has_more: projects.length > visible.length,
+      next_steps: "Use projects_show with an id/slug for details, projects_list verbose=true for full records, or limit/query/tags filters to narrow results.",
+    });
+  },
 );
 
 server.tool(
   "projects_show",
-  "Show a project with locations and event history.",
-  { id: z.string() },
+  "Show a compact project detail summary. Pass verbose=true to include full locations, agents, and event history.",
+  { id: z.string(), verbose: z.boolean().optional(), events_limit: z.number().int().positive().max(500).optional() },
   async (input) => {
     const project = findProjectTarget(input.id);
     if (!project) return errorText(`Project not found: ${input.id}`);
+    const events = listWorkspaceEvents(project.id);
+    if (input.verbose) {
+      const limit = input.events_limit;
+      return jsonText({
+        project: projectWithManagement(project),
+        management: projectManagementSummary(project),
+        external_links: projectExternalLinksSummary(project),
+        dashboard: projectDashboardSummary(project),
+        agents: listWorkspaceAgents(project.id),
+        locations: listWorkspaceLocations(project.id),
+        events: limit ? events.slice(-limit).reverse() : events,
+      });
+    }
     return jsonText({
-      project: projectWithManagement(project),
+      project: compactProject(project),
       management: projectManagementSummary(project),
       external_links: projectExternalLinksSummary(project),
       dashboard: projectDashboardSummary(project),
-      agents: listWorkspaceAgents(project.id),
-      locations: listWorkspaceLocations(project.id),
-      events: listWorkspaceEvents(project.id),
+      counts: {
+        agents: listWorkspaceAgents(project.id).length,
+        locations: listWorkspaceLocations(project.id).length,
+        events: events.length,
+      },
+      recent_events: events.slice(-3).reverse().map((event) => compactEvent(event)),
+      next_steps: "Pass verbose=true for full locations, agents, and event history; use projects_events_list for paged event summaries.",
     });
   },
 );
 
 server.tool(
   "projects_locations_list",
-  "List registered folder locations for a project.",
-  { project: z.string() },
+  "List registered folder locations for a project. Compact by default; pass verbose=true for full location records.",
+  {
+    project: z.string(),
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
   async (input) => {
     const project = findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    return jsonText({ project: projectWithManagement(project), locations: listWorkspaceLocations(project.id) });
+    const locations = listWorkspaceLocations(project.id);
+    if (input.verbose) return jsonText({ project: projectWithManagement(project), locations });
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    const visible = locations.slice(0, limit);
+    return jsonText({
+      project: compactProject(project),
+      locations: visible.map(compactLocation),
+      count: visible.length,
+      total: locations.length,
+      limit,
+      has_more: locations.length > visible.length,
+      next_steps: "Pass verbose=true for full location records, or use projects_show verbose=true for project context.",
+    });
   },
 );
 
@@ -1285,11 +1549,13 @@ server.tool(
 
 server.tool(
   "projects_doctor",
-  "Check one or all projects for path, marker, reference, location, and failed-run issues.",
+  "Check one or all projects for path, marker, reference, location, and failed-run issues. Compact by default; pass verbose=true for full checks.",
   {
     id: z.string().optional(),
     fix: z.boolean().optional(),
     dry_run: z.boolean().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
   },
   async (input) => {
     const options = { fix: input.fix, dryRun: input.dry_run };
@@ -1300,23 +1566,59 @@ server.tool(
       const result = input.fix && !input.dry_run
         ? withWorkspaceMutationLock(project, owner, "project doctor fix", () => doctorWorkspace(project, options))
         : doctorWorkspace(project, options);
-      return jsonText([projectDoctorPayload(result)]);
+      return jsonText(input.verbose
+        ? [projectDoctorPayload(result)]
+        : {
+            results: [compactDoctorResult(result)],
+            count: 1,
+            total: 1,
+            limit: 1,
+            has_more: false,
+            next_steps: "Pass verbose=true for full check records and full project payloads.",
+          });
     }
     const owner = ensureCliAgent().id;
-    return jsonText(listWorkspaces({ limit: 500 }).map((project) => projectDoctorPayload(input.fix && !input.dry_run
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    const projects = listWorkspaces({ limit: input.verbose ? input.limit ?? 500 : limit + 1 });
+    const results = projects.map((project) => input.fix && !input.dry_run
       ? withWorkspaceMutationLock(project, owner, "project doctor fix", () => doctorWorkspace(project, options))
-      : doctorWorkspace(project, options))));
+      : doctorWorkspace(project, options));
+    if (input.verbose) return jsonText(results.map(projectDoctorPayload));
+    const visible = results.slice(0, limit);
+    return jsonText({
+      results: visible.map(compactDoctorResult),
+      count: visible.length,
+      total_returned: results.length,
+      limit,
+      has_more: results.length > visible.length,
+      next_steps: "Pass verbose=true for full check records and full project payloads, or pass id to inspect one project.",
+    });
   },
 );
 
 server.tool(
   "projects_events_list",
-  "List audit events for a project.",
-  { project: z.string() },
+  "List compact audit events for a project. Pass verbose=true for full event records.",
+  {
+    project: z.string(),
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
   async (input) => {
     const project = findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    return jsonText({ project, events: listWorkspaceEvents(project.id) });
+    const events = listWorkspaceEvents(project.id);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_EVENT_LIMIT);
+    const visible = events.slice(-limit).reverse();
+    return jsonText({
+      project: input.verbose ? projectWithManagement(project) : compactProject(project),
+      events: input.verbose ? visible : visible.map((event) => compactEvent(event)),
+      count: visible.length,
+      total: events.length,
+      limit,
+      has_more: events.length > visible.length,
+      next_steps: "Increase limit, pass verbose=true for full event records, or use projects_show verbose=true for full project context.",
+    });
   },
 );
 
@@ -1356,9 +1658,17 @@ server.tool(
 
 server.tool(
   "projects_locks",
-  "List currently held project mutation locks.",
-  {},
-  async () => jsonText(listWorkspaceLocks()),
+  "List currently held project mutation locks. Compact by default; pass verbose=true for full lock records.",
+  {
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
+  },
+  async (input) => {
+    const locks = listWorkspaceLocks();
+    if (input.verbose) return jsonText(locks);
+    const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+    return jsonText(compactListPayload(locks, locks.slice(0, limit).map(compactLock), limit, "Pass verbose=true for full lock records."));
+  },
 );
 
 server.tool(
@@ -1513,21 +1823,26 @@ server.tool(
 
 server.tool(
   "projects_budgets_remaining",
-  "Return remaining money and token budget for a project, run, or budget id.",
+  "Return remaining money and token budget for a project, run, or budget id. Compact by default; pass verbose=true for full budget records.",
   {
     project: z.string().optional(),
     run_id: z.string().optional(),
     budget_id: z.string().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    verbose: z.boolean().optional(),
   },
   async (input) => {
     try {
       const project = input.project ? findProjectTarget(input.project) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
-      return jsonText(getProjectBudgetStatuses({
+      const statuses = getProjectBudgetStatuses({
         workspace_id: project?.id,
         run_id: input.run_id,
         budget_id: input.budget_id,
-      }));
+      });
+      if (input.verbose) return jsonText(statuses);
+      const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
+      return jsonText(compactListPayload(statuses, statuses.slice(0, limit).map(compactBudgetStatus), limit, "Pass verbose=true for full budget records."));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -83,6 +83,29 @@ describe("project agent system prompt", () => {
     expect(inventory.projects.map((project) => project.slug)).toEqual(["normal-project"]);
   });
 
+  test("default project inventory omits bulky metadata and integration values", () => {
+    const root = mkdtempSync(join(tmpdir(), "project-agent-compact-inventory-"));
+    process.env["HASNA_PROJECTS_DB_PATH"] = join(root, "projects.db");
+
+    createWorkspace({
+      name: "Noisy Project",
+      slug: "noisy-project",
+      description: "x".repeat(500),
+      primary_path: `/tmp/${"very-long-segment-".repeat(20)}`,
+      integrations: { github_url: "https://example.com/" + "long".repeat(100) },
+      metadata: { notes: "secret-ish bulky note ".repeat(50) },
+    });
+
+    const inventory = buildWorkspaceInventoryContext() as { projects: Array<Record<string, unknown>> };
+    const [project] = inventory.projects;
+    expect(project?.slug).toBe("noisy-project");
+    expect(project).not.toHaveProperty("description");
+    expect(project).not.toHaveProperty("metadata");
+    expect(project).not.toHaveProperty("integrations");
+    expect(JSON.stringify(project)).not.toContain("secret-ish bulky note");
+    expect(String(project?.primary_path).length).toBeLessThanOrEqual(160);
+  });
+
   test("audits prompt-agent mutation tool calls against approval mode", () => {
     const planned = auditProjectAgentToolCalls([
       {
