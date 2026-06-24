@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireWorkspaceLock, createRoot } from "../db/workspaces.js";
+import { acquireWorkspaceLock, createRoot, createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
@@ -143,6 +143,46 @@ describe("project-first CLI surface", () => {
     expect((JSON.parse(text(after.stdout)) as Array<{ slug: string }>).map((item) => item.slug)).toEqual(["normal-project"]);
   });
 
+  test("top-level list is compact by default and JSON remains detailed", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-compact-list-"));
+    const dbPath = join(root, "projects.db");
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+
+    for (let i = 0; i < 30; i += 1) {
+      const suffix = String(i).padStart(2, "0");
+      createWorkspace({
+        name: `Compact ${suffix}`,
+        slug: `compact-${suffix}`,
+        kind: "project",
+        primary_path: join(root, `compact-${suffix}`),
+        metadata: { notes: "x".repeat(500) },
+      }, db);
+    }
+    db.close();
+
+    const compact = runProjects(["list"], env);
+    expect(compact.exitCode).toBe(0);
+    const compactText = text(compact.stdout);
+    expect(compactText).toContain("compact-00");
+    expect(compactText).toContain("Showing 25 of more than 25 matching projects");
+    expect(compactText).toContain("Use --limit <n>, --verbose, --json, or 'projects show <slug>' for details.");
+    expect(compactText).not.toContain("compact-29");
+    expect(compactText).not.toContain("x".repeat(120));
+
+    const expanded = runProjects(["list", "--limit", "30"], env);
+    expect(expanded.exitCode).toBe(0);
+    expect(text(expanded.stdout)).toContain("compact-29");
+
+    const json = runProjects(["list", "--json"], env);
+    expect(json.exitCode).toBe(0);
+    const rows = JSON.parse(text(json.stdout)) as Array<{ slug: string; metadata: Record<string, string> }>;
+    expect(rows).toHaveLength(30);
+    expect(rows.find((row) => row.slug === "compact-29")?.metadata.notes).toHaveLength(500);
+  }, 10000);
+
   test("top-level create, list, show, and update expose project management fields", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-management-"));
     const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
@@ -202,7 +242,7 @@ describe("project-first CLI surface", () => {
     expect(created.project?.integrations.brief_id).toBe("brief_123");
     expect(created.project?.integrations.brief_path).toBe(briefPath);
 
-    const list = runProjects(["list"], env);
+    const list = runProjects(["list", "--verbose"], env);
     expect(list.exitCode).toBe(0);
     const listText = text(list.stdout);
     expect(listText).toContain("managed-app");
@@ -366,6 +406,13 @@ describe("project-first CLI surface", () => {
     expect(listed.project?.slug).toBe("evented-app");
     expect(listed.events.map((event) => event.event_type)).toContain("security_reviewed");
     expect(listed.workspace).toBeUndefined();
+
+    const compact = runProjects(["events", "list", "evented-app", "--limit", "1"], env);
+    expect(compact.exitCode).toBe(0);
+    const compactText = text(compact.stdout);
+    expect(compactText).toContain("security_reviewed");
+    expect(compactText).toContain("Showing latest 1 of ");
+    expect(compactText).toContain("older hidden. Use --limit <n>, --verbose, or --json for details.");
   });
 
   test("project agents can be assigned and shown as project metadata", () => {

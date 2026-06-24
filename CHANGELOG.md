@@ -6,6 +6,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Compact terminal defaults for noisy project list/detail/history commands,
+  with `--limit` and `--verbose` controls while keeping `--json` detailed.
+- Opt-in compact MCP summaries via `compact: true` while preserving existing
+  full-record defaults for MCP clients.
+
+### Changed
+
+- Prompt-agent project list/show/event tools now use compact wrapper payloads by
+  default and point agents to verbose detail lookups when needed.
+
 ## [0.1.64] - 2026-06-24
 
 ### Added

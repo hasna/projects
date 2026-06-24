@@ -131,6 +131,15 @@ describe("workspace domain services", () => {
     expect(listRoots(db)).toHaveLength(1);
     expect(listWorkspaces({ tags: ["typescript"] }, db)).toHaveLength(1);
 
+    for (let index = 0; index < 30; index++) {
+      createWorkspace({
+        name: `Alpha Untagged ${index.toString().padStart(2, "0")}`,
+        slug: `alpha-untagged-${index}`,
+      }, db);
+    }
+    createWorkspace({ name: "Zulu Tagged", slug: "zulu-tagged", tags: ["target"] }, db);
+    expect(listWorkspaces({ tags: ["target"], limit: 1 }, db).map((item) => item.slug)).toEqual(["zulu-tagged"]);
+
     const secondaryPath = tmpDir();
     const secondary = addWorkspaceLocation({
       workspace_id: workspace.id,

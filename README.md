@@ -73,8 +73,12 @@ projects import-github hasna/example --root open-source --clone --dry-run --json
 projects scan-roots --root open-source --repo-prefix project- --clone --json
 projects sync-roots --root open-source --repo-prefix project- --tags open-source,project --json
 projects import /path/to/root --bulk --dry-run --json
+projects list --query app --tags web,ts
+projects list --limit 50 --verbose
 projects list --query app --tags web,ts --json
 projects show my-app --json
+projects show my-app --verbose
+projects events list my-app --limit 10 --verbose
 projects get my-app --json
 projects update my-app --description "New description" --tags web,ts --priority critical --launch-profile dev
 projects tag my-app security cameras
@@ -219,6 +223,34 @@ The prompt agent can inspect roots, recipes, agents, tmux profiles, and projects
 `projects agent-eval` seeds temporary project fixtures into an isolated SQLite database under the eval base path and runs a repeatable prompt suite over root registration/matching, recipe and agent planning, project listing/show/events, create/deduplication, import/scan, update, archive/unarchive, delete/hard-delete, cleanup, verification, tmux planning, GitHub publish/unpublish/import, and integration linking. Live mode uses OpenRouter; `--mock` runs deterministic create-path coverage and skips live-only cases. The JSON summary reports `success_rate`, `confidence`, and `db_path`.
 
 Normal `projects list` output hides prompt-agent eval fixtures. Use `projects list --include-evals` to inspect old fixtures and `projects cleanup-evals --dry-run --json` followed by `projects cleanup-evals --apply` to remove them.
+
+## Compact output defaults
+
+Human terminal output is compact by default to avoid filling agent context with
+large records. List/history commands cap rows, truncate long text and paths, and
+print a hint for the next detail command. Use `--limit <n>` to raise the row cap,
+`--verbose` for extra table columns, full paths, and diagnostic checks,
+`show`/`events list` for detail workflows, and `--json` for stable
+machine-readable records.
+
+Compact terminal defaults cover the noisy project registry commands plus smaller
+registry lists such as `projects roots list`, `projects recipes list`,
+`projects agents list`, `projects tmux-profiles list`, `projects locks`,
+`projects locations list`, `projects budgets list`, and `projects doctor`.
+Examples:
+
+```bash
+projects list --limit 25
+projects roots list --limit 10 --verbose
+projects doctor --limit 20 --verbose
+projects events list my-app --limit 10 --verbose
+```
+
+MCP tools keep their existing full-record defaults for client compatibility.
+Where supported, pass `compact: true` to receive compact summaries; compact MCP
+calls accept `limit`, and `verbose: true` returns full records. Prompt-agent
+tools use compact project/event summaries by default; agent tools expose
+`verbose: true` for explicit detail retrieval.
 
 ## Data Model
 

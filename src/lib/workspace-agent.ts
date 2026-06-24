@@ -93,11 +93,12 @@ import {
   removeProjectTags,
   unlinkProjectIntegrationFields,
 } from "./project-management.js";
-import { AGENT_KINDS, PROJECT_AGENT_ROLES, WORKSPACE_KINDS, type Agent, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
+import { AGENT_KINDS, PROJECT_AGENT_ROLES, WORKSPACE_KINDS, type Agent, type JsonObject, type Workspace, type WorkspaceEvent, type WorkspaceIntegrations, type WorkspaceKind } from "../types/workspace.js";
 
 export const DEFAULT_WORKSPACE_AGENT_MODEL = "openai/gpt-4o-mini";
 const DEFAULT_SECRET_KEYS = ["hasna/takumi/live/openrouter_api_key", "openrouter/api_key", "OPENROUTER_API_KEY"];
 const DEFAULT_WORKSPACE_AGENT_CONTEXT_LIMIT = 500;
+const DEFAULT_PROJECT_AGENT_LIST_LIMIT = 25;
 
 export const PROJECT_AGENT_READ_TOOLS = [
   "projects_roots_list",
@@ -277,29 +278,101 @@ function compactRoot(root: ReturnType<typeof listRoots>[number]): JsonObject {
   };
 }
 
+function truncateText(value: string | null | undefined, max = 120): string | null {
+  if (!value) return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  if (normalized.length <= max) return normalized;
+  if (max <= 3) return normalized.slice(0, max);
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
 function compactWorkspace(workspace: Workspace): JsonObject {
+  const management = projectManagementSummary(workspace);
+  const externalLinks = projectExternalLinksSummary(workspace);
   return {
     id: workspace.id,
     slug: workspace.slug,
     name: workspace.name,
-    description: workspace.description,
     kind: workspace.kind,
     status: workspace.status,
+    stage: management.stage,
+    priority: management.priority,
+    owner: management.owner,
+    primary_path: truncateText(workspace.primary_path, 160),
+    tags: workspace.tags,
+    links: {
+      todos: externalLinks.todos.linked,
+      brief: externalLinks.brief.linked,
+      github: Boolean(workspace.integrations.github_repo || workspace.integrations.github_url || workspace.git_remote),
+    },
+    updated_at: workspace.updated_at,
+    last_opened_at: workspace.last_opened_at,
+  };
+}
+
+function detailedProject(workspace: Workspace): JsonObject {
+  return {
+    ...compactWorkspace(workspace),
+    description: truncateText(workspace.description, 240),
     root_id: workspace.root_id,
     recipe_id: workspace.recipe_id,
-    primary_path: workspace.primary_path,
     git_remote: workspace.git_remote,
     s3_bucket: workspace.s3_bucket,
     s3_prefix: workspace.s3_prefix,
-    tags: workspace.tags,
-    integrations: workspace.integrations,
-    metadata: workspace.metadata,
     management: projectManagementSummary(workspace),
     external_links: projectExternalLinksSummary(workspace),
+    metadata_keys: Object.keys(workspace.metadata),
+    integration_keys: Object.keys(workspace.integrations),
     created_at: workspace.created_at,
-    updated_at: workspace.updated_at,
-    last_opened_at: workspace.last_opened_at,
     synced_at: workspace.synced_at,
+  };
+}
+
+function fullProject(workspace: Workspace): JsonObject {
+  return {
+    ...workspace,
+    management: projectManagementSummary(workspace),
+    external_links: projectExternalLinksSummary(workspace),
+  };
+}
+
+function compactAgentEvent(event: WorkspaceEvent): JsonObject {
+  return {
+    id: event.id,
+    event_type: event.event_type,
+    source: event.source,
+    agent_id: event.agent_id,
+    created_at: event.created_at,
+    metadata_keys: Object.keys(event.metadata),
+  };
+}
+
+function detailedAgentEvent(event: WorkspaceEvent): JsonObject {
+  return {
+    ...compactAgentEvent(event),
+    prompt: truncateText(event.prompt, 160),
+    command: truncateText(event.command, 200),
+  };
+}
+
+function compactAgentAssignment(assignment: ReturnType<typeof listWorkspaceAgents>[number]): JsonObject {
+  return {
+    agent: assignment.agent?.slug ?? assignment.agent_id,
+    role: assignment.role,
+    kind: assignment.agent?.kind ?? null,
+    created_at: assignment.created_at,
+  };
+}
+
+function compactAgentLocation(location: ReturnType<typeof listWorkspaceLocations>[number]): JsonObject {
+  return {
+    id: location.id,
+    label: location.label,
+    kind: location.kind,
+    primary: location.is_primary,
+    machine: location.machine_id,
+    path: truncateText(location.path, 160),
   };
 }
 
@@ -337,7 +410,7 @@ function workspaceContextLimit(): number {
 }
 
 export function buildWorkspaceInventoryContext(limit = workspaceContextLimit()): JsonObject {
-  const projects = filterProjectEvalArtifacts(listWorkspaces({ limit })).map(compactProject);
+  const projects = filterProjectEvalArtifacts(listWorkspaces({ limit, exclude_eval_artifacts: true })).map(compactProject);
   return {
     count: projects.length,
     limit,
@@ -379,9 +452,9 @@ export function buildWorkspaceAgentSystemPrompt(input: {
   const toolCatalog = buildProjectAgentToolCatalog();
   return [
     "You are the Projects project management and launcher agent.",
-    "The project_inventory JSON below is loaded from recorded projects before this run. Treat it as the first source of truth for deduplication and for knowing existing project metadata.",
-    "Before creating anything, compare the user request against project_inventory by name, slug, path, tags, integrations, and metadata. If a matching project already exists, use projects_show, projects_update, projects_tag, projects_untag, projects_link, projects_unlink, projects_event_record, projects_start, projects_tmux_profiles_apply, or another existing-project tool instead of creating a duplicate.",
-    "If the request may refer to an existing project and the inventory is not specific enough, call projects_list with query/tags/kind/status or projects_show before deciding.",
+    "The compact project_inventory JSON below is loaded from recorded projects before this run. Treat it as the first source of truth for deduplication by name, slug, path, tags, lifecycle, and linked-system hints.",
+    "Before creating anything, compare the user request against project_inventory. If a matching project already exists, use projects_show, projects_update, projects_tag, projects_untag, projects_link, projects_unlink, projects_event_record, projects_start, projects_tmux_profiles_apply, or another existing-project tool instead of creating a duplicate.",
+    "If the request may refer to an existing project and the compact inventory is not specific enough, call projects_list with query/tags/kind/status and projects_show with verbose=true before deciding, especially when metadata or integration values are needed for deduplication.",
     "Use projects_roots_list/projects_roots_match, projects_recipes_list/projects_recipes_show, projects_agents_list, projects_list/projects_show/projects_locations_list/projects_events_list, and projects_tmux_profiles_list to inspect recorded state before creating anything.",
     "A project can represent any project, repository, app, docs folder, scaffold, experiment, or remote-intended project in any folder.",
     "Projects owns project identity, metadata, paths, lifecycle, integrations, launch state, agents, and audit events. Todos owns tasks and checklists. Brief owns briefs, specs, and decision documents. Link to those systems through integrations; do not duplicate task or brief data inside Projects.",
@@ -1306,7 +1379,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_list: tool({
-      description: "List existing projects for deduplication before creating a new one. Returns descriptions, tags, integrations, and metadata.",
+      description: "List existing projects for deduplication before creating a new one. Compact by default; pass verbose for metadata/integration key summaries.",
       inputSchema: z.object({
         kind: z.enum(WORKSPACE_KINDS).optional(),
         status: z.enum(["active", "archived", "deleted"]).optional(),
@@ -1314,36 +1387,87 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         tags: z.array(z.string()).optional(),
         include_evals: z.boolean().optional(),
         limit: z.number().int().positive().max(500).optional(),
+        verbose: z.boolean().optional(),
       }),
-      execute: async (input) => filterProjectEvalArtifacts(listWorkspaces({
-        kind: input.kind,
-        status: input.status,
-        query: input.query,
-        tags: input.tags,
-        limit: input.limit ?? 100,
-      }), input.include_evals).map(compactProject),
+      execute: async (input) => {
+        const limit = input.limit ?? DEFAULT_PROJECT_AGENT_LIST_LIMIT;
+        const projects = filterProjectEvalArtifacts(listWorkspaces({
+          kind: input.kind,
+          status: input.status,
+          query: input.query,
+          tags: input.tags,
+          exclude_eval_artifacts: !input.include_evals,
+          limit: limit + 1,
+        }), input.include_evals);
+        const visible = projects.slice(0, limit);
+        return {
+          projects: visible.map(input.verbose ? detailedProject : compactProject),
+          count: visible.length,
+          limit,
+          has_more: projects.length > visible.length,
+          next_steps: "Use projects_show with id_or_slug for details; pass verbose=true for metadata/integration key summaries.",
+        };
+      },
     }),
     projects_show: tool({
-      description: "Resolve one project by id or slug and return its core metadata.",
+      description: "Resolve one project by id or slug. Compact by default; pass verbose=true for full project, agents, locations, and recent event records.",
       inputSchema: z.object({
         id_or_slug: z.string().min(1),
+        verbose: z.boolean().optional(),
+        events_limit: z.number().int().positive().max(100).optional(),
       }),
       execute: async (input) => {
         const workspace = resolveProjectTarget(input.id_or_slug);
-        return workspace
-          ? { project: compactProject(workspace), agents: listWorkspaceAgents(workspace.id) }
-          : { error: `Project not found: ${input.id_or_slug}` };
+        if (!workspace) return { error: `Project not found: ${input.id_or_slug}` };
+        const agents = listWorkspaceAgents(workspace.id);
+        const locations = listWorkspaceLocations(workspace.id);
+        const events = listWorkspaceEvents(workspace.id);
+        if (input.verbose) {
+          const eventLimit = input.events_limit ?? DEFAULT_PROJECT_AGENT_LIST_LIMIT;
+          return {
+            project: fullProject(workspace),
+            agents,
+            locations,
+            events: events.slice(-eventLimit).reverse(),
+            events_limit: eventLimit,
+            total_events: events.length,
+          };
+        }
+        return {
+          project: compactProject(workspace),
+          counts: {
+            agents: agents.length,
+            locations: locations.length,
+            events: events.length,
+          },
+          agents: agents.slice(0, 10).map(compactAgentAssignment),
+          recent_events: events.slice(-3).reverse().map(compactAgentEvent),
+          next_steps: "Pass verbose=true for full project, agents, locations, and recent event records.",
+        };
       },
     }),
     projects_locations_list: tool({
-      description: "List registered folder locations for one project.",
+      description: "List registered folder locations for one project. Compact by default; pass verbose=true for full location records.",
       inputSchema: z.object({
         project: z.string().min(1),
+        limit: z.number().int().positive().max(100).optional(),
+        verbose: z.boolean().optional(),
       }),
       execute: async (input) => {
         const workspace = resolveProjectTarget(input.project);
         if (!workspace) return { error: `Project not found: ${input.project}` };
-        return { project: compactProject(workspace), locations: listWorkspaceLocations(workspace.id) };
+        const locations = listWorkspaceLocations(workspace.id);
+        const limit = input.limit ?? DEFAULT_PROJECT_AGENT_LIST_LIMIT;
+        const visible = locations.slice(0, limit);
+        return {
+          project: compactProject(workspace),
+          locations: input.verbose ? visible : visible.map(compactAgentLocation),
+          count: visible.length,
+          total: locations.length,
+          limit,
+          has_more: locations.length > visible.length,
+          next_steps: "Pass verbose=true for full location records.",
+        };
       },
     }),
     projects_locations_add: tool({
@@ -1377,15 +1501,27 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_events_list: tool({
-      description: "List immutable audit events for one project.",
+      description: "List immutable audit events for one project. Compact by default; pass verbose=true for full event records.",
       inputSchema: z.object({
         project: z.string().min(1).describe("Project id or slug"),
         limit: z.number().int().positive().max(100).optional(),
+        verbose: z.boolean().optional(),
       }),
       execute: async (input) => {
         const workspace = resolveProjectTarget(input.project);
         if (!workspace) return { error: `Project not found: ${input.project}` };
-        return { project: compactProject(workspace), events: listWorkspaceEvents(workspace.id).slice(-(input.limit ?? 25)) };
+        const events = listWorkspaceEvents(workspace.id);
+        const limit = input.limit ?? DEFAULT_PROJECT_AGENT_LIST_LIMIT;
+        const visible = events.slice(-limit).reverse();
+        return {
+          project: compactProject(workspace),
+          events: input.verbose ? visible : visible.map(compactAgentEvent),
+          count: visible.length,
+          total: events.length,
+          limit,
+          has_more: events.length > visible.length,
+          next_steps: "Pass verbose=true for full event records or increase limit.",
+        };
       },
     }),
     projects_event_record: tool({

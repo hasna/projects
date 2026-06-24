@@ -101,7 +101,11 @@ import {
   removeProjectTags,
   unlinkProjectIntegrationFields,
 } from "../../lib/project-management.js";
-import { PROJECT_AGENT_ROLES, WORKSPACE_KINDS, WORKSPACE_STATUSES, type AgentKind, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind, type WorkspaceLock, type WorkspaceStatus } from "../../types/workspace.js";
+import { PROJECT_AGENT_ROLES, WORKSPACE_KINDS, WORKSPACE_STATUSES, type AgentKind, type JsonObject, type Workspace, type WorkspaceEvent, type WorkspaceIntegrations, type WorkspaceKind, type WorkspaceLock, type WorkspaceStatus } from "../../types/workspace.js";
+
+const DEFAULT_LIST_LIMIT = 25;
+const DEFAULT_EVENT_LIMIT = 20;
+const MAX_HUMAN_LIMIT = 200;
 
 function wantsRenderSpec(opts?: { renderSpec?: boolean }): boolean {
   return Boolean(opts?.renderSpec || process.argv.includes("--render-spec"));
@@ -293,6 +297,40 @@ function printRows(rows: Array<Record<string, unknown>>, columns: string[]): voi
   for (const row of rows) {
     console.log(columns.map((column) => String(row[column] ?? "")).join("\t"));
   }
+}
+
+function compactText(value: string | null | undefined, max = 80): string {
+  if (!value) return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  if (max <= 3) return normalized.slice(0, max);
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
+function parseHumanLimit(value: string | undefined, defaultLimit: number, label = "--limit"): number {
+  const parsed = parsePositiveInteger(value, label) ?? defaultLimit;
+  if (parsed > MAX_HUMAN_LIMIT) throw new Error(`${label} must be ${MAX_HUMAN_LIMIT} or less for terminal output`);
+  return parsed;
+}
+
+function printDiscoveryHint(message: string): void {
+  console.log(chalk.dim(message));
+}
+
+function eventSummary(event: WorkspaceEvent, verbose = false): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    id: event.id,
+    event_type: event.event_type,
+    source: event.source,
+    agent_id: event.agent_id ?? "",
+    created_at: event.created_at,
+  };
+  if (verbose) {
+    row.prompt = compactText(event.prompt, 60);
+    row.command = compactText(event.command, 80);
+    row.metadata = Object.keys(event.metadata).join(",");
+  }
+  return row;
 }
 
 function parseTmuxWindowsJson(value: string | undefined, label = "--tmux-windows-json"): WorkspaceTmuxWindowSpec[] | undefined {
@@ -657,18 +695,22 @@ function registerBudgetCommands(program: Command): void {
     .description("List configured budgets")
     .option("--project <project>", "Project id, slug, name, or path")
     .option("--run-id <run>", "Agent run id")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
         const project = opts.project ? resolveProjectTarget(opts.project) : null;
         const budgets = listProjectBudgets({ workspace_id: project?.id, run_id: opts.runId });
         if (wantsJson(opts)) { printObject(budgets, opts); return; }
-        printRows(budgets.map((budget) => ({
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = budgets.slice(0, limit);
+        printRows(visible.map((budget) => ({
           id: budget.id,
           scope: `${budget.scope_type}:${budget.scope_id}`,
           mode: budget.mode,
           window: budget.window,
         })), ["id", "scope", "mode", "window"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${budgets.length} budget(s). Use --limit <n> or --json for full records.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -681,19 +723,23 @@ function registerBudgetCommands(program: Command): void {
     .option("--id <id>", "Budget id")
     .option("--project <project>", "Project id, slug, name, or path")
     .option("--run-id <run>", "Agent run id")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
         const project = opts.project ? resolveProjectTarget(opts.project) : null;
         const statuses = getProjectBudgetStatuses({ workspace_id: project?.id, run_id: opts.runId, budget_id: opts.id });
         if (wantsJson(opts)) { printObject(statuses, opts); return; }
-        printRows(statuses.map((status) => ({
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = statuses.slice(0, limit);
+        printRows(visible.map((status) => ({
           id: status.budget.id,
           usd: status.remaining.usd ?? "",
           input: status.remaining.input_tokens ?? "",
           output: status.remaining.output_tokens ?? "",
           total: status.remaining.total_tokens ?? "",
         })), ["id", "usd", "input", "output", "total"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${statuses.length} budget status row(s). Use --limit <n> or --json for full records.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -1343,36 +1389,72 @@ function registerProjectCommands(program: Command): void {
     .option("--query <text>", "Search name, slug, description, path, tags, integrations, or metadata")
     .option("--tags <tags>", "Comma-separated tag filter")
     .option("--include-evals", "Include prompt-agent eval fixture projects")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show additional columns in terminal output")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
-        const projects = filterProjectEvalArtifacts(listWorkspaces({
+        const json = wantsJson(opts);
+        const baseFilter = {
           kind: parseKind(opts.kind),
           status: parseStatus(opts.status),
           query: opts.query,
           tags: splitList(opts.tags),
+        };
+        if (wantsRenderSpec(opts)) {
+          const projects = filterProjectEvalArtifacts(listWorkspaces({
+            ...baseFilter,
+            exclude_eval_artifacts: !opts.includeEvals,
+            limit: parsePositiveInteger(opts.limit, "--limit"),
+          }), opts.includeEvals);
+          printRenderSpec(buildProjectListRender(projects));
+          return;
+        }
+        if (json) {
+          const projects = filterProjectEvalArtifacts(listWorkspaces({
+            ...baseFilter,
+            exclude_eval_artifacts: !opts.includeEvals,
+            limit: parsePositiveInteger(opts.limit, "--limit"),
+          }), opts.includeEvals);
+          printObject(projects.map(projectWithManagement), opts);
+          return;
+        }
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const projects = filterProjectEvalArtifacts(listWorkspaces({
+          ...baseFilter,
+          exclude_eval_artifacts: !opts.includeEvals,
+          limit: limit + 1,
         }), opts.includeEvals);
-        if (wantsRenderSpec(opts)) { printRenderSpec(buildProjectListRender(projects)); return; }
-        if (wantsJson(opts)) { printObject(projects.map(projectWithManagement), opts); return; }
-        printRows(projects.map((project) => {
+        const visible = projects.slice(0, limit);
+        const hasMore = projects.length > limit;
+        printRows(visible.map((project) => {
           const management = projectManagementSummary(project);
           const externalLinks = projectExternalLinksSummary(project);
           const dashboard = projectDashboardSummary(project);
-          return {
+          const base = {
             slug: project.slug,
-            kind: project.kind,
             status: project.status,
             stage: management.stage ?? "",
             priority: management.priority ?? "",
-            owner: management.owner ?? "",
             health: dashboard.path_health.status,
+            path: compactText(project.primary_path, opts.verbose ? 96 : 56),
+          };
+          if (!opts.verbose) return base;
+          return {
+            ...base,
+            kind: project.kind,
+            owner: management.owner ?? "",
+            tags: compactText(project.tags.join(","), 40),
             todos: externalLinks.todos.project_id ?? externalLinks.todos.task_list_id ?? "",
             brief: externalLinks.brief.id ?? externalLinks.brief.path ?? "",
             last_opened: dashboard.launch.last_opened_at ?? "",
-            path: project.primary_path ?? "",
           };
-        }), ["slug", "kind", "status", "stage", "priority", "owner", "health", "todos", "brief", "last_opened", "path"]);
+        }), opts.verbose
+          ? ["slug", "status", "stage", "priority", "health", "path", "kind", "owner", "tags", "todos", "brief", "last_opened"]
+          : ["slug", "status", "stage", "priority", "health", "path"]);
+        const more = hasMore ? ` Showing ${visible.length} of more than ${limit} matching projects.` : ` Showing ${visible.length} project(s).`;
+        printDiscoveryHint(`${more} Use --limit <n>, --verbose, --json, or 'projects show <slug>' for details.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -1383,6 +1465,7 @@ function registerProjectCommands(program: Command): void {
     .command("show <id-or-slug>")
     .alias("get")
     .description("Show project details")
+    .option("--verbose", "Show registered locations, agents, and a longer event summary")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
@@ -1406,23 +1489,32 @@ function registerProjectCommands(program: Command): void {
       if (management.owner) console.log(`  ${chalk.dim("owner:")} ${management.owner}`);
       if (management.launch_profile) console.log(`  ${chalk.dim("launch profile:")} ${management.launch_profile}`);
       if (management.start_agent) console.log(`  ${chalk.dim("start agent:")} ${management.start_agent}`);
-      if (management.start_command) console.log(`  ${chalk.dim("start command:")} ${management.start_command}`);
+      if (management.start_command) console.log(`  ${chalk.dim("start command:")} ${opts.verbose ? management.start_command : compactText(management.start_command, 140)}`);
       if (management.start_session_policy) console.log(`  ${chalk.dim("start session policy:")} ${management.start_session_policy}`);
-      if (management.start_windows.length) console.log(`  ${chalk.dim("start windows:")} ${management.start_windows.map((window) => window.name).join(", ")}`);
-      if (project.primary_path) console.log(`  ${chalk.dim("path:")} ${project.primary_path}`);
+      if (management.start_windows.length) {
+        const startWindows = management.start_windows.map((window) => window.name).join(", ");
+        console.log(`  ${chalk.dim("start windows:")} ${opts.verbose ? startWindows : compactText(startWindows, 100)}`);
+      }
+      if (project.primary_path) console.log(`  ${chalk.dim("path:")} ${opts.verbose ? project.primary_path : compactText(project.primary_path, 160)}`);
       console.log(`  ${chalk.dim("path health:")} ${dashboard.path_health.status}${dashboard.path_health.exists === false ? " (missing)" : ""}`);
       if (dashboard.launch.last_opened_at) console.log(`  ${chalk.dim("last opened:")} ${dashboard.launch.last_opened_at}`);
-      if (project.tags.length) console.log(`  ${chalk.dim("tags:")} ${project.tags.join(", ")}`);
-      if (agents.length) {
-        console.log(`  ${chalk.dim("agents:")} ${agents.map((assignment) => `${assignment.agent?.slug ?? assignment.agent_id}:${assignment.role}`).join(", ")}`);
+      if (project.tags.length) {
+        const tags = project.tags.join(", ");
+        console.log(`  ${chalk.dim("tags:")} ${opts.verbose ? tags : compactText(tags, 120)}`);
       }
-      if (locations.length > 1) console.log(`  ${chalk.dim("locations:")} ${locations.length} registered`);
+      if (agents.length) {
+        const agentLabels = agents.map((assignment) => `${assignment.agent?.slug ?? assignment.agent_id}:${assignment.role}`);
+        const visibleAgents = opts.verbose ? agentLabels : agentLabels.slice(0, 10);
+        console.log(`  ${chalk.dim("agents:")} ${compactText(visibleAgents.join(", "), opts.verbose ? 240 : 120)}${!opts.verbose && agentLabels.length > visibleAgents.length ? chalk.dim(` (+${agentLabels.length - visibleAgents.length} more)`) : ""}`);
+      }
+      console.log(`  ${chalk.dim("locations:")} ${locations.length} registered${locations.length > 1 ? chalk.dim(" (use --verbose for paths)") : ""}`);
       if (duplicateNames.length) console.log(`  ${chalk.yellow("warning:")} duplicate project name also used by ${duplicateNames.map((item) => item.slug).join(", ")}`);
       if (externalLinks.todos.linked) {
         console.log(`  ${chalk.dim("todos:")} ${externalLinks.todos.project_id ?? "none"}${externalLinks.todos.task_list_id ? ` task-list=${externalLinks.todos.task_list_id}` : ""}`);
       }
       if (externalLinks.brief.linked) {
-        console.log(`  ${chalk.dim("brief:")} ${externalLinks.brief.id ?? externalLinks.brief.path}${externalLinks.brief.path_exists === false ? " (path missing)" : ""}`);
+        const briefTarget = externalLinks.brief.id ?? externalLinks.brief.path;
+        console.log(`  ${chalk.dim("brief:")} ${opts.verbose ? briefTarget : compactText(briefTarget, 120)}${externalLinks.brief.path_exists === false ? " (path missing)" : ""}`);
       }
       try {
         const tmux = await projectTmuxStatus(project.slug);
@@ -1438,6 +1530,18 @@ function registerProjectCommands(program: Command): void {
       if (recentEvents.length) {
         console.log(`  ${chalk.dim("recent events:")} ${recentEvents.map((event) => `${event.event_type}@${event.created_at}`).join(", ")}`);
       }
+      if (opts.verbose) {
+        if (locations.length) {
+          for (const location of locations) {
+            console.log(`  ${chalk.dim("location:")} ${location.is_primary ? "primary " : ""}${location.label} ${compactText(location.path, 100)}`);
+          }
+        }
+        const verboseEvents = events.slice(-10).reverse();
+        for (const event of verboseEvents) {
+          console.log(`  ${chalk.dim("event:")} ${event.event_type} ${event.source} ${event.created_at}${event.command ? chalk.dim(` ${compactText(event.command, 80)}`) : ""}`);
+        }
+      }
+      printDiscoveryHint(`  Use --json for the full project record${opts.verbose ? "." : ", or --verbose for locations and more recent events."}`);
     });
 
   const events = program.command("events").description("Inspect and record project audit events");
@@ -1445,6 +1549,8 @@ function registerProjectCommands(program: Command): void {
   events
     .command("list <project>")
     .description("List audit events for a project")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_EVENT_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Include compact prompt, command, and metadata-key columns")
     .option("-j, --json", "Output JSON")
     .action((projectTarget, opts) => {
       try {
@@ -1452,13 +1558,13 @@ function registerProjectCommands(program: Command): void {
         const events = listWorkspaceEvents(project.id);
         const payload = { project: projectWithManagement(project), events };
         if (wantsJson(opts)) { printObject(payload, opts); return; }
-        printRows(events.map((event) => ({
-          id: event.id,
-          event_type: event.event_type,
-          source: event.source,
-          agent_id: event.agent_id ?? "",
-          created_at: event.created_at,
-        })), ["id", "event_type", "source", "agent_id", "created_at"]);
+        const limit = parseHumanLimit(opts.limit, DEFAULT_EVENT_LIMIT);
+        const visible = events.slice(-limit).reverse();
+        printRows(visible.map((event) => eventSummary(event, Boolean(opts.verbose))), opts.verbose
+          ? ["id", "event_type", "source", "agent_id", "created_at", "prompt", "command", "metadata"]
+          : ["id", "event_type", "source", "agent_id", "created_at"]);
+        const hidden = Math.max(0, events.length - visible.length);
+        printDiscoveryHint(`Showing latest ${visible.length} of ${events.length} event(s).${hidden ? ` ${hidden} older hidden.` : ""} Use --limit <n>, --verbose, or --json for details.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -1923,6 +2029,7 @@ function registerProjectCommands(program: Command): void {
     .command("locks")
     .description("List active project mutation locks")
     .option("--project <id-or-slug>", "Filter by project")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
@@ -1935,13 +2042,16 @@ function registerProjectCommands(program: Command): void {
           .filter((lock) => !project || lock.workspace_id === project.id)
           .map(projectLockPayload);
         if (wantsJson(opts)) { printObject(locks, opts); return; }
-        printRows(locks.map((lock) => ({
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = locks.slice(0, limit);
+        printRows(visible.map((lock) => ({
           lock_key: lock.lock_key,
           project_id: lock.project_id ?? "",
           agent_id: lock.agent_id ?? "",
-          reason: lock.reason ?? "",
+          reason: compactText(lock.reason, 80),
           expires_at: lock.expires_at ?? "",
         })), ["lock_key", "project_id", "agent_id", "reason", "expires_at"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${locks.length} lock(s). Use --limit <n> or --json for full records.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -1963,25 +2073,39 @@ function registerProjectCommands(program: Command): void {
     .description("Validate project markers, paths, locations, references, and failed runs")
     .option("--fix", "Apply safe fixes")
     .option("--dry-run", "Preview fixes without writing")
+    .option("--limit <n>", `Max projects for terminal output when no project is provided (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show every check instead of only issue counts")
     .option("-j, --json", "Output JSON")
     .action((idOrSlug, opts) => {
       const runDoctor = (project: Workspace) => opts.fix && !opts.dryRun
         ? withWorkspaceLock(project, ensureCliAgent().id, "project doctor fix", () => doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun }))
         : doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun });
       try {
+        const json = wantsJson(opts);
+        const limit = json ? undefined : parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const results = idOrSlug
           ? (() => {
               const project = resolveProjectTarget(idOrSlug);
               return [runDoctor(project)];
             })()
-          : listWorkspaces().map(runDoctor);
-        if (wantsJson(opts)) { printObject(results, opts); return; }
-        for (const result of results) {
+          : listWorkspaces({ limit: json ? undefined : limit! + 1 }).map(runDoctor);
+        if (json) { printObject(results, opts); return; }
+        const visible = idOrSlug ? results : results.slice(0, limit);
+        for (const result of visible) {
           console.log(`${chalk.bold(result.workspace.slug)} ${result.ok ? chalk.green("[ok]") : chalk.yellow("[needs attention]")}`);
-          for (const check of result.checks) {
-            const color = check.status === "ok" ? chalk.green : check.status === "error" ? chalk.red : chalk.yellow;
-            console.log(`  ${color(check.status)} ${check.code} ${chalk.dim(check.message)}`);
+          const checks = opts.verbose ? result.checks : result.checks.filter((check) => check.status !== "ok");
+          if (!opts.verbose && checks.length === 0) {
+            const okCount = result.checks.filter((check) => check.status === "ok").length;
+            console.log(`  ${chalk.dim("checks:")} ${okCount} ok`);
           }
+          for (const check of checks) {
+            const color = check.status === "ok" ? chalk.green : check.status === "error" ? chalk.red : chalk.yellow;
+            console.log(`  ${color(check.status)} ${check.code} ${chalk.dim(compactText(check.message, 140))}`);
+          }
+        }
+        if (!idOrSlug) {
+          const hasMore = results.length > visible.length;
+          printDiscoveryHint(`${hasMore ? `Showing ${visible.length} of more than ${limit} checked project(s).` : `Showing ${visible.length} checked project(s).`} Use --limit <n>, --verbose, --json, or 'projects doctor <slug>' for details.`);
         }
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
@@ -1996,19 +2120,25 @@ function registerLocationsCommand(program: Command): void {
   cmd
     .command("list <project>")
     .description("List registered folder locations for a project")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show full paths and location metadata keys")
     .option("-j, --json", "Output JSON")
     .action((projectIdOrSlug, opts) => {
       try {
         const project = resolveProjectTarget(projectIdOrSlug);
         const locations = listWorkspaceLocations(project.id);
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), locations }, opts); return; }
-        printRows(locations.map((location) => ({
-          path: location.path,
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = locations.slice(0, limit);
+        printRows(visible.map((location) => ({
+          path: opts.verbose ? location.path : compactText(location.path, 100),
           label: location.label,
           kind: location.kind,
           primary: location.is_primary ? "yes" : "no",
           machine: location.machine_id,
-        })), ["path", "label", "kind", "primary", "machine"]);
+          ...(opts.verbose ? { metadata: Object.keys(location.metadata).join(",") } : {}),
+        })), opts.verbose ? ["path", "label", "kind", "primary", "machine", "metadata"] : ["path", "label", "kind", "primary", "machine"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${locations.length} location(s). Use --limit <n>, --verbose, or --json for full records.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2092,18 +2222,23 @@ function registerRootsCommand(program: Command): void {
 
   cmd
     .command("list")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show full paths and tags")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const roots = listRoots();
       if (wantsRenderSpec(opts)) { printRenderSpec(buildRootsRender(roots)); return; }
       if (wantsJson(opts)) { printObject(roots, opts); return; }
-      printRows(roots.map((root) => ({
+      const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+      const visible = roots.slice(0, limit);
+      printRows(visible.map((root) => ({
         slug: root.slug,
         kind: root.default_kind ?? "",
-        path: root.base_path,
-        tags: root.tags.join(","),
+        path: opts.verbose ? root.base_path : compactText(root.base_path, 100),
+        tags: compactText(root.tags.join(","), opts.verbose ? 120 : 40),
       })), ["slug", "kind", "path", "tags"]);
+      printDiscoveryHint(`Showing ${visible.length} of ${roots.length} root(s). Use --limit <n>, --verbose, --json, or 'projects roots show <slug>' for details.`);
     });
 
   cmd
@@ -2193,6 +2328,7 @@ function registerRootsCommand(program: Command): void {
     .option("--kind <kind>", `Project kind (${WORKSPACE_KINDS.join(", ")})`)
     .option("--tags <tags>", "Comma-separated tags")
     .option("--github-org <org>", "GitHub organization")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
@@ -2203,12 +2339,15 @@ function registerRootsCommand(program: Command): void {
           github_org: opts.githubOrg,
         });
         if (wantsJson(opts)) { printObject(matches, opts); return; }
-        printRows(matches.map((item) => ({
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = matches.slice(0, limit);
+        printRows(visible.map((item) => ({
           slug: item.root.slug,
           score: item.score,
-          reasons: item.reasons.join(","),
-          path: item.root.base_path,
+          reasons: compactText(item.reasons.join(","), 60),
+          path: compactText(item.root.base_path, 100),
         })), ["slug", "score", "reasons", "path"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${matches.length} root match(es). Use --limit <n> or --json for full records.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2249,33 +2388,51 @@ function registerRecipesCommand(program: Command): void {
 
   cmd
     .command("list")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show descriptions and recipe step counts")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const recipes = listRecipes();
       if (wantsRenderSpec(opts)) { printRenderSpec(buildRecipesRender(recipes)); return; }
       if (wantsJson(opts)) { printObject(recipes, opts); return; }
-      printRows(recipes.map((recipe) => ({
+      const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+      const visible = recipes.slice(0, limit);
+      printRows(visible.map((recipe) => ({
         slug: recipe.slug,
         kind: recipe.kind ?? "",
         version: recipe.version,
-        tags: recipe.default_tags.join(","),
-      })), ["slug", "kind", "version", "tags"]);
+        tags: compactText(recipe.default_tags.join(","), opts.verbose ? 120 : 40),
+        ...(opts.verbose ? {
+          steps: recipe.steps.length,
+          description: compactText(recipe.description, 80),
+        } : {}),
+      })), opts.verbose ? ["slug", "kind", "version", "tags", "steps", "description"] : ["slug", "kind", "version", "tags"]);
+      printDiscoveryHint(`Showing ${visible.length} of ${recipes.length} recipe(s). Use --limit <n>, --verbose, or --json for full records.`);
     });
 
   cmd
     .command("built-ins")
     .description("List built-in project recipes")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show descriptions and recipe step counts")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const recipes = builtInWorkspaceRecipes();
       if (wantsJson(opts)) { printObject(recipes, opts); return; }
-      printRows(recipes.map((recipe) => ({
+      const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+      const visible = recipes.slice(0, limit);
+      printRows(visible.map((recipe) => ({
         slug: recipe.slug ?? "",
         kind: recipe.kind ?? "",
-        tags: recipe.default_tags?.join(",") ?? "",
+        tags: compactText(recipe.default_tags?.join(",") ?? "", opts.verbose ? 120 : 40),
         name: recipe.name,
-      })), ["slug", "kind", "tags", "name"]);
+        ...(opts.verbose ? {
+          steps: recipe.steps?.length ?? 0,
+          description: compactText(recipe.description, 80),
+        } : {}),
+      })), opts.verbose ? ["slug", "kind", "tags", "name", "steps", "description"] : ["slug", "kind", "tags", "name"]);
+      printDiscoveryHint(`Showing ${visible.length} of ${recipes.length} built-in recipe(s). Use --limit <n>, --verbose, or --json for full definitions.`);
     });
 
   cmd
@@ -2329,30 +2486,42 @@ function registerAgentsCommand(program: Command): void {
   cmd
     .command("list")
     .option("--project <id-or-slug>", "List agents assigned to a project")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show assignment timestamps and permission summaries")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       if (opts.project) {
         const project = resolveProjectTarget(opts.project);
         const assignments = listWorkspaceAgents(project.id);
         if (wantsJson(opts)) { printObject(assignments, opts); return; }
-        printRows(assignments.map((assignment) => ({
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        const visible = assignments.slice(0, limit);
+        printRows(visible.map((assignment) => ({
           agent: assignment.agent?.slug ?? assignment.agent_id,
           role: assignment.role,
           kind: assignment.agent?.kind ?? "",
-          assigned_by: assignment.assigned_by ?? "",
-          created_at: assignment.created_at,
-        })), ["agent", "role", "kind", "assigned_by", "created_at"]);
+          ...(opts.verbose ? {
+            assigned_by: assignment.assigned_by ?? "",
+            created_at: assignment.created_at,
+            permissions: compactText(assignment.agent?.permissions.join(",") ?? "", 80),
+          } : {}),
+        })), opts.verbose ? ["agent", "role", "kind", "assigned_by", "created_at", "permissions"] : ["agent", "role", "kind"]);
+        printDiscoveryHint(`Showing ${visible.length} of ${assignments.length} assignment(s). Use --limit <n>, --verbose, or --json for full records.`);
         return;
       }
       const agents = listAgents();
       if (wantsJson(opts)) { printObject(agents, opts); return; }
-      printRows(agents.map((agent) => ({
+      const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+      const visible = agents.slice(0, limit);
+      printRows(visible.map((agent) => ({
         slug: agent.slug,
         kind: agent.kind,
         provider: agent.provider ?? "",
         model: agent.model ?? "",
         role: agent.role ?? "",
-      })), ["slug", "kind", "provider", "model", "role"]);
+        ...(opts.verbose ? { permissions: compactText(agent.permissions.join(","), 80) } : {}),
+      })), opts.verbose ? ["slug", "kind", "provider", "model", "role", "permissions"] : ["slug", "kind", "provider", "model", "role"]);
+      printDiscoveryHint(`Showing ${visible.length} of ${agents.length} agent(s). Use --limit <n>, --verbose, or --json for full records.`);
     });
 
   cmd
@@ -2458,15 +2627,24 @@ function registerTmuxProfilesCommand(program: Command): void {
 
   cmd
     .command("list")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("--verbose", "Show description and window count")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const profiles = listTmuxProfiles();
       if (wantsJson(opts)) { printObject(profiles, opts); return; }
-      printRows(profiles.map((profile) => ({
+      const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+      const visible = profiles.slice(0, limit);
+      printRows(visible.map((profile) => ({
         slug: profile.slug,
-        session: profile.session_template,
+        session: compactText(profile.session_template, 80),
         attach: profile.attach ? "yes" : "no",
-      })), ["slug", "session", "attach"]);
+        ...(opts.verbose ? {
+          windows: listTmuxProfileWindows(profile.id).length,
+          description: compactText(profile.description, 80),
+        } : {}),
+      })), opts.verbose ? ["slug", "session", "attach", "windows", "description"] : ["slug", "session", "attach"]);
+      printDiscoveryHint(`Showing ${visible.length} of ${profiles.length} tmux profile(s). Use --limit <n>, --verbose, --json, or 'projects tmux-profiles show <slug>' for details.`);
     });
 
   cmd

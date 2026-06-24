@@ -490,9 +490,10 @@ const EVAL_CASES: EvalCase[] = [
     checks: (_fixtures, run) => {
       const call = firstToolCall(run, "projects_list");
       const output = call?.output;
+      const projects = nested(output, ["projects"]);
       return [
         checkTool(run, "projects_list"),
-        check("has-results", Array.isArray(output) && output.length > 0, "Project query should return matching metadata/tag rows"),
+        check("has-results", Array.isArray(projects) && projects.length > 0, "Project query should return matching metadata/tag rows"),
       ];
     },
   },
@@ -504,7 +505,7 @@ const EVAL_CASES: EvalCase[] = [
       const call = firstToolCall(run, "projects_show");
       return [
         checkTool(run, "projects_show"),
-        check("slug", nested(call, ["output", "slug"]) === fixtures.metadataWorkspaceSlug, "Project show should return requested project"),
+        check("slug", nested(call, ["output", "project", "slug"]) === fixtures.metadataWorkspaceSlug, "Project show should return requested project"),
       ];
     },
   },
@@ -515,9 +516,10 @@ const EVAL_CASES: EvalCase[] = [
     checks: (_fixtures, run) => {
       const call = firstToolCall(run, "projects_events_list");
       const output = call?.output;
+      const events = nested(output, ["events"]);
       return [
         checkTool(run, "projects_events_list"),
-        check("has-events", Array.isArray(output) && output.length > 0, "Events list should return creation event"),
+        check("has-events", Array.isArray(events) && events.length > 0, "Events list should return creation event"),
       ];
     },
   },

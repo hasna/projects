@@ -726,6 +726,7 @@ export interface WorkspaceFilter {
   root_id?: string;
   query?: string;
   tags?: string[];
+  exclude_eval_artifacts?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -743,17 +744,31 @@ export function listWorkspaces(filter: WorkspaceFilter = {}, db?: Database): Wor
     conditions.push("(lower(name) LIKE ? OR lower(slug) LIKE ? OR lower(COALESCE(description, '')) LIKE ? OR lower(COALESCE(primary_path, '')) LIKE ? OR lower(COALESCE(tags, '')) LIKE ? OR lower(COALESCE(integrations, '')) LIKE ? OR lower(COALESCE(metadata, '')) LIKE ?)");
     params.push(q, q, q, q, q, q, q);
   }
+  if (filter.tags && filter.tags.length > 0) {
+    for (const tag of filter.tags) {
+      conditions.push("EXISTS (SELECT 1 FROM json_each(workspaces.tags) WHERE json_each.value = ?)");
+      params.push(tag);
+    }
+  }
+  if (filter.exclude_eval_artifacts) {
+    conditions.push(`NOT (
+      slug LIKE 'eval-%'
+      OR name LIKE 'Eval %'
+      OR EXISTS (
+        SELECT 1 FROM json_each(workspaces.tags)
+        WHERE json_each.value = 'eval' OR json_each.value LIKE 'eval-%'
+      )
+      OR COALESCE(json_extract(metadata, '$.eval_fixture'), 0) = 1
+      OR COALESCE(json_extract(metadata, '$.agent_eval_fixture'), 0) = 1
+    )`);
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const rows = d
     .query(`SELECT * FROM workspaces ${where} ORDER BY name ASC LIMIT ? OFFSET ?`)
     .all(...params, filter.limit ?? 100, filter.offset ?? 0) as WorkspaceRow[];
 
-  let workspaces = rows.map(rowToWorkspace);
-  if (filter.tags && filter.tags.length > 0) {
-    workspaces = workspaces.filter((workspace) => filter.tags!.every((tag) => workspace.tags.includes(tag)));
-  }
-  return workspaces;
+  return rows.map(rowToWorkspace);
 }
 
 export function resolveWorkspace(idOrSlug: string, db?: Database): Workspace | null {
