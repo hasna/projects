@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
-import { buildProjectListRender, projectsJsonRenderCatalog, validateProjectsRenderSpec } from "./project-render.js";
+import { buildProjectListRender, buildProjectStatusRender, projectsJsonRenderCatalog, validateProjectsRenderSpec } from "./project-render.js";
 
 function makeDb(): Database {
   const db = new Database(":memory:");
@@ -54,6 +54,29 @@ describe("Projects JSON Render specs", () => {
     };
 
     expect(() => validateProjectsRenderSpec(invalid)).toThrow("Invalid props");
+  });
+
+  test("quotes dynamic command arguments in render actions", () => {
+    const db = makeDb();
+    const project = createWorkspace({
+      name: "Odd Project",
+      slug: "odd-project",
+      kind: "project",
+      primary_path: "/tmp/odd-project",
+    }, db);
+    const spec = validateProjectsRenderSpec(buildProjectStatusRender({
+      project: { ...project, slug: "odd project's" },
+      sessionName: "odd session",
+      exists: false,
+      tmuxAvailable: true,
+      expectedWindows: [],
+      currentWindows: [],
+      errors: [],
+    }));
+    const actions = spec.elements.actions?.props.actions as Array<{ command: string }>;
+
+    expect(actions[0]?.command).toBe("projects start 'odd project'\\''s'");
+    db.close();
   });
 
 });

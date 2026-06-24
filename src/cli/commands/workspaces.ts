@@ -1220,6 +1220,7 @@ function registerProjectCommands(program: Command): void {
     .option("--clone", "Clone repositories while importing", true)
     .option("--no-clone", "Register repositories without cloning")
     .option("--dry-run", "Preview imports without cloning or writing")
+    .option("--allow-partial", "Exit successfully even if some repositories fail")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("--remote-protocol <protocol>", "Git remote protocol: https or ssh")
     .option("-j, --json", "Output JSON")
@@ -1238,11 +1239,16 @@ function registerProjectCommands(program: Command): void {
           source: "cli",
           command: process.argv.join(" "),
         });
-        if (wantsJson(opts)) { printObject(result, opts); return; }
+        if (wantsJson(opts)) {
+          printObject(result, opts);
+          if (result.errors.length && !opts.allowPartial) process.exitCode = 1;
+          return;
+        }
         console.log(chalk.green(`✓ Synced ${result.imported.length} GitHub project(s)`));
         if (result.planned.length) console.log(chalk.dim(`  planned: ${result.planned.length}`));
         if (result.skipped.length) console.log(chalk.dim(`  skipped: ${result.skipped.length}`));
         if (result.errors.length) console.log(chalk.yellow(`  errors: ${result.errors.length}`));
+        if (result.errors.length && !opts.allowPartial) process.exitCode = 1;
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);

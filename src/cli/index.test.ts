@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireWorkspaceLock, createRoot } from "../db/workspaces.js";
+import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
 
@@ -55,11 +58,17 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
     expect(stdout).not.toContain("workspace>");
+
+    const zsh = runProjects(["completion", "--shell", "zsh"]);
+    const zshStdout = text(zsh.stdout);
+    expect(zsh.exitCode).toBe(0);
+    expect(zshStdout).toContain("'scan-roots:Dry-run import plans for configured GitHub roots'");
+    expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
   });
 
   test("top-level create, list, and show use project-first JSON", () => {
@@ -960,6 +969,48 @@ describe("project-first CLI surface", () => {
     const sync = runProjects(["sync-roots", "--json"], env);
     expect(sync.exitCode).toBe(0);
     expect((JSON.parse(text(sync.stdout)) as { dry_run: boolean }).dry_run).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("sync-roots exits nonzero on partial failures unless explicitly allowed", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-sync-roots-partial-"));
+    const dbPath = join(root, "projects.db");
+    const rootPath = join(root, "github-root");
+    const fakeBin = join(root, "bin");
+    mkdirSync(rootPath);
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, "gh"), "#!/usr/bin/env bash\nif [[ \"$1 $2 $3\" == \"repo list hasnaxyz\" ]]; then echo project-locked; exit 0; fi\nexit 1\n");
+    chmodSync(join(fakeBin, "gh"), 0o755);
+
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+    createRoot({
+      name: "GitHub Root",
+      slug: "github-root",
+      base_path: rootPath,
+      default_kind: "project",
+      github_org: "hasnaxyz",
+      path_template: "{slug}",
+    }, db);
+    acquireWorkspaceLock({
+      lock_key: "workspace-slug:project-locked",
+      reason: "test partial failure",
+      ttl_seconds: 600,
+    }, db);
+    db.close();
+
+    const env = {
+      HASNA_PROJECTS_DB_PATH: dbPath,
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+    };
+    const failed = runProjects(["sync-roots", "--root", "github-root", "--repo-prefix", "project-", "--no-clone", "--json"], env);
+    expect(failed.exitCode).toBe(1);
+    expect((JSON.parse(text(failed.stdout)) as { errors: unknown[] }).errors).toHaveLength(1);
+
+    const allowed = runProjects(["sync-roots", "--root", "github-root", "--repo-prefix", "project-", "--no-clone", "--allow-partial", "--json"], env);
+    expect(allowed.exitCode).toBe(0);
+    expect((JSON.parse(text(allowed.stdout)) as { errors: unknown[] }).errors).toHaveLength(1);
     rmSync(root, { recursive: true, force: true });
   });
 

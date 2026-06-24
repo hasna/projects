@@ -6,7 +6,7 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
   local location_commands="add list"
   local event_commands="list record"
   local root_commands="add list show update delete match"
@@ -82,6 +82,8 @@ _project() {
     'cleanup-evals:Preview or remove prompt-agent eval fixture records'
     'import:Import an existing folder as a project'
     'import-github:Import a GitHub repository as a project'
+    'scan-roots:Dry-run import plans for configured GitHub roots'
+    'sync-roots:Import repositories from configured GitHub roots'
     'list:List registered projects'
     'show:Show project details'
     'events:Inspect and record project audit events'

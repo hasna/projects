@@ -152,6 +152,16 @@ interface RenderSection {
   items: unknown[];
 }
 
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_/:=@%+.,-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function renderCommand(command: string, args: string[] = []): string {
+  return [command, ...args.map(shellArg)].join(" ");
+}
+
 function renderElement(type: ProjectsRenderComponent, props: Record<string, unknown>, children: string[] = []): ProjectsRenderElement {
   return { type, props, children };
 }
@@ -304,9 +314,9 @@ export function buildProjectStartRender(args: {
       { title: "coding_session_rename", items: args.renameReport },
     ],
     [
-      { label: "attach tmux", command: `tmux attach -t ${args.tmux.session_name}` },
-      { label: "status", command: `projects status ${args.project.slug}` },
-      { label: "rename report", command: `projects sessions ${args.project.slug}` },
+      { label: "attach tmux", command: renderCommand("tmux", ["attach", "-t", args.tmux.session_name]) },
+      { label: "status", command: renderCommand("projects", ["status", args.project.slug]) },
+      { label: "rename report", command: renderCommand("projects", ["sessions", args.project.slug]) },
     ],
   );
 }
@@ -350,7 +360,7 @@ export function buildProjectStatusRender(args: {
         })),
       },
     ],
-    [{ label: "start", command: `projects start ${args.project.slug}` }],
+    [{ label: "start", command: renderCommand("projects", ["start", args.project.slug]) }],
   );
 }
 
@@ -462,8 +472,8 @@ export function buildProjectDetailPayload(args: {
         },
       ],
       [
-        { label: "start", command: `projects start ${args.project.slug}` },
-        { label: "status", command: `projects status ${args.project.slug}` },
+        { label: "start", command: renderCommand("projects", ["start", args.project.slug]) },
+        { label: "status", command: renderCommand("projects", ["status", args.project.slug]) },
       ],
     ),
   };
@@ -568,7 +578,7 @@ export function buildProjectSessionsPayload(args: {
           })),
         },
       ],
-      [{ label: "start", command: `projects start ${args.project.slug}` }],
+      [{ label: "start", command: renderCommand("projects", ["start", args.project.slug]) }],
     ),
   };
 }
