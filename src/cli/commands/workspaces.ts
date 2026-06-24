@@ -75,7 +75,7 @@ import {
   type ProjectStartResult,
 } from "../../lib/project-start.js";
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
-import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
+import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -929,7 +929,12 @@ function registerProjectStartCommand(program: Command): void {
             summary: summarizeProjectStarts(started, failed),
           };
           if (wantsRenderSpec(opts)) {
-            printRenderSpec(buildProjectListRender(started.map((item) => item.project)));
+            printRenderSpec(buildProjectStartBulkRender({
+              dryRun: result.dry_run,
+              started: result.started,
+              failed: result.failed,
+              summary: result.summary as unknown as Record<string, unknown>,
+            }));
             if (result.summary.failed > 0) process.exitCode = 1;
             return;
           }

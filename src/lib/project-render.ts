@@ -393,6 +393,52 @@ export function buildProjectListRender(projects: Workspace[]): JsonObject {
   );
 }
 
+export function buildProjectStartBulkRender(args: {
+  dryRun: boolean;
+  started: Array<{ project: Workspace; tmux?: { success?: boolean; session_name?: string; session_action?: string } }>;
+  failed: Array<{ target: string; error: string }>;
+  summary: Record<string, unknown>;
+}): JsonObject {
+  const failedCount = typeof args.summary.failed === "number" ? args.summary.failed : args.failed.length;
+  return renderBlock(
+    "projects.start_bulk",
+    "Bulk Start Projects",
+    failedCount > 0 ? "error" : "ok",
+    `${args.started.length} started, ${args.failed.length} failed`,
+    [
+      { label: "dry_run", value: args.dryRun },
+      { label: "total", value: args.summary.total ?? args.started.length + args.failed.length },
+      { label: "succeeded", value: args.summary.succeeded ?? args.started.length },
+      { label: "failed", value: failedCount },
+    ],
+    [
+      { title: "summary", items: [args.summary] },
+      {
+        title: "started",
+        items: args.started.map((item) => ({
+          slug: item.project.slug,
+          name: item.project.name,
+          status: item.project.status,
+          session: item.tmux?.session_name ?? null,
+          session_action: item.tmux?.session_action ?? null,
+          tmux_success: item.tmux?.success ?? null,
+        })),
+      },
+      {
+        title: "failures",
+        items: args.failed.map((failure) => ({
+          target: failure.target,
+          error: failure.error,
+        })),
+      },
+    ],
+    [
+      { label: "list", command: "projects list" },
+      { label: "sessions", command: "projects sessions" },
+    ],
+  );
+}
+
 export function buildRootsRender(roots: Array<{ slug: string; name: string; base_path: string; default_kind: string | null; github_org: string | null; tags: string[] }>): JsonObject {
   return renderBlock(
     "projects.roots",

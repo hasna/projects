@@ -299,6 +299,7 @@ export {
   buildProjectDetailPayload,
   buildProjectSessionsPayload,
   buildProjectStartRender,
+  buildProjectStartBulkRender,
   buildProjectStatusRender,
   buildRootsRender,
   buildRecipesRender,

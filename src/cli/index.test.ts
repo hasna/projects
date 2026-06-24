@@ -925,9 +925,19 @@ describe("project-first CLI surface", () => {
 
     const started = runProjects(["start", "--bulk", "missing-one", "missing-two", "--dry-run", "--render-spec"], env);
     expect(started.exitCode).toBe(1);
-    const payload = JSON.parse(text(started.stdout)) as { root?: string; elements?: Record<string, unknown>; metadata?: { kind?: string } };
+    const payload = JSON.parse(text(started.stdout)) as {
+      root?: string;
+      elements?: Record<string, { type?: string; props?: { title?: string; rows?: Array<Record<string, unknown>> } }>;
+      metadata?: { kind?: string };
+    };
     expect(payload.root).toBe("root");
-    expect(payload.metadata?.kind).toBe("projects.list");
+    expect(payload.metadata?.kind).toBe("projects.start_bulk");
+    const tables = Object.values(payload.elements ?? {}).filter((element) => element.type === "Table");
+    const summary = tables.find((element) => element.props?.title === "summary")?.props?.rows?.[0] as { failed?: number } | undefined;
+    const failures = tables.find((element) => element.props?.title === "failures")?.props?.rows ?? [];
+    expect(summary?.failed).toBe(2);
+    expect(failures).toHaveLength(2);
+    expect(failures.map((failure) => failure.target).sort()).toEqual(["missing-one", "missing-two"]);
     rmSync(root, { recursive: true, force: true });
   });
 
