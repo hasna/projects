@@ -1,7 +1,29 @@
 import { execSync } from "node:child_process";
 
-function run(cmd: string): string {
+type TmuxCommandRunner = (cmd: string) => string;
+
+function defaultRunner(cmd: string): string {
   return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
+}
+
+let commandRunner: TmuxCommandRunner = defaultRunner;
+
+export function withTmuxCommandRunnerForTest<T>(runner: TmuxCommandRunner, fn: () => T): T {
+  const previous = commandRunner;
+  commandRunner = runner;
+  try {
+    return fn();
+  } finally {
+    commandRunner = previous;
+  }
+}
+
+function run(cmd: string): string {
+  return commandRunner(cmd).trim();
+}
+
+function cdCommand(path: string): string {
+  return `cd -- ${shellEscape(path)}`;
 }
 
 function findWindowId(session: string, windowName: string): string {
@@ -194,7 +216,7 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(projectPath)}" Enter`);
+    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 
@@ -285,7 +307,7 @@ export function restartSession(name: string, projectPath?: string, windowName?: 
 
   if (projectPath) {
     const winId = findWindowId(name, win);
-    run(`tmux send-keys -t ${shellEscape(winId)} "cd ${shellEscape(projectPath)}" Enter`);
+    run(`tmux send-keys -t ${shellEscape(winId)} ${shellEscape(cdCommand(projectPath))} Enter`);
   }
 }
 

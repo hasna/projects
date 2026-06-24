@@ -586,7 +586,7 @@ describe("project agent CLI", () => {
     expect(githubImport.exitCode).toBe(0);
     const importPayload = JSON.parse(text(githubImport.stdout)) as { path: string; commands: string[] };
     expect(importPayload.path).toBe(join(rootPath, "open-example"));
-    expect(importPayload.commands[0]).toContain("gh repo clone hasna/example");
+    expect(importPayload.commands[0]).toContain("gh repo clone https://github.com/hasna/example.git");
 
     const link = runProjects([
       "link",

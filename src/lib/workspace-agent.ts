@@ -43,6 +43,7 @@ import {
 import { applyWorkspaceTmux, applyWorkspaceTmuxProfile, workspaceMarkerPath, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import {
   importWorkspaceFromGitHub,
+  syncWorkspaceGitHubRoots,
   linkWorkspaceExternalIntegrations,
   normalizeWorkspaceIntegrations,
   publishWorkspaceToGitHub,
@@ -350,7 +351,7 @@ export function buildProjectAgentToolCatalog(): JsonObject {
     mutating_tools: [...PROJECT_AGENT_MUTATION_TOOLS],
     destructive_tools: [...PROJECT_AGENT_DESTRUCTIVE_TOOLS],
     launch_tools: ["projects_start", "projects_tmux_status", "projects_tmux_profiles_list", "projects_tmux_profiles_apply"],
-    creation_tools: ["projects_plan_create", "projects_create", "projects_import", "projects_import_github", "projects_scan_roots"],
+    creation_tools: ["projects_plan_create", "projects_create", "projects_import", "projects_import_github", "projects_scan_roots", "projects_sync_roots", "projects_scan_local_roots"],
     management_tools: ["projects_update", "projects_tag", "projects_untag", "projects_archive", "projects_unarchive", "projects_delete", "projects_link", "projects_unlink", "projects_agents_assign", "projects_event_record"],
     boundaries: {
       projects: "identity, metadata, paths, lifecycle, integrations, launch state, agents, and audit events",
@@ -392,10 +393,10 @@ export function buildWorkspaceAgentSystemPrompt(input: {
     "Only mutating tools are allowed to make changes, and those tools will refuse to mutate unless the CLI was run with --yes.",
     "For every requested mutation, call the corresponding mutating tool even in dry-run mode so it returns a structured planned action. Do not only describe a change after inspection.",
     "Use projects_roots_add for registering a new root/path, projects_locations_add for registering additional folders for an existing project, projects_recipes_add for new creation recipes, projects_agents_add for recording human/AI/service/CLI agents, projects_agents_assign for assigning project owner/maintainer/contributor/service/prompt-agent roles, and projects_tmux_profiles_add for saved tmux layouts.",
-    "Use projects_plan_create for explicit no-write planning, projects_update for requested metadata changes, projects_tag/projects_untag for additive tag changes, projects_archive/projects_unarchive for status changes, projects_delete for lifecycle deletion, projects_cleanup_create for cleaning up a partial or unwanted creation run, projects_import for one-folder import requests, projects_scan_roots for broad registered-root scans/imports, projects_import_github for GitHub repository imports, projects_github_publish/projects_github_unpublish for GitHub publication state, projects_link/projects_unlink for external IDs, projects_doctor for checks, projects_event_record for custom audit events, projects_tmux_status for launch/runtime inspection, projects_start for open/start/resume requests, and projects_create for new projects.",
+    "Use projects_plan_create for explicit no-write planning, projects_update for requested metadata changes, projects_tag/projects_untag for additive tag changes, projects_archive/projects_unarchive for status changes, projects_delete for lifecycle deletion, projects_cleanup_create for cleaning up a partial or unwanted creation run, projects_import for one-folder import requests, projects_scan_roots/projects_sync_roots for configured GitHub root repository scans/imports, projects_scan_local_roots for local child-folder scans/imports, projects_import_github for GitHub repository imports, projects_github_publish/projects_github_unpublish for GitHub publication state, projects_link/projects_unlink for external IDs, projects_doctor for checks, projects_event_record for custom audit events, projects_tmux_status for launch/runtime inspection, projects_start for open/start/resume requests, and projects_create for new projects.",
     "For projects_import_github, set remote_only=true only when the user explicitly wants a remote-only record and did not provide a root, path, or clone request. A root/path/clone request means local project registration.",
     "When a user asks to inspect running project sessions or tmux state, call projects_tmux_status.",
-    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, can launch codewith, claude, opencode, cursor, or no tool, and can use windows to request the exact tmux window names to create.",
+    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, ensures default 01 and 02 windows, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, can launch codewith, claude, opencode, cursor, or no tool, and can use windows to request the exact tmux window names to create.",
     "When a user asks for tmux or mentions a saved tmux profile, call projects_tmux_profiles_list before projects_create or projects_tmux_profiles_apply. The tools reject saved profile usage until profiles have been inspected.",
     "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in projects_create, even if the user mentions tmux.",
     "When creating a local project directory, write a .project.json marker unless the user explicitly asks not to. The marker name is a current storage detail.",
@@ -1613,7 +1614,53 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_scan_roots: tool({
-      description: "Scan all registered roots and preview/import direct child folders as projects. Mutates only when approved.",
+      description: "Dry-run import plans for repositories in configured GitHub roots.",
+      inputSchema: z.object({
+        root: z.string().optional(),
+        repo_prefix: z.string().optional(),
+        limit: z.number().int().positive().max(500).optional(),
+        clone: z.boolean().optional(),
+        tags: z.array(z.string()).optional(),
+        remote_protocol: z.enum(["https", "ssh"]).optional(),
+      }),
+      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol,
+        dryRun: true,
+        agent_id: actorAgent.id,
+        source: "agent",
+        command: "projects_scan_roots",
+      })),
+    }),
+    projects_sync_roots: tool({
+      description: "Import and optionally clone repositories from configured GitHub roots. Mutates only when approved.",
+      inputSchema: z.object({
+        root: z.string().optional(),
+        repo_prefix: z.string().optional(),
+        limit: z.number().int().positive().max(500).optional(),
+        clone: z.boolean().optional(),
+        tags: z.array(z.string()).optional(),
+        remote_protocol: z.enum(["https", "ssh"]).optional(),
+      }),
+      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots({
+        root: input.root,
+        repoPrefix: input.repo_prefix,
+        limit: input.limit,
+        clone: input.clone,
+        tags: input.tags,
+        remoteProtocol: input.remote_protocol,
+        dryRun: !approve,
+        agent_id: actorAgent.id,
+        source: "agent",
+        command: "projects_sync_roots",
+      })),
+    }),
+    projects_scan_local_roots: tool({
+      description: "Scan all registered local roots and preview/import direct child folders as projects. Mutates only when approved.",
       inputSchema: z.object({
         tags: z.array(z.string()).optional(),
       }),
@@ -1975,7 +2022,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_start: tool({
-      description: "Start, open, resume, or launch a project in tmux and optionally run codewith, claude, opencode, cursor, or no tool. Provide windows to request the exact tmux window set.",
+      description: "Start, open, resume, or launch a project in tmux, ensuring default 01/02 windows, and optionally run codewith, claude, opencode, cursor, or no tool. Provide windows to request the exact tmux window set.",
       inputSchema: z.object({
         target: z.string().optional().describe("Project id, slug, exact name, or path. Omit for current directory."),
         agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
@@ -2013,7 +2060,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_tmux_status: tool({
-      description: "Inspect the expected and current tmux session/window status for a project. Read-only.",
+      description: "Inspect the expected and current tmux session/window status for a project, including default 01/02 windows unless exact windows are provided. Read-only.",
       inputSchema: z.object({
         target: z.string().optional().describe("Project id, slug, exact name, or path. Omit for current directory."),
         profile: z.string().optional().describe("Saved tmux profile id or slug used to compute expected windows"),

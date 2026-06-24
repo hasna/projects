@@ -55,6 +55,7 @@ import { doctorWorkspace } from "../../lib/workspace-doctor.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
+  syncWorkspaceGitHubRoots,
   linkWorkspaceExternalIntegrations,
   publishWorkspaceToGitHub,
   unpublishWorkspaceFromGitHub,
@@ -74,6 +75,7 @@ import {
   type ProjectStartResult,
 } from "../../lib/project-start.js";
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
+import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -101,6 +103,10 @@ import {
 } from "../../lib/project-management.js";
 import { PROJECT_AGENT_ROLES, WORKSPACE_KINDS, WORKSPACE_STATUSES, type AgentKind, type JsonObject, type Workspace, type WorkspaceIntegrations, type WorkspaceKind, type WorkspaceLock, type WorkspaceStatus } from "../../types/workspace.js";
 
+function wantsRenderSpec(opts?: { renderSpec?: boolean }): boolean {
+  return Boolean(opts?.renderSpec || process.argv.includes("--render-spec"));
+}
+
 function wantsJson(opts?: { json?: boolean }): boolean {
   return Boolean(opts?.json || process.env["PROJECTS_JSON"] || process.env["WORKSPACES_JSON"] || process.argv.includes("--json") || process.argv.includes("-j"));
 }
@@ -117,6 +123,15 @@ function printObject(value: unknown, opts?: { json?: boolean }): void {
   if (wantsJson(opts)) {
     console.log(JSON.stringify(value, null, 2));
   }
+}
+
+function printRenderSpec(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
+function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "render" | "schema_version" | "kind"> {
+  const { render: _render, schema_version: _schemaVersion, kind: _kind, ...rest } = value;
+  return rest;
 }
 
 function projectPayload(value: unknown): unknown {
@@ -408,15 +423,53 @@ function summarizeProjectStarts(started: ProjectStartResult[], failed: ProjectSt
   };
 }
 
-function printProjectStartResult(result: ProjectStartResult): void {
+function compactWindowSummary(result: ProjectStartResult): string {
+  const names = result.tmux.windows
+    .map((window) => {
+      const parts = window.target.split(":");
+      const name = parts.length > 1 ? parts.slice(1).join(":") : window.target;
+      return `${name} ${window.status}`;
+    })
+    .join(", ");
+  return names || "none";
+}
+
+function pendingRenameReports(result: ProjectStartResult): ProjectStartResult["rename_report"] {
+  return result.rename_report.filter((report) => report.status === "manual" || report.status === "unsupported");
+}
+
+function printRenameReports(result: ProjectStartResult): void {
+  for (const report of result.rename_report) {
+    const status = report.status === "configured"
+      ? chalk.green(report.status)
+      : report.status === "skipped"
+        ? chalk.dim(report.status)
+        : chalk.yellow(report.status);
+    console.log(`  ${chalk.dim("rename:")} ${report.agent_tool} ${status} -> ${report.desired_name}`);
+    console.log(`    ${chalk.dim(report.message)}`);
+    if (report.manual_instruction) console.log(`    ${chalk.dim(report.manual_instruction)}`);
+  }
+}
+
+function printProjectStartResult(result: ProjectStartResult, opts: { verbose?: boolean; renameReport?: boolean } = {}): void {
   const prefix = result.tmux.dry_run ? "[dry-run] " : "";
   console.log(`${chalk.green(`${prefix}Project started:`)} ${result.project.slug}`);
   if (result.project.primary_path) console.log(`  ${chalk.dim("path:")} ${result.project.primary_path}`);
   console.log(`  ${chalk.dim("session:")} ${result.tmux.session_name} (${result.tmux.session_action})`);
   console.log(`  ${chalk.dim("session policy:")} ${result.session_policy}`);
   console.log(`  ${chalk.dim("agent:")} ${result.agent_tool}${result.tool_command ? ` -> ${result.tool_command}` : ""}`);
-  for (const window of result.tmux.windows) {
-    console.log(`  ${chalk.dim("window:")} ${window.status} ${window.target}${window.message ? chalk.dim(` - ${window.message}`) : ""}`);
+  console.log(`  ${chalk.dim("windows:")} ${compactWindowSummary(result)}`);
+  const pendingRename = pendingRenameReports(result);
+  if (pendingRename.length) {
+    console.log(`  ${chalk.dim("rename:")} ${pendingRename.length} pending; use --rename-report or projects sessions ${result.project.slug}`);
+  }
+  if (opts.verbose) {
+    for (const window of result.tmux.windows) {
+      console.log(`  ${chalk.dim("window:")} ${window.status} ${window.target}${window.message ? chalk.dim(` - ${window.message}`) : ""}`);
+    }
+  }
+  if (opts.renameReport || opts.verbose) {
+    printRenameReports(result);
   }
   if (result.resolution.source === "imported") {
     console.log(chalk.dim("  registered project from path before starting"));
@@ -541,6 +594,7 @@ function cleanupTargetFromWorkspace(workspace: Workspace): WorkspaceCreationClea
 export function registerWorkspaceCommands(program: Command): void {
   registerProjectStartCommand(program);
   registerProjectStatusCommand(program);
+  registerProjectSessionsCommand(program);
   registerProjectCommands(program);
   registerBudgetCommands(program);
   registerLocationsCommand(program);
@@ -705,9 +759,10 @@ function registerProjectStatusCommand(program: Command): void {
     .option("--session <name>", "Expected tmux session name")
     .option("--agent <tool>", "Expected start tool: codewith, claude, opencode, cursor, or none")
     .option("--command <command>", "Expected command for the primary window")
-    .option("--window-name <name>", "Expected primary window name")
+    .option("--window-name <name>", "Expected primary window name; defaults to 01")
     .option("--window <name:command>", "Expected additional tmux window; repeatable", collectOption, [])
     .option("--windows-json <json>", "Exact expected tmux windows JSON array")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (target, opts) => {
       try {
@@ -721,6 +776,7 @@ function registerProjectStatusCommand(program: Command): void {
           requestedWindows,
           extraWindows: parseStartWindows(opts.window),
         });
+        if (wantsRenderSpec(opts)) { printRenderSpec(result.render); return; }
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(`${chalk.bold(result.project.name)} ${chalk.dim(`(${result.project.slug})`)}`);
         console.log(`  ${chalk.dim("expected session:")} ${result.expected.session_name}`);
@@ -751,6 +807,44 @@ function registerProjectStatusCommand(program: Command): void {
     });
 }
 
+function registerProjectSessionsCommand(program: Command): void {
+  program
+    .command("sessions [target]")
+    .description("Report recent project start sessions and coding-agent rename status")
+    .option("--unrenamed", "Only show sessions with pending/manual rename work")
+    .option("--limit <n>", "Maximum session records to return", "20")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const project = resolveProjectTarget(target);
+        const limit = parsePositiveInteger(opts.limit, "--limit") ?? 20;
+        const payload = buildProjectSessionsPayload({
+          project,
+          events: listWorkspaceEvents(project.id),
+          limit,
+          unrenamedOnly: opts.unrenamed,
+        });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(projectPayload(payload), opts); return; }
+        const sessions = payload.sessions as Array<Record<string, unknown>>;
+        console.log(`${chalk.bold(project.name)} ${chalk.dim(`(${project.slug})`)}`);
+        console.log(`  ${chalk.dim("sessions:")} ${payload.returned}/${payload.total} shown, ${payload.unrenamed_count} pending rename`);
+        if (!sessions.length) {
+          console.log(chalk.dim("  No project start session records found."));
+          return;
+        }
+        for (const session of sessions) {
+          const unrenamed = session.unrenamed ? chalk.yellow("rename pending") : chalk.green("rename ok");
+          console.log(`  ${session.created_at} ${chalk.dim(String(session.session_name ?? ""))} ${session.session_action ?? ""} ${unrenamed}`);
+        }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
 function registerProjectStartCommand(program: Command): void {
   program
     .command("start")
@@ -766,7 +860,7 @@ function registerProjectStartCommand(program: Command): void {
     .option("--reuse", "Reuse an existing tmux session when present")
     .option("--new", "Create a new tmux session if the default session already exists")
     .option("--error-if-running", "Fail if the resolved tmux session already exists")
-    .option("--window-name <name>", "Main tmux window name")
+    .option("--window-name <name>", "Main tmux window name; defaults to 01")
     .option("--window <name:command>", "Additional tmux window; repeatable", collectOption, [])
     .option("--windows-json <json>", "Exact tmux windows JSON array to create for this start")
     .option("--tags <tags>", "Tags to apply when registering an unknown folder")
@@ -776,6 +870,9 @@ function registerProjectStartCommand(program: Command): void {
     .option("--no-attach", "Do not attach to the tmux session after starting")
     .option("--no-register", "Do not import unknown path targets before starting")
     .option("--dry-run", "Preview project resolution and tmux actions without writing")
+    .option("--rename-report", "Show coding-agent session rename details")
+    .option("--verbose", "Show detailed tmux window and rename actions")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (targets, opts) => {
       try {
@@ -831,6 +928,11 @@ function registerProjectStartCommand(program: Command): void {
             failed,
             summary: summarizeProjectStarts(started, failed),
           };
+          if (wantsRenderSpec(opts)) {
+            printRenderSpec(buildProjectListRender(started.map((item) => item.project)));
+            if (result.summary.failed > 0) process.exitCode = 1;
+            return;
+          }
           if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
           printProjectStartBulkResult(result);
           if (result.summary.failed > 0) process.exitCode = 1;
@@ -842,9 +944,10 @@ function registerProjectStartCommand(program: Command): void {
           session: opts.session ?? opts.name,
           attach: opts.attach,
         });
+        if (wantsRenderSpec(opts)) { printRenderSpec(result.render); return; }
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
 
-        printProjectStartResult(result);
+        printProjectStartResult(result, { verbose: opts.verbose, renameReport: opts.renameReport });
         if (!result.tmux.success) process.exitCode = 1;
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
@@ -1049,7 +1152,7 @@ function registerProjectCommands(program: Command): void {
           kind: parseKind(opts.kind),
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
-          dryRun: opts.dryRun,
+          dryRun: Boolean(opts.dryRun),
           agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
           source: "cli",
           command: process.argv.join(" "),
@@ -1072,6 +1175,85 @@ function registerProjectCommands(program: Command): void {
       }
     });
 
+  program
+    .command("scan-roots")
+    .description("Dry-run import plans for repositories in configured GitHub roots")
+    .option("--root <id-or-slug>", "Only scan one configured root")
+    .option("--repo-prefix <prefix>", "Only include repositories with this name prefix")
+    .option("--limit <n>", "Maximum GitHub repositories to list per root", "500")
+    .option("--tags <tags>", "Comma-separated tags to apply")
+    .option("--clone", "Include clone commands in the dry-run plan")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("--remote-protocol <protocol>", "Git remote protocol: https or ssh")
+    .option("-j, --json", "Output JSON")
+    .action(async (opts) => {
+      try {
+        const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
+        const result = await syncWorkspaceGitHubRoots({
+          root: opts.root,
+          repoPrefix: opts.repoPrefix,
+          limit,
+          clone: opts.clone,
+          tags: splitList(opts.tags),
+          remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
+          dryRun: true,
+          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          source: "cli",
+          command: process.argv.join(" "),
+        });
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        console.log(chalk.dim(`[dry-run] Scanned ${result.roots.length} GitHub root(s), ${result.planned.length} repo plan(s)`));
+        if (result.errors.length) console.log(chalk.yellow(`  errors: ${result.errors.length}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("sync-roots")
+    .description("Import and optionally clone repositories from configured GitHub roots")
+    .option("--root <id-or-slug>", "Only sync one configured root")
+    .option("--repo-prefix <prefix>", "Only include repositories with this name prefix")
+    .option("--limit <n>", "Maximum GitHub repositories to list per root", "500")
+    .option("--tags <tags>", "Comma-separated tags to apply")
+    .option("--clone", "Clone repositories while importing", true)
+    .option("--no-clone", "Register repositories without cloning")
+    .option("--dry-run", "Preview imports without cloning or writing")
+    .option("--allow-partial", "Exit successfully even if some repositories fail")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("--remote-protocol <protocol>", "Git remote protocol: https or ssh")
+    .option("-j, --json", "Output JSON")
+    .action(async (opts) => {
+      try {
+        const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
+        const result = await syncWorkspaceGitHubRoots({
+          root: opts.root,
+          repoPrefix: opts.repoPrefix,
+          limit,
+          clone: opts.clone,
+          tags: splitList(opts.tags),
+          remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
+          dryRun: opts.dryRun,
+          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          source: "cli",
+          command: process.argv.join(" "),
+        });
+        if (wantsJson(opts)) {
+          printObject(result, opts);
+          if (result.errors.length && !opts.allowPartial) process.exitCode = 1;
+          return;
+        }
+        console.log(chalk.green(`✓ Synced ${result.imported.length} GitHub project(s)`));
+        if (result.planned.length) console.log(chalk.dim(`  planned: ${result.planned.length}`));
+        if (result.skipped.length) console.log(chalk.dim(`  skipped: ${result.skipped.length}`));
+        if (result.errors.length) console.log(chalk.yellow(`  errors: ${result.errors.length}`));
+        if (result.errors.length && !opts.allowPartial) process.exitCode = 1;
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
   program
     .command("agent-eval")
     .description("Run project prompt-agent eval cases")
@@ -1156,6 +1338,7 @@ function registerProjectCommands(program: Command): void {
     .option("--query <text>", "Search name, slug, description, path, tags, integrations, or metadata")
     .option("--tags <tags>", "Comma-separated tag filter")
     .option("--include-evals", "Include prompt-agent eval fixture projects")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       try {
@@ -1165,6 +1348,7 @@ function registerProjectCommands(program: Command): void {
           query: opts.query,
           tags: splitList(opts.tags),
         }), opts.includeEvals);
+        if (wantsRenderSpec(opts)) { printRenderSpec(buildProjectListRender(projects)); return; }
         if (wantsJson(opts)) { printObject(projects.map(projectWithManagement), opts); return; }
         printRows(projects.map((project) => {
           const management = projectManagementSummary(project);
@@ -1192,7 +1376,9 @@ function registerProjectCommands(program: Command): void {
 
   program
     .command("show <id-or-slug>")
+    .alias("get")
     .description("Show project details")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
       const project = resolveProjectTarget(idOrSlug);
@@ -1200,16 +1386,9 @@ function registerProjectCommands(program: Command): void {
       const agents = listWorkspaceAgents(project.id);
       const locations = listWorkspaceLocations(project.id);
       const events = listWorkspaceEvents(project.id);
-      const payload = {
-        project: projectWithManagement(project),
-        management: projectManagementSummary(project),
-        external_links: projectExternalLinksSummary(project),
-        dashboard,
-        agents,
-        locations,
-        events,
-      };
-      if (wantsJson(opts)) { printObject(payload, opts); return; }
+      const payload = buildProjectDetailPayload({ project, agents, locations, events });
+      if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+      if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
       console.log(`${chalk.bold(project.name)} ${chalk.dim(`(${project.slug})`)} ${chalk.green(`[${project.status}]`)}`);
       console.log(`  ${chalk.dim("id:")}   ${project.id}`);
       console.log(`  ${chalk.dim("kind:")} ${project.kind}`);
@@ -1908,9 +2087,11 @@ function registerRootsCommand(program: Command): void {
 
   cmd
     .command("list")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const roots = listRoots();
+      if (wantsRenderSpec(opts)) { printRenderSpec(buildRootsRender(roots)); return; }
       if (wantsJson(opts)) { printObject(roots, opts); return; }
       printRows(roots.map((root) => ({
         slug: root.slug,
@@ -2063,9 +2244,11 @@ function registerRecipesCommand(program: Command): void {
 
   cmd
     .command("list")
+    .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action((opts) => {
       const recipes = listRecipes();
+      if (wantsRenderSpec(opts)) { printRenderSpec(buildRecipesRender(recipes)); return; }
       if (wantsJson(opts)) { printObject(recipes, opts); return; }
       printRows(recipes.map((recipe) => ({
         slug: recipe.slug,

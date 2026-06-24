@@ -21,6 +21,7 @@ import {
 import { importWorkspace, planWorkspaceImport, type WorkspaceImportPreview } from "./workspace-import.js";
 import { applyWorkspaceTmux, tmuxProfileToSpec, type WorkspaceTmuxResult, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import { attachSession } from "./tmux.js";
+import { buildProjectStartRender, PROJECT_RENDER_SCHEMA_VERSION } from "./project-render.js";
 
 export { PROJECT_START_AGENTS, PROJECT_START_SESSION_POLICIES, type ProjectStartAgent, type ProjectStartSessionPolicy } from "./project-management.js";
 
@@ -52,10 +53,13 @@ export interface ProjectStartOptions {
 }
 
 export interface ProjectStartResult {
+  schema_version: typeof PROJECT_RENDER_SCHEMA_VERSION;
+  kind: "projects.start";
   project: Workspace;
   resolution: ProjectStartResolution;
   agent_tool: ProjectStartAgent;
   tool_command?: string;
+  rename_report: CodingSessionRenameReport[];
   session_policy: ProjectStartSessionPolicy;
   tmux_profile?: Pick<TmuxProfile, "id" | "slug" | "name">;
   launch_defaults: {
@@ -72,6 +76,17 @@ export interface ProjectStartResult {
   };
   tmux: WorkspaceTmuxResult;
   attached: boolean;
+  render: JsonObject;
+}
+
+export interface CodingSessionRenameReport {
+  agent_tool: ProjectStartAgent;
+  desired_name: string;
+  status: "configured" | "manual" | "unsupported" | "skipped";
+  method: string | null;
+  command_changed: boolean;
+  message: string;
+  manual_instruction?: string;
 }
 
 export function parseProjectStartAgent(value: string | undefined): ProjectStartAgent {
@@ -142,6 +157,157 @@ function mergeStartWindows(...groups: Array<Array<WorkspaceTmuxWindowSpec | unde
   return windows;
 }
 
+function projectDisplayName(project: Workspace): string {
+  return project.name.trim() || project.slug;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function commandStartsWith(command: string, executable: string): boolean {
+  return command === executable || command.startsWith(`${executable} `);
+}
+
+function commandHasNameFlag(command: string): boolean {
+  return /(^|\s)(--name(=|\s)|-n(\s|$))/.test(command);
+}
+
+function withClaudeSessionName(command: string, name: string): { command: string; changed: boolean; alreadyNamed: boolean } {
+  const trimmed = command.trim();
+  if (!commandStartsWith(trimmed, "claude")) return { command, changed: false, alreadyNamed: false };
+  if (commandHasNameFlag(trimmed)) return { command, changed: false, alreadyNamed: true };
+  const rest = trimmed.slice("claude".length).trim();
+  return {
+    command: `claude --name ${shellQuote(name)}${rest ? ` ${rest}` : ""}`,
+    changed: true,
+    alreadyNamed: false,
+  };
+}
+
+export function prepareCodingSessionRename(
+  project: Workspace,
+  agentTool: ProjectStartAgent,
+  command: string | undefined,
+): { command: string | undefined; report: CodingSessionRenameReport[] } {
+  const desiredName = projectDisplayName(project);
+  if (!command || agentTool === "none") {
+    return {
+      command,
+      report: [{
+        agent_tool: agentTool,
+        desired_name: desiredName,
+        status: "skipped",
+        method: null,
+        command_changed: false,
+        message: "No coding-agent command is launched for this start.",
+      }],
+    };
+  }
+
+  if (agentTool === "claude") {
+    const named = withClaudeSessionName(command, desiredName);
+    if (named.changed) {
+      return {
+        command: named.command,
+        report: [{
+          agent_tool: agentTool,
+          desired_name: desiredName,
+          status: "configured",
+          method: "claude --name",
+          command_changed: true,
+          message: "Claude supports launch-time display names, so the start command was annotated with --name.",
+        }],
+      };
+    }
+    if (named.alreadyNamed) {
+      return {
+        command,
+        report: [{
+          agent_tool: agentTool,
+          desired_name: desiredName,
+          status: "configured",
+          method: "claude --name",
+          command_changed: false,
+          message: "Claude command already includes a session name flag.",
+        }],
+      };
+    }
+    return {
+      command,
+      report: [{
+        agent_tool: agentTool,
+        desired_name: desiredName,
+        status: "manual",
+        method: null,
+        command_changed: false,
+        message: "The configured Claude command does not start with `claude`, so Open Projects did not rewrite it.",
+        manual_instruction: `Start Claude with --name ${shellQuote(desiredName)} when this wrapper supports it.`,
+      }],
+    };
+  }
+
+  if (agentTool === "codewith") {
+    return {
+      command,
+      report: [{
+        agent_tool: agentTool,
+        desired_name: desiredName,
+        status: "manual",
+        method: null,
+        command_changed: false,
+        message: "No stable Codewith CLI rename option was detected, so Open Projects will not inject text into the pane.",
+        manual_instruction: `Rename the Codewith session to ${desiredName} from the host UI or supported slash command when available.`,
+      }],
+    };
+  }
+
+  return {
+    command,
+    report: [{
+      agent_tool: agentTool,
+      desired_name: desiredName,
+      status: "unsupported",
+      method: null,
+      command_changed: false,
+      message: `${agentTool} does not expose a safe programmatic rename path in this environment.`,
+      manual_instruction: `Rename the ${agentTool} session to ${desiredName} manually if the tool supports it.`,
+    }],
+  };
+}
+
+export function skippedExactWindowsRenameReport(project: Workspace, agentTool: ProjectStartAgent): CodingSessionRenameReport[] {
+  return [{
+    agent_tool: agentTool,
+    desired_name: projectDisplayName(project),
+    status: "skipped",
+    method: null,
+    command_changed: false,
+    message: "Exact tmux windows were requested, so Open Projects did not manage a primary coding-agent command.",
+  }];
+}
+
+function defaultStartWindows(
+  project: Workspace,
+  command: string | undefined,
+  windowName: string | undefined,
+): WorkspaceTmuxWindowSpec[] {
+  const primaryName = windowName?.trim() || "01";
+  return mergeStartWindows([
+    {
+      name: primaryName,
+      path: project.primary_path ?? undefined,
+      command,
+      detached: true,
+    },
+    {
+      name: "02",
+      path: project.primary_path ?? undefined,
+      detached: true,
+    },
+  ]);
+}
+
 export async function resolveProjectStartTarget(
   target: string | undefined,
   options: Pick<ProjectStartOptions, "register" | "dryRun" | "agentId" | "db" | "importTags" | "importMetadata" | "source" | "auditCommand"> = {},
@@ -207,7 +373,12 @@ export async function startProject(
   const defaultWindows = defaults.start_windows;
   const agentTool = parseProjectStartAgent(options.agentTool ?? defaults.start_agent ?? undefined);
   const sessionPolicy = parseProjectStartSessionPolicy(options.sessionPolicy ?? defaults.start_session_policy ?? undefined);
-  const command = projectStartCommand(agentTool, options.toolCommand ?? defaults.start_command ?? undefined);
+  const baseCommand = projectStartCommand(agentTool, options.toolCommand ?? defaults.start_command ?? undefined);
+  const preparedRename = options.requestedWindows
+    ? { command: baseCommand, report: skippedExactWindowsRenameReport(project, agentTool) }
+    : prepareCodingSessionRename(project, agentTool, baseCommand);
+  const command = preparedRename.command;
+  const renameReport = preparedRename.report;
   const profileRef = options.profile ?? defaults.launch_profile ?? undefined;
   const profile = profileRef ? resolveTmuxProfile(profileRef, options.db) : null;
   if (profileRef && !profile) throw new Error(`Tmux profile not found: ${profileRef}`);
@@ -217,19 +388,11 @@ export async function startProject(
   if (options.requestedWindows && options.requestedWindows.length === 0) {
     throw new Error("Requested start windows must include at least one window");
   }
-  const windowName = options.windowName?.trim() || (agentTool === "none" ? project.slug : agentTool);
-  const primaryWindow = !profileSpec || command !== undefined || options.windowName
-    ? {
-      name: windowName,
-      path: project.primary_path ?? undefined,
-      command,
-      detached: true,
-    } satisfies WorkspaceTmuxWindowSpec
-    : undefined;
+  const baseWindows = defaultStartWindows(project, command, options.windowName);
   const windows = options.requestedWindows
     ? mergeStartWindows(options.requestedWindows)
     : mergeStartWindows(
-      primaryWindow ? [primaryWindow] : undefined,
+      baseWindows,
       profileSpec?.windows,
       defaultWindows,
       options.extraWindows,
@@ -263,6 +426,7 @@ export async function startProject(
         resolution,
         agent_tool: agentTool,
         tool_command: command,
+        rename_report: renameReport,
         tmux_profile: profile ? { id: profile.id, slug: profile.slug, name: profile.name } : undefined,
         launch_defaults: {
           agent_tool: defaults.start_agent,
@@ -278,11 +442,14 @@ export async function startProject(
     }, options.db);
   }
 
-  return {
+  const resultWithoutRender = {
+    schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+    kind: "projects.start" as const,
     project,
     resolution,
     agent_tool: agentTool,
     tool_command: command,
+    rename_report: renameReport,
     session_policy: sessionPolicy,
     tmux_profile: profile ? { id: profile.id, slug: profile.slug, name: profile.name } : undefined,
     launch_defaults: {
@@ -299,5 +466,17 @@ export async function startProject(
     },
     tmux,
     attached,
+  };
+  return {
+    ...resultWithoutRender,
+    render: buildProjectStartRender({
+      project,
+      tmux,
+      sessionPolicy,
+      agentTool,
+      toolCommand: command,
+      renameReport: renameReport as unknown as JsonObject[],
+      resolutionSource: resolution.source,
+    }),
   };
 }
