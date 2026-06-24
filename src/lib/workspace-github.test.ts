@@ -11,6 +11,7 @@ import {
   parseGitHubRepo,
   planWorkspaceGitHubImport,
   planWorkspaceGitHubPublish,
+  syncWorkspaceGitHubRoots,
 } from "./workspace-github.js";
 
 function makeDb(): Database {
@@ -105,4 +106,73 @@ describe("workspace GitHub services", () => {
     expect(parseGitHubRepo("https://github.com/hasna/example.git").fullName).toBe("hasna/example");
     expect(normalizeWorkspaceIntegrations({ todos: "todo_123" }).todos_project_id).toBe("todo_123");
   });
+  test("plans GitHub root sync with repository prefix filters", async () => {
+    const db = makeDb();
+    const rootPath = mkdtempSync(join(tmpdir(), "workspace-github-sync-"));
+    const root = createRoot({
+      name: "Project Root",
+      slug: "project-root",
+      base_path: rootPath,
+      default_kind: "project",
+      github_org: "hasnaxyz",
+      path_template: "{slug}",
+    }, db);
+
+    const result = await syncWorkspaceGitHubRoots({
+      root: root.slug,
+      repoPrefix: "project-",
+      clone: true,
+      dryRun: true,
+      tags: ["hasnaxyz", "project"],
+      repoNamesByOrg: {
+        hasnaxyz: ["project-one", "notes", "project-two"],
+      },
+      db,
+    });
+
+    expect(result.dry_run).toBe(true);
+    expect(result.planned.map((item) => item.repo_name)).toEqual(["project-one", "project-two"]);
+    expect(result.planned[0]?.path).toBe(join(rootPath, "project-one"));
+    expect(result.planned[0]?.commands[0]).toContain("gh repo clone hasnaxyz/project-one");
+    expect(result.planned[0]?.tags).toEqual(["github", "hasnaxyz", "project"]);
+    rmSync(rootPath, { recursive: true, force: true });
+    db.close();
+  });
+
+  test("sync roots applies by default and can dry-run explicitly", async () => {
+    const db = makeDb();
+    const rootPath = mkdtempSync(join(tmpdir(), "workspace-github-sync-default-"));
+    const root = createRoot({
+      name: "Default Sync Root",
+      slug: "default-sync-root",
+      base_path: rootPath,
+      default_kind: "project",
+      github_org: "hasnaxyz",
+      path_template: "{slug}",
+    }, db);
+
+    const dryRun = await syncWorkspaceGitHubRoots({
+      root: root.slug,
+      repoPrefix: "project-",
+      dryRun: true,
+      repoNamesByOrg: { hasnaxyz: ["project-dry"] },
+      db,
+    });
+    expect(dryRun.dry_run).toBe(true);
+    expect(dryRun.planned).toHaveLength(1);
+
+    const applied = await syncWorkspaceGitHubRoots({
+      root: root.slug,
+      repoPrefix: "project-",
+      clone: false,
+      repoNamesByOrg: { hasnaxyz: ["project-applied"] },
+      db,
+    });
+    expect(applied.dry_run).toBe(false);
+    expect(applied.imported[0]?.workspace?.slug).toBe("project-applied");
+    expect(applied.imported[0]?.path).toBe(join(rootPath, "project-applied"));
+    rmSync(rootPath, { recursive: true, force: true });
+    db.close();
+  });
+
 });

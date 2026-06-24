@@ -12,6 +12,7 @@ import {
   getWorkspaceByPath,
   getWorkspaceBySlug,
   inferWorkspaceKind,
+  listRoots,
   linkWorkspaceIntegrations,
   matchRootForPath,
   recordWorkspaceEvent,
@@ -502,6 +503,90 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
   }
 }
 
+export interface WorkspaceGitHubRootSyncOptions extends Omit<WorkspaceGitHubImportOptions, "root" | "path" | "remoteOnly" | "dryRun"> {
+  root?: string;
+  repoPrefix?: string;
+  limit?: number;
+  clone?: boolean;
+  dryRun?: boolean;
+  repoNamesByOrg?: Record<string, string[]>;
+}
+
+export interface WorkspaceGitHubRootSyncRootResult {
+  root: Root;
+  repos: string[];
+  results: WorkspaceGitHubImportResult[];
+  errors: Array<{ repo: string; error: string }>;
+}
+
+export interface WorkspaceGitHubRootSyncResult {
+  dry_run: boolean;
+  roots: WorkspaceGitHubRootSyncRootResult[];
+  imported: WorkspaceGitHubImportResult[];
+  planned: WorkspaceGitHubImportResult[];
+  skipped: WorkspaceGitHubImportResult[];
+  errors: Array<{ root: string; repo: string; error: string }>;
+}
+
+function listGitHubRepoNames(org: string, limit: number): string[] {
+  const output = gh(["repo", "list", org, "--limit", String(limit), "--json", "name", "--jq", ".[].name"]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function githubSyncRoots(options: WorkspaceGitHubRootSyncOptions): Root[] {
+  const roots = listRoots(options.db).filter((root) => root.github_org);
+  const filtered = options.root
+    ? roots.filter((root) => root.id === options.root || root.slug === options.root)
+    : roots;
+  if (options.root && filtered.length === 0) throw new Error("GitHub root not found: " + options.root);
+  return filtered;
+}
+
+export async function syncWorkspaceGitHubRoots(options: WorkspaceGitHubRootSyncOptions = {}): Promise<WorkspaceGitHubRootSyncResult> {
+  const dryRun = Boolean(options.dryRun);
+  const result: WorkspaceGitHubRootSyncResult = {
+    dry_run: dryRun,
+    roots: [],
+    imported: [],
+    planned: [],
+    skipped: [],
+    errors: [],
+  };
+  for (const root of githubSyncRoots(options)) {
+    const org = root.github_org!;
+    const repoNames = (options.repoNamesByOrg?.[org] ?? listGitHubRepoNames(org, options.limit ?? 500))
+      .filter((name) => !options.repoPrefix || name.startsWith(options.repoPrefix));
+    const rootResult: WorkspaceGitHubRootSyncRootResult = { root, repos: repoNames, results: [], errors: [] };
+    for (const repo of repoNames) {
+      try {
+        const item = await importWorkspaceFromGitHub(org + "/" + repo, {
+          root: root.id,
+          clone: options.clone ?? !dryRun,
+          tags: options.tags,
+          kind: options.kind,
+          visibility: options.visibility,
+          remoteProtocol: options.remoteProtocol,
+          dryRun,
+          agent_id: options.agent_id,
+          source: options.source ?? "cli",
+          prompt: options.prompt,
+          command: options.command ?? (dryRun ? "projects scan-roots" : "projects sync-roots"),
+          db: options.db,
+        });
+        rootResult.results.push(item);
+        if (item.status === "planned") result.planned.push(item);
+        if (item.status === "imported") result.imported.push(item);
+        if (item.status === "skipped") result.skipped.push(item);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        rootResult.errors.push({ repo, error });
+        result.errors.push({ root: root.slug, repo, error });
+      }
+    }
+    result.roots.push(rootResult);
+  }
+  return result;
+}
 export function linkWorkspaceExternalIntegrations(
   workspace: Workspace,
   integrations: WorkspaceIntegrations,

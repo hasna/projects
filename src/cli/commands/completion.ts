@@ -6,7 +6,7 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
   local location_commands="add list"
   local event_commands="list record"
   local root_commands="add list show update delete match"
@@ -76,6 +76,7 @@ _project() {
   commands=(
     'start:Start a project tmux session'
     'status:Show project launch and tmux status'
+    'sessions:Report project start sessions and rename status'
     'create:Create or plan a project'
     'cleanup-create:Clean up files and DB rows from a project creation run'
     'cleanup-evals:Preview or remove prompt-agent eval fixture records'

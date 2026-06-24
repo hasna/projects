@@ -1,7 +1,25 @@
 import { execSync } from "node:child_process";
 
-function run(cmd: string): string {
+type TmuxCommandRunner = (cmd: string) => string;
+
+function defaultRunner(cmd: string): string {
   return execSync(cmd, { encoding: "utf-8", stdio: "pipe" }).trim();
+}
+
+let commandRunner: TmuxCommandRunner = defaultRunner;
+
+export function withTmuxCommandRunnerForTest<T>(runner: TmuxCommandRunner, fn: () => T): T {
+  const previous = commandRunner;
+  commandRunner = runner;
+  try {
+    return fn();
+  } finally {
+    commandRunner = previous;
+  }
+}
+
+function run(cmd: string): string {
+  return commandRunner(cmd).trim();
 }
 
 function findWindowId(session: string, windowName: string): string {

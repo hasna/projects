@@ -8,11 +8,15 @@ import { listSessions, listWindowHealth, type TmuxSession, type TmuxWindowHealth
 import { tmuxProfileToSpec, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import {
   parseProjectStartAgent,
+  prepareCodingSessionRename,
   projectStartCommand,
   resolveProjectStartTarget,
+  skippedExactWindowsRenameReport,
+  type CodingSessionRenameReport,
   type ProjectStartAgent,
 } from "./project-start.js";
 import { projectManagementSummary } from "./project-management.js";
+import { buildProjectStatusRender, PROJECT_RENDER_SCHEMA_VERSION } from "./project-render.js";
 
 export interface ProjectTmuxStatusOptions {
   profile?: string;
@@ -26,12 +30,15 @@ export interface ProjectTmuxStatusOptions {
 }
 
 export interface ProjectTmuxStatusResult {
+  schema_version: typeof PROJECT_RENDER_SCHEMA_VERSION;
+  kind: "projects.tmux_status";
   project: Workspace;
   expected: {
     session_name: string;
     profile?: Pick<TmuxProfile, "id" | "slug" | "name">;
     windows: WorkspaceTmuxWindowSpec[];
   };
+  rename_report: CodingSessionRenameReport[];
   launch_defaults: {
     agent_tool: string | null;
     tool_command: string | null;
@@ -50,6 +57,7 @@ export interface ProjectTmuxStatusResult {
   related_sessions: TmuxSession[];
   windows: TmuxWindowHealth[];
   errors: string[];
+  render: Record<string, unknown>;
 }
 
 function mergeWindows(...groups: Array<Array<WorkspaceTmuxWindowSpec | undefined> | undefined>): WorkspaceTmuxWindowSpec[] {
@@ -75,6 +83,26 @@ function relatedSessions(project: Workspace, expectedSession: string, sessions: 
   ));
 }
 
+function defaultExpectedWindows(
+  project: Workspace,
+  command: string | undefined,
+  windowName: string | undefined,
+): WorkspaceTmuxWindowSpec[] {
+  return mergeWindows([
+    {
+      name: windowName?.trim() || "01",
+      path: project.primary_path ?? undefined,
+      command,
+      detached: true,
+    },
+    {
+      name: "02",
+      path: project.primary_path ?? undefined,
+      detached: true,
+    },
+  ]);
+}
+
 export async function projectTmuxStatus(
   target: string | undefined,
   options: ProjectTmuxStatusOptions = {},
@@ -87,7 +115,12 @@ export async function projectTmuxStatus(
   const defaults = projectManagementSummary(project);
   const defaultWindows = defaults.start_windows;
   const agentTool = parseProjectStartAgent(options.agentTool ?? defaults.start_agent ?? undefined);
-  const command = projectStartCommand(agentTool, options.command ?? defaults.start_command ?? undefined);
+  const baseCommand = projectStartCommand(agentTool, options.command ?? defaults.start_command ?? undefined);
+  const preparedRename = options.requestedWindows
+    ? { command: baseCommand, report: skippedExactWindowsRenameReport(project, agentTool) }
+    : prepareCodingSessionRename(project, agentTool, baseCommand);
+  const command = preparedRename.command;
+  const renameReport = preparedRename.report;
   const profileRef = options.profile ?? defaults.launch_profile ?? undefined;
   const profile = profileRef ? resolveTmuxProfile(profileRef, options.db) : null;
   if (profileRef && !profile) throw new Error(`Tmux profile not found: ${profileRef}`);
@@ -98,31 +131,26 @@ export async function projectTmuxStatus(
   if (options.requestedWindows && options.requestedWindows.length === 0) {
     throw new Error("Requested start windows must include at least one window");
   }
-  const windowName = options.windowName?.trim() || (agentTool === "none" ? project.slug : agentTool);
-  const primaryWindow = !profileSpec || command !== undefined || options.windowName
-    ? {
-      name: windowName,
-      path: project.primary_path ?? undefined,
-      command,
-      detached: true,
-    } satisfies WorkspaceTmuxWindowSpec
-    : undefined;
+  const baseWindows = defaultExpectedWindows(project, command, options.windowName);
   const expectedWindows = options.requestedWindows
     ? mergeWindows(options.requestedWindows)
     : mergeWindows(
-      primaryWindow ? [primaryWindow] : undefined,
+      baseWindows,
       profileSpec?.windows,
       defaultWindows,
       options.extraWindows,
     );
   const expectedSession = options.session?.trim() || profileSpec?.session || project.slug;
   const baseResult = {
+    schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+    kind: "projects.tmux_status" as const,
     project,
     expected: {
       session_name: expectedSession,
       profile: profile ? { id: profile.id, slug: profile.slug, name: profile.name } : undefined,
       windows: expectedWindows,
     },
+    rename_report: renameReport,
     launch_defaults: {
       agent_tool: defaults.start_agent,
       tool_command: defaults.start_command,
@@ -150,6 +178,15 @@ export async function projectTmuxStatus(
       related_sessions: [],
       windows: [],
       errors: [err instanceof Error ? err.message : String(err)],
+      render: buildProjectStatusRender({
+        project,
+        sessionName: expectedSession,
+        exists: false,
+        tmuxAvailable: false,
+        expectedWindows,
+        currentWindows: [],
+        errors: [err instanceof Error ? err.message : String(err)],
+      }),
     };
   }
 
@@ -172,5 +209,14 @@ export async function projectTmuxStatus(
     related_sessions: relatedSessions(project, expectedSession, sessions),
     windows,
     errors,
+    render: buildProjectStatusRender({
+      project,
+      sessionName: expectedSession,
+      exists: Boolean(session),
+      tmuxAvailable: true,
+      expectedWindows,
+      currentWindows: windows,
+      errors,
+    }),
   };
 }

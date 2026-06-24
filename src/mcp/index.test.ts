@@ -57,6 +57,13 @@ describe("projects-mcp project-first surface", () => {
     expect(source).not.toContain(`"${legacyCreateTool}"`);
     expect(source).toContain("\"projects_agent_eval\"");
     expect(source).toContain("\"projects_agent_prompt\"");
+    expect(source).toContain("\"projects_render_recipes\"");
+    expect(source).toContain("\"projects_render_roots\"");
+    expect(source).toContain("\"projects_render_sessions\"");
+    expect(source).toContain("\"projects_render_status\"");
+    expect(source).toContain("\"projects_render_start\"");
+    expect(source).toContain("\"projects_render_show\"");
+    expect(source).toContain("\"projects_render_list\"");
   });
 
   test("lists project tools over stdio JSON-RPC", async () => {
@@ -118,6 +125,13 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_events_list");
     expect(tools).toContain("projects_agent_eval");
     expect(tools).toContain("projects_agent_prompt");
+    expect(tools).toContain("projects_render_recipes");
+    expect(tools).toContain("projects_render_roots");
+    expect(tools).toContain("projects_render_sessions");
+    expect(tools).toContain("projects_render_status");
+    expect(tools).toContain("projects_render_start");
+    expect(tools).toContain("projects_render_show");
+    expect(tools).toContain("projects_render_list");
     expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
   });

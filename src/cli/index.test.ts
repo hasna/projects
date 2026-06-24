@@ -4,12 +4,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function runProjects(args: string[], env: Record<string, string> = {}) {
+const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
+
+function runProjects(args: string[], env: Record<string, string> = {}, cwd = process.cwd()) {
   return Bun.spawnSync({
-    cmd: ["bun", "run", "src/cli/index.ts", ...args],
+    cmd: ["bun", "run", CLI_PATH, ...args],
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, ...env },
+    cwd,
   });
 }
 
@@ -36,6 +39,7 @@ describe("project-first CLI surface", () => {
       expect(stdout).toContain("create");
       expect(stdout).toContain("list");
       expect(stdout).toContain("show");
+      expect(stdout).toContain("sessions");
       expect(stdout).not.toContain("workspaces");
       expect(stdout).toContain("roots");
       expect(stdout).toContain("tmux-profiles");
@@ -51,7 +55,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -94,6 +98,13 @@ describe("project-first CLI surface", () => {
     expect(shown.project?.slug).toBe("surface-app");
     expect(shown.project?.primary_path).toBe(targetPath);
     expect(shown.workspace).toBeUndefined();
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).schema_version).toBe(1);
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).kind).toBe("projects.project");
+    expect((shown as { schema_version?: number; kind?: string; render?: unknown }).render).toBeTruthy();
+
+    const get = runProjects(["get", "surface-app", "--json"], env);
+    expect(get.exitCode).toBe(0);
+    expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
   });
 
   test("top-level list hides eval fixtures by default and cleanup-evals removes them", () => {
@@ -556,7 +567,7 @@ describe("project-first CLI surface", () => {
     expect(payload.started.map((item) => item.project?.slug).sort()).toEqual(["bulk-one", "bulk-two"]);
     expect(payload.started.every((item) => item.workspace === undefined)).toBe(true);
     expect(payload.started.every((item) => item.agent_tool === "claude")).toBe(true);
-    expect(payload.started.every((item) => item.tool_command === "claude")).toBe(true);
+    expect(payload.started.every((item) => item.tool_command.startsWith("claude --name "))).toBe(true);
     expect(payload.started.every((item) => item.tmux.dry_run)).toBe(true);
     expect(payload.started.every((item) => item.tmux.session_action === "planned")).toBe(true);
   });
@@ -620,6 +631,10 @@ describe("project-first CLI surface", () => {
     expect(started.exitCode).toBe(0);
     const payload = JSON.parse(text(started.stdout)) as {
       project?: { slug: string };
+      schema_version?: number;
+      kind?: string;
+      render?: unknown;
+      rename_report?: Array<{ status: string }>;
       tmux_profile?: { slug: string };
       tmux: {
         session_name: string;
@@ -630,11 +645,16 @@ describe("project-first CLI surface", () => {
     expect(payload.tmux_profile?.slug).toBe("dev");
     expect(payload.tmux.session_name).toBe("profile-app-dev");
     expect(payload.tmux.windows.map((window) => window.target)).toEqual([
-      "profile-app-dev:claude",
+      "profile-app-dev:01",
+      "profile-app-dev:02",
       "profile-app-dev:server",
     ]);
-    expect(payload.tmux.windows[0]?.metadata?.command).toBe("claude");
-    expect(payload.tmux.windows[1]?.metadata?.command).toBe("bun run dev");
+    expect(payload.tmux.windows[0]?.metadata?.command).toBe("claude --name 'Profile App'");
+    expect(payload.tmux.windows[2]?.metadata?.command).toBe("bun run dev");
+    expect(payload.schema_version).toBe(1);
+    expect(payload.kind).toBe("projects.start");
+    expect(payload.render).toBeTruthy();
+    expect(payload.rename_report?.[0]?.status).toBe("configured");
   });
 
   test("top-level start and status use saved project launch defaults", () => {
@@ -697,7 +717,7 @@ describe("project-first CLI surface", () => {
       };
     };
     expect(startPayload.agent_tool).toBe("claude");
-    expect(startPayload.tool_command).toBe("claude --resume");
+    expect(startPayload.tool_command).toBe("claude --name 'Default Launch' --resume");
     expect(startPayload.session_policy).toBe("error-if-running");
     expect(startPayload.tmux_profile?.slug).toBe("dev");
     expect(startPayload.launch_defaults.used_agent_tool).toBe(true);
@@ -708,11 +728,12 @@ describe("project-first CLI surface", () => {
     expect(startPayload.launch_defaults.used_windows).toBe(true);
     expect(startPayload.tmux.session_name).toBe("default-launch-dev");
     expect(startPayload.tmux.windows.map((window) => window.target)).toEqual([
-      "default-launch-dev:claude",
+      "default-launch-dev:01",
+      "default-launch-dev:02",
       "default-launch-dev:server",
       "default-launch-dev:notes",
     ]);
-    expect(startPayload.tmux.windows[0]?.metadata?.command).toBe("claude --resume");
+    expect(startPayload.tmux.windows[0]?.metadata?.command).toBe("claude --name 'Default Launch' --resume");
 
     const status = runProjects(["status", "default-launch", "--json"], env);
     expect(status.exitCode).toBe(0);
@@ -722,8 +743,8 @@ describe("project-first CLI surface", () => {
     };
     expect(statusPayload.expected.session_name).toBe("default-launch-dev");
     expect(statusPayload.expected.profile?.slug).toBe("dev");
-    expect(statusPayload.expected.windows.map((window) => window.name)).toEqual(["claude", "server", "notes"]);
-    expect(statusPayload.expected.windows[0]?.command).toBe("claude --resume");
+    expect(statusPayload.expected.windows.map((window) => window.name)).toEqual(["01", "02", "server", "notes"]);
+    expect(statusPayload.expected.windows[0]?.command).toBe("claude --name 'Default Launch' --resume");
     expect(statusPayload.launch_defaults.used_agent_tool).toBe(true);
     expect(statusPayload.launch_defaults.used_tmux_profile).toBe(true);
     expect(statusPayload.launch_defaults.used_session_policy).toBe(true);
@@ -784,6 +805,7 @@ describe("project-first CLI surface", () => {
     };
     expect(payload.tmux.session_name).toBe("requested-windows-dev");
     expect(payload.launch_defaults.used_windows).toBe(false);
+    expect((payload as { rename_report?: Array<{ status: string }> }).rename_report?.[0]?.status).toBe("skipped");
     expect(payload.tmux.windows.map((window) => window.target)).toEqual([
       "requested-windows-dev:editor",
       "requested-windows-dev:logs",
@@ -829,9 +851,54 @@ describe("project-first CLI surface", () => {
     expect(payload.project.slug).toBe("status-app");
     expect(payload.expected.session_name).toBe("status-app-dev");
     expect(payload.expected.profile?.slug).toBe("dev");
-    expect(payload.expected.windows.map((window) => window.name)).toEqual(["codewith", "server"]);
+    expect(payload.expected.windows.map((window) => window.name)).toEqual(["01", "02", "server"]);
     expect(typeof payload.exists).toBe("boolean");
     expect(Array.isArray(payload.windows)).toBe(true);
+  });
+
+  test("top-level start auto-detects the current registered project path", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-start-cwd-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const projectPath = join(root, "cwd-app");
+    mkdirSync(projectPath);
+
+    expect(runProjects(["create", "--name", "Cwd App", "--path", projectPath, "--json"], env).exitCode).toBe(0);
+
+    const started = runProjects(["start", "--dry-run", "--json"], env, projectPath);
+
+    expect(started.exitCode).toBe(0);
+    const payload = JSON.parse(text(started.stdout)) as {
+      project: { slug: string };
+      resolution: { source: string; registered: boolean };
+      tmux: { windows: Array<{ target: string }> };
+    };
+    expect(payload.project.slug).toBe("cwd-app");
+    expect(payload.resolution.source).toBe("path");
+    expect(payload.resolution.registered).toBe(true);
+    expect(payload.tmux.windows.map((window) => window.target)).toEqual(["cwd-app:01", "cwd-app:02"]);
+  });
+
+  test("top-level sessions reports an empty rename surface without tmux", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-sessions-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+
+    expect(runProjects(["create", "--name", "Session App", "--path", join(root, "session-app"), "--json"], env).exitCode).toBe(0);
+
+    const sessions = runProjects(["sessions", "session-app", "--json"], env);
+
+    expect(sessions.exitCode).toBe(0);
+    const payload = JSON.parse(text(sessions.stdout)) as {
+      schema_version: number;
+      kind: string;
+      total: number;
+      sessions: unknown[];
+      render?: unknown;
+    };
+    expect(payload.schema_version).toBe(1);
+    expect(payload.kind).toBe("projects.sessions");
+    expect(payload.total).toBe(0);
+    expect(payload.sessions).toEqual([]);
+    expect(payload.render).toBeTruthy();
   });
 
   test("top-level start rejects attach for bulk starts", () => {
@@ -843,4 +910,16 @@ describe("project-first CLI surface", () => {
     expect(result.exitCode).toBe(1);
     expect(text(result.stderr)).toContain("--attach is only supported for a single project start");
   });
+  test("bulk start render-spec reports failure exit status", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-bulk-render-fail-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+
+    const started = runProjects(["start", "--bulk", "missing-one", "missing-two", "--dry-run", "--render-spec"], env);
+    expect(started.exitCode).toBe(1);
+    const payload = JSON.parse(text(started.stdout)) as { root?: string; elements?: Record<string, unknown>; metadata?: { kind?: string } };
+    expect(payload.root).toBe("root");
+    expect(payload.metadata?.kind).toBe("projects.list");
+    rmSync(root, { recursive: true, force: true });
+  });
+
 });

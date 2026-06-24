@@ -395,7 +395,7 @@ export function buildWorkspaceAgentSystemPrompt(input: {
     "Use projects_plan_create for explicit no-write planning, projects_update for requested metadata changes, projects_tag/projects_untag for additive tag changes, projects_archive/projects_unarchive for status changes, projects_delete for lifecycle deletion, projects_cleanup_create for cleaning up a partial or unwanted creation run, projects_import for one-folder import requests, projects_scan_roots for broad registered-root scans/imports, projects_import_github for GitHub repository imports, projects_github_publish/projects_github_unpublish for GitHub publication state, projects_link/projects_unlink for external IDs, projects_doctor for checks, projects_event_record for custom audit events, projects_tmux_status for launch/runtime inspection, projects_start for open/start/resume requests, and projects_create for new projects.",
     "For projects_import_github, set remote_only=true only when the user explicitly wants a remote-only record and did not provide a root, path, or clone request. A root/path/clone request means local project registration.",
     "When a user asks to inspect running project sessions or tmux state, call projects_tmux_status.",
-    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, can launch codewith, claude, opencode, cursor, or no tool, and can use windows to request the exact tmux window names to create.",
+    "When a user asks to start, open, resume, or launch work in a project, call projects_start. It creates or reuses a tmux session, ensures default 01 and 02 windows, can register an unknown folder with tags/metadata, can apply a saved tmux profile, can choose reuse/new/error-if-running session policy, can launch codewith, claude, opencode, cursor, or no tool, and can use windows to request the exact tmux window names to create.",
     "When a user asks for tmux or mentions a saved tmux profile, call projects_tmux_profiles_list before projects_create or projects_tmux_profiles_apply. The tools reject saved profile usage until profiles have been inspected.",
     "If tmux is disabled, do not call tmux tools and do not include tmux or tmux_profile arguments in projects_create, even if the user mentions tmux.",
     "When creating a local project directory, write a .project.json marker unless the user explicitly asks not to. The marker name is a current storage detail.",
@@ -1975,7 +1975,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_start: tool({
-      description: "Start, open, resume, or launch a project in tmux and optionally run codewith, claude, opencode, cursor, or no tool. Provide windows to request the exact tmux window set.",
+      description: "Start, open, resume, or launch a project in tmux, ensuring default 01/02 windows, and optionally run codewith, claude, opencode, cursor, or no tool. Provide windows to request the exact tmux window set.",
       inputSchema: z.object({
         target: z.string().optional().describe("Project id, slug, exact name, or path. Omit for current directory."),
         agent_tool: z.enum(["codewith", "claude", "opencode", "cursor", "none"]).optional(),
@@ -2013,7 +2013,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       },
     }),
     projects_tmux_status: tool({
-      description: "Inspect the expected and current tmux session/window status for a project. Read-only.",
+      description: "Inspect the expected and current tmux session/window status for a project, including default 01/02 windows unless exact windows are provided. Read-only.",
       inputSchema: z.object({
         target: z.string().optional().describe("Project id, slug, exact name, or path. Omit for current directory."),
         profile: z.string().optional().describe("Saved tmux profile id or slug used to compute expected windows"),
