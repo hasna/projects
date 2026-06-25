@@ -77,6 +77,15 @@ import {
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
 import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
+  buildProjectAgentContext,
+  buildProjectHandoff,
+  explainProjectResolution,
+  getProjectAgentRunDetail,
+  listProjectAgentRunsView,
+  suggestProjectNextActions,
+  toAgentText,
+} from "../../lib/project-agent-assist.js";
+import {
   createProjectBudget,
   getProjectBudgetStatuses,
   listProjectBudgets,
@@ -109,6 +118,14 @@ const MAX_HUMAN_LIMIT = 200;
 
 function wantsRenderSpec(opts?: { renderSpec?: boolean }): boolean {
   return Boolean(opts?.renderSpec || process.argv.includes("--render-spec"));
+}
+
+function wantsAgentText(opts?: { forAgent?: boolean }): boolean {
+  return Boolean(opts?.forAgent || process.argv.includes("--for-agent"));
+}
+
+function resolveCwdOption(opts: { cwd?: string }): string {
+  return opts.cwd && opts.cwd.trim() ? opts.cwd : process.cwd();
 }
 
 function wantsJson(opts?: { json?: boolean }): boolean {
@@ -635,11 +652,183 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectSessionsCommand(program);
   registerProjectCommands(program);
   registerBudgetCommands(program);
+  registerAgentAssistCommands(program);
   registerLocationsCommand(program);
   registerRootsCommand(program);
   registerRecipesCommand(program);
   registerAgentsCommand(program);
   registerTmuxProfilesCommand(program);
+}
+
+function registerAgentAssistCommands(program: Command): void {
+  program
+    .command("context [target]")
+    .description("Emit a compact agent-priming bundle for a project (orientation in one call)")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--events-limit <n>", "Maximum recent events to include", "8")
+    .option("--siblings-limit <n>", "Maximum sibling projects to include", "12")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const context = buildProjectAgentContext({
+          target,
+          cwd: resolveCwdOption(opts),
+          eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 8,
+          siblingsLimit: parsePositiveInteger(opts.siblingsLimit, "--siblings-limit") ?? 12,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(context)); return; }
+        if (wantsJson(opts)) { printObject(context, opts); return; }
+        console.log(toAgentText(context));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("next [target]")
+    .description("Suggest high-leverage next actions for a project to an agent")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--limit <n>", "Maximum suggestions", "6")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = suggestProjectNextActions({
+          target,
+          cwd: resolveCwdOption(opts),
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? 6,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        if (!result.actions.length) {
+          console.log(chalk.dim("No suggestions. Project is in good shape."));
+          return;
+        }
+        for (const a of result.actions) {
+          const color = a.priority === "high" ? chalk.red : a.priority === "medium" ? chalk.yellow : chalk.dim;
+          console.log(`${color(`[${a.priority}]`)} ${chalk.bold(a.title)}`);
+          console.log(`  ${chalk.dim("why:")} ${a.rationale}`);
+          console.log(`  ${chalk.dim("run:")} ${a.command}`);
+        }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("why [target]")
+    .description("Explain how a project target resolves (or why it does not)")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = explainProjectResolution(target, { cwd: resolveCwdOption(opts) });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        console.log(toAgentText(result));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("handoff [target]")
+    .description("Emit a cross-agent/cross-machine handoff bundle for a project")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--events-limit <n>", "Maximum recent events to include", "10")
+    .option("--runs-limit <n>", "Maximum recent agent runs to include", "5")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const handoff = buildProjectHandoff({
+          target,
+          cwd: resolveCwdOption(opts),
+          eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 10,
+          runsLimit: parsePositiveInteger(opts.runsLimit, "--runs-limit") ?? 5,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(handoff)); return; }
+        if (wantsJson(opts)) { printObject(handoff, opts); return; }
+        console.log(toAgentText(handoff));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  const runs = program.command("runs").description("Inspect prompt-agent run ledger entries for a project");
+
+  runs
+    .command("list [target]")
+    .description("List recent agent runs for a project")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--limit <n>", "Maximum runs to return", "20")
+    .option("--status <status>", "Filter by status: planned, running, completed, failed")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = listProjectAgentRunsView({
+          target,
+          cwd: resolveCwdOption(opts),
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? 20,
+          status: opts.status as "planned" | "running" | "completed" | "failed" | undefined,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        if (!result.runs.length) {
+          console.log(chalk.dim("No agent runs recorded for this project."));
+          return;
+        }
+        printRows(result.runs.map((r) => ({
+          id: r.id,
+          status: r.status,
+          model: r.model ?? "",
+          tool_calls: r.tool_calls,
+          started_at: r.started_at,
+        })), ["id", "status", "model", "tool_calls", "started_at"]);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  runs
+    .command("show <run-id> [target]")
+    .description("Show full detail for one agent run, including tool-call trace")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((runId, target, opts) => {
+      try {
+        const detail = getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
+        if (wantsAgentText(opts)) {
+          console.log(`# Run ${detail.run.id} [${detail.run.status}]`);
+          console.log(`model: ${detail.run.model ?? "—"}`);
+          console.log(`agent: ${detail.agent?.slug ?? detail.run.agent_id ?? "—"}`);
+          console.log(`started: ${detail.run.started_at}`);
+          console.log(`\nprompt: ${detail.run.prompt}`);
+          if (detail.run.error) console.log(`\nerror: ${detail.run.error}`);
+          if (Array.isArray(detail.run.tool_calls_json)) {
+            console.log(`\ntool calls (${detail.run.tool_calls_json.length}):`);
+            for (const tc of detail.run.tool_calls_json) {
+              const t = tc as JsonObject;
+              console.log(`  - ${t["name"] ?? t["type"] ?? "call"} ${t["args"] ? JSON.stringify(t["args"]).slice(0, 120) : ""}`);
+            }
+          }
+          return;
+        }
+        printObject(detail, opts);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
 }
 
 function registerBudgetCommands(program: Command): void {

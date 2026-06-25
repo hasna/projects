@@ -12,6 +12,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with `--limit` and `--verbose` controls while keeping `--json` detailed.
 - Opt-in compact MCP summaries via `compact: true` while preserving existing
   full-record defaults for MCP clients.
+- Agent-assist CLI commands and MCP tools to help coding agents orient, decide,
+  and continue: `projects context` (one-shot priming bundle), `projects next`
+  (high-leverage next-action suggestions), `projects why` (resolution trace and
+  fix tips), `projects handoff` (cross-agent/machine handoff bundle), and
+  `projects runs list` / `projects runs show` (prompt-agent run ledger read
+  view). All emit JSON (`-j/--json`) or LLM-friendly text (`--for-agent`), and
+  are exposed as `projects_context`, `projects_next`, `projects_why`,
+  `projects_handoff`, `projects_runs_list`, and `projects_runs_show` MCP tools.
+- `--for-agent` output mode for the agent-assist commands: compact, references
+  resolved, truncated long values.
+- Goal-continue Cursor `stop` hook (`.cursor/hooks.json` +
+  `.cursor/hooks/goal-continue.sh`) that blocks an agent's stop with a
+  continuation prompt when an active goal is set, folding in `projects next`
+  suggestions. Modeled on the codewith `/goal` slash command.
 
 ### Changed
 

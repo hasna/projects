@@ -305,3 +305,28 @@ export {
   buildRecipesRender,
   type ProjectsJsonRenderSpec,
 } from "./lib/project-render.js";
+
+export {
+  buildProjectAgentContext,
+  buildProjectHandoff,
+  explainProjectResolution,
+  getProjectAgentRunDetail,
+  listProjectAgentRunsView,
+  suggestProjectNextActions,
+  toAgentText,
+} from "./lib/project-agent-assist.js";
+export type {
+  ProjectAgentContext,
+  ProjectAgentContextOptions,
+  ProjectHandoff,
+  ProjectHandoffOptions,
+  ProjectNextAction,
+  ProjectNextOptions,
+  ProjectNextResult,
+  ProjectRunDetail,
+  ProjectRunDetailOptions,
+  ProjectRunsOptions,
+  ProjectRunsResult,
+  ProjectWhyResult,
+  ProjectWhyStep,
+} from "./lib/project-agent-assist.js";

@@ -104,10 +104,34 @@ projects agent-eval --json
 projects agent-eval --mock --json
 projects agent-eval --case create-explicit-path,tmux-apply-existing --fail-on-error
 
+# Agent assist — help coding agents orient, decide, and continue
+projects context my-app --for-agent        # one-shot priming bundle
+projects next my-app --for-agent           # suggested next actions
+projects why my-app --for-agent            # resolution trace + fix tips
+projects handoff my-app --for-agent        # cross-agent/machine handoff bundle
+projects runs list my-app --for-agent      # prompt-agent run ledger
+projects runs show <run-id> my-app         # full run detail + tool-call trace
+# All six also emit JSON with -j/--json and are available as MCP tools:
+#   projects_context, projects_next, projects_why, projects_handoff,
+#   projects_runs_list, projects_runs_show
+
 # Shell completion, including workon
 eval "$(projects completion)"
 eval "$(projects completion --shell zsh)"
 ```
+
+## Goal-continue Cursor hook (ralph-style)
+
+A `stop` hook lives in `.cursor/hooks.json` + `.cursor/hooks/goal-continue.sh`.
+When an agent stops, it checks for an active goal and, if incomplete, blocks the
+stop with a continuation prompt that includes `projects next` suggestions —
+modeled on the codewith `/goal` slash command but driven as a Cursor hook.
+
+Goal sources (first wins): `./.hasna/goal.md`, `$HASNA_GOAL_FILE`,
+`~/.hasna/goal.md`. Mark a goal complete by adding a `<!-- done -->` line.
+
+Env knobs: `HASNA_GOAL_SKIP=1` (disable), `HASNA_GOAL_CONTINUE=0` (status only,
+no continuation), `HASNA_GOAL_MAX_SUGGESTIONS=N`. The hook never fails closed.
 
 Projects stores high-level management fields directly on the project record:
 `stage`, `priority`, `owner`, `launch_profile`, `start_agent`,
@@ -209,6 +233,8 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_lock` / `projects_unlock` / `projects_locks` | Coordinate project mutations |
 | `projects_agent_eval` | Run prompt-agent eval cases and return success/confidence |
 | `projects_agent_prompt` | Run the AI SDK/OpenRouter project agent loop |
+| `projects_context` / `projects_next` / `projects_why` / `projects_handoff` | Agent-assist bundles: orientation, next-action suggestions, resolution trace, cross-agent handoff |
+| `projects_runs_list` / `projects_runs_show` | Read the prompt-agent run ledger (list + full detail with tool-call trace) |
 
 Workspace-named MCP aliases are removed from the public contract.
 

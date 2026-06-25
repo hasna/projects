@@ -81,6 +81,15 @@ import {
   unlinkProjectIntegrationFields,
 } from "../lib/project-management.js";
 import { doctorWorkspace } from "../lib/workspace-doctor.js";
+import {
+  buildProjectAgentContext,
+  buildProjectHandoff,
+  explainProjectResolution,
+  getProjectAgentRunDetail,
+  listProjectAgentRunsView,
+  suggestProjectNextActions,
+  toAgentText,
+} from "../lib/project-agent-assist.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
@@ -2137,6 +2146,147 @@ server.tool(
   "Bidirectional project storage sync: pull then push.",
   { tables: z.array(z.string()).optional() },
   async (input) => jsonText(await storageSync(input.tables ? { tables: input.tables } : undefined)),
+);
+
+server.tool(
+  "projects_context",
+  "Emit a compact agent-priming bundle for a project: resolved project, root/recipe, siblings, recent events, tmux state, integrations, doctor, budgets, and storage sync. Resolves the project from target or cwd.",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    events_limit: z.number().int().positive().optional(),
+    siblings_limit: z.number().int().positive().optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const ctx = buildProjectAgentContext({
+        target: input.target,
+        cwd: input.cwd,
+        eventsLimit: input.events_limit,
+        siblingsLimit: input.siblings_limit,
+      });
+      if (input.for_agent) return jsonText({ text: toAgentText(ctx) });
+      return jsonText(ctx);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_next",
+  "Suggest high-leverage next actions for a project (start, doctor --fix, budget review, rename resolution, cleanup, lock release, unarchive). Derives from existing state only.",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const res = suggestProjectNextActions({
+        target: input.target,
+        cwd: input.cwd,
+        limit: input.limit,
+      });
+      if (input.for_agent) return jsonText({ text: toAgentText(res) });
+      return jsonText(res);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_why",
+  "Explain how a project target resolves (id/slug, name, path, marker) with a step-by-step trace and suggestions when resolution fails.",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const res = explainProjectResolution(input.target, { cwd: input.cwd });
+      if (input.for_agent) return jsonText({ text: toAgentText(res) });
+      return jsonText(res);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_handoff",
+  "Emit a cross-agent/cross-machine handoff bundle: project state, integrations, tmux sessions, open locks, recent events and agent runs, plus handoff instructions.",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    events_limit: z.number().int().positive().optional(),
+    runs_limit: z.number().int().positive().optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const h = buildProjectHandoff({
+        target: input.target,
+        cwd: input.cwd,
+        eventsLimit: input.events_limit,
+        runsLimit: input.runs_limit,
+      });
+      if (input.for_agent) return jsonText({ text: toAgentText(h) });
+      return jsonText(h);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_runs_list",
+  "List recent prompt-agent runs recorded for a project (status, model, tool-call count, timing).",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+    status: z.enum(["planned", "running", "completed", "failed"]).optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const res = listProjectAgentRunsView({
+        target: input.target,
+        cwd: input.cwd,
+        limit: input.limit,
+        status: input.status,
+      });
+      if (input.for_agent) return jsonText({ text: toAgentText(res) });
+      return jsonText(res);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_runs_show",
+  "Show full detail for one prompt-agent run, including the prompt, tool-call trace, result, and error.",
+  {
+    run_id: z.string(),
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    for_agent: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const detail = getProjectAgentRunDetail({ runId: input.run_id, target: input.target, cwd: input.cwd });
+      if (input.for_agent) return jsonText({ text: toAgentText(detail) });
+      return jsonText(detail);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
 );
 
 return server;
