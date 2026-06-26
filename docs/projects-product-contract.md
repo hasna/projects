@@ -36,6 +36,7 @@ projects update
 projects tag
 projects untag
 projects labels
+projects oss matrix
 projects store
 projects link
 projects unlink
@@ -121,6 +122,28 @@ Store migration must be explicit and safe:
 - update `workspaces.primary_path` through the normal location/storage API
 - rewrite/verify the `.project.json` marker at the canonical path
 - never delete source data as a hidden side effect
+
+## OSS Matrix Contract
+
+`projects oss matrix` is a routing and orchestration surface for open-source
+repo roots. It scans only direct child directories under an explicit `--root`,
+filters by `--prefix` (default `open-`), and is capped by default. The command
+must not recursively walk large trees or treat labels, org names, or slugs as
+physical path identity.
+
+Each row should be compact and machine-readable:
+
+- repo name and absolute path
+- `package.json` name/version/bin metadata when present
+- git branch, upstream, ahead/behind, dirty count, remote, and GitHub repo
+- tmux session/window hints from current local tmux state
+- latest task refs from `todos` when available
+- latest pull request refs from `gh` when a GitHub remote is available
+
+Task and PR refs are best-effort external lookups with timeouts. Their failure
+must not fail the matrix; rows should carry warnings instead. Operators can use
+`--no-tasks`, `--no-prs`, `--no-tmux`, `--limit`, and `--timeout-ms` to keep
+routing scans predictable.
 
 ## Metadata Taxonomy
 

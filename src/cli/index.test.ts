@@ -46,6 +46,7 @@ describe("project-first CLI surface", () => {
       expect(stdout).not.toContain("workspaces");
       expect(stdout).toContain("store");
       expect(stdout).toContain("labels");
+      expect(stdout).toContain("oss");
       expect(stdout).toContain("roots");
       expect(stdout).toContain("tmux-profiles");
       expect(stdout).toContain("hasna-events");
@@ -60,7 +61,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs store locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -73,8 +74,58 @@ describe("project-first CLI surface", () => {
     expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
     expect(zshStdout).toContain("'context:Emit an agent-priming bundle for a project'");
     expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
+    expect(zshStdout).toContain("'oss:Open-source workspace routing helpers'");
     expect(zshStdout).toContain("'store:Inspect, ensure, and migrate canonical project stores'");
     expect(zshStdout).toContain("'labels:Manage project labels'");
+  });
+
+  test("oss matrix CLI emits capped JSON without optional external refs", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-oss-matrix-"));
+    mkdirSync(join(root, "open-alpha"));
+    mkdirSync(join(root, "open-beta"));
+    mkdirSync(join(root, "not-open"));
+    writeFileSync(join(root, "open-alpha", "package.json"), JSON.stringify({
+      name: "@hasna/open-alpha",
+      version: "0.0.1",
+      bin: { "open-alpha": "dist/cli.js" },
+    }));
+
+    try {
+      const result = runProjects([
+        "oss",
+        "matrix",
+        "--root",
+        root,
+        "--prefix",
+        "open-",
+        "--limit",
+        "1",
+        "--no-tasks",
+        "--no-prs",
+        "--no-tmux",
+        "--json",
+      ]);
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(text(result.stdout)) as {
+        kind: string;
+        total_candidates: number;
+        returned: number;
+        truncated: boolean;
+        rows: Array<{ name: string; package: { name: string; bins: string[] } | null; task_refs: unknown[]; pr_refs: unknown[]; tmux: unknown }>;
+      };
+      expect(payload.kind).toBe("projects.oss_matrix");
+      expect(payload.total_candidates).toBe(2);
+      expect(payload.returned).toBe(1);
+      expect(payload.truncated).toBe(true);
+      expect(payload.rows[0]?.name).toBe("open-alpha");
+      expect(payload.rows[0]?.package?.name).toBe("@hasna/open-alpha");
+      expect(payload.rows[0]?.package?.bins).toEqual(["open-alpha"]);
+      expect(payload.rows[0]?.task_refs).toEqual([]);
+      expect(payload.rows[0]?.pr_refs).toEqual([]);
+      expect(payload.rows[0]?.tmux).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("package publishes Cursor goal hook files", () => {

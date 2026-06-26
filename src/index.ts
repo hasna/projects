@@ -190,6 +190,24 @@ export type {
   ProjectStoreMigrationResult,
   ProjectStorePaths,
 } from "./lib/project-store.js";
+export {
+  DEFAULT_OSS_MATRIX_LIMIT,
+  MAX_OSS_MATRIX_LIMIT,
+  OSS_PROJECT_MATRIX_SCHEMA_VERSION,
+  buildOssProjectMatrix,
+} from "./lib/oss-project-matrix.js";
+export type {
+  OssGitStatus,
+  OssMatrixCommandOptions,
+  OssMatrixCommandRunner,
+  OssPackageMetadata,
+  OssProjectMatrix,
+  OssProjectMatrixOptions,
+  OssProjectMatrixRow,
+  OssPullRequestRef,
+  OssTaskRef,
+  OssTmuxHint,
+} from "./lib/oss-project-matrix.js";
 export type {
   ProjectMarkerReference,
   ProjectResolverOptions,

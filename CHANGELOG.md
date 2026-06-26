@@ -17,6 +17,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `projects labels` / `projects label` commands for add/remove/list workflows
   over normalized project tags, plus `--label` filters on `projects list` and
   targetless `projects start`.
+- `projects oss matrix`, a bounded routing matrix for open-source workspace
+  roots that reports repo paths, package metadata, git status, tmux hints, and
+  best-effort latest task/PR refs for `open-*` work.
 
 ### Changed
 

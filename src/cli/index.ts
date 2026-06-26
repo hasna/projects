@@ -68,6 +68,7 @@ function hasAnyFlag(argv: string[], flags: string[]): boolean {
 
 function shouldRouteToCommand(firstArg: string, argv: string[]): boolean {
   if (argv.includes("--")) return false;
+  if (firstArg === "oss" && argv[3] === "matrix") return true;
   if (hasAnyFlag(argv, ["--yes", "--model", "--max-steps", "--no-tmux"])) return false;
   if (firstArg === "create" && !hasAnyFlag(argv, ["--name"])) return false;
   return true;

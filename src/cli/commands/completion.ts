@@ -6,7 +6,8 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs store locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store locations roots recipes agents tmux-profiles storage completion"
+  local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
   local label_commands="list add remove rm"
   local location_commands="add list"
@@ -19,6 +20,10 @@ _projects_completion() {
   case "$prev" in
     projects)
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+      return 0
+      ;;
+    oss)
+      COMPREPLY=( $(compgen -W "$oss_commands" -- "$cur") )
       return 0
       ;;
     locations)
@@ -118,6 +123,7 @@ _project() {
     'why:Explain how a project target resolves'
     'handoff:Emit a cross-agent handoff bundle'
     'runs:Inspect prompt-agent run ledger entries'
+    'oss:Open-source workspace routing helpers'
     'store:Inspect, ensure, and migrate canonical project stores'
     'locations:Manage project folder locations'
     'roots:Manage project root folders'
