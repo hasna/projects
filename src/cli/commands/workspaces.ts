@@ -807,7 +807,11 @@ function registerAgentAssistCommands(program: Command): void {
     .action((runId, target, opts) => {
       try {
         const detail = getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
-        if (wantsAgentText(opts)) {
+        if (wantsJson(opts)) {
+          printObject(detail, opts);
+          return;
+        }
+        if (wantsAgentText(opts) || !wantsJson(opts)) {
           console.log(`# Run ${detail.run.id} [${detail.run.status}]`);
           console.log(`model: ${detail.run.model ?? "—"}`);
           console.log(`agent: ${detail.agent?.slug ?? detail.run.agent_id ?? "—"}`);
@@ -823,7 +827,6 @@ function registerAgentAssistCommands(program: Command): void {
           }
           return;
         }
-        printObject(detail, opts);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);

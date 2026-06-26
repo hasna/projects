@@ -6,7 +6,7 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs locations roots recipes agents tmux-profiles storage completion"
   local location_commands="add list"
   local event_commands="list record"
   local root_commands="add list show update delete match"
@@ -43,7 +43,7 @@ _projects_completion() {
       COMPREPLY=( $(compgen -W "$tmux_profile_commands" -- "$cur") )
       return 0
       ;;
-    start|status|cleanup-create|show|update|tag|untag|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|list|record)
+    start|status|cleanup-create|show|update|tag|untag|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|context|next|why|handoff|list|record)
       # Complete with project slugs
       local slugs
       slugs=$(projects list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
@@ -102,6 +102,11 @@ _project() {
     'unlock:Release a project mutation lock'
     'doctor:Validate project records'
     'agent-eval:Run project prompt-agent eval cases'
+    'context:Emit an agent-priming bundle for a project'
+    'next:Suggest high-leverage next actions for a project'
+    'why:Explain how a project target resolves'
+    'handoff:Emit a cross-agent handoff bundle'
+    'runs:Inspect prompt-agent run ledger entries'
     'locations:Manage project folder locations'
     'roots:Manage project root folders'
     'recipes:Manage project recipes'

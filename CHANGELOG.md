@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.65] - 2026-06-26
+
 ### Added
 
 - Compact terminal defaults for noisy project list/detail/history commands,

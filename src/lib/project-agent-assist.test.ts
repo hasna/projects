@@ -195,6 +195,16 @@ describe("project-agent-assist: runs", () => {
     db.close();
   });
 
+  test("does not leak run detail when target does not resolve", () => {
+    const db = makeDb();
+    const project = makeProject(db);
+    const run = startAgentRun({ workspace_id: project.id, prompt: "private prompt" }, db);
+    expect(() => getProjectAgentRunDetail({ runId: run.id, target: "does-not-exist", db })).toThrow(
+      "Project not found for run detail",
+    );
+    db.close();
+  });
+
   test("returns empty list for unresolved target", () => {
     const db = makeDb();
     const res = listProjectAgentRunsView({ target: "/nope", db });

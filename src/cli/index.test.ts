@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireWorkspaceLock, createRoot, createWorkspace } from "../db/workspaces.js";
+import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, startAgentRun } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
@@ -58,7 +58,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -69,6 +69,58 @@ describe("project-first CLI surface", () => {
     expect(zsh.exitCode).toBe(0);
     expect(zshStdout).toContain("'scan-roots:Dry-run import plans for configured GitHub roots'");
     expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
+    expect(zshStdout).toContain("'context:Emit an agent-priming bundle for a project'");
+    expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
+  });
+
+  test("package publishes Cursor goal hook files", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as { files: string[] };
+    expect(pkg.files).toContain(".cursor/hooks.json");
+    expect(pkg.files).toContain(".cursor/hooks/goal-continue.sh");
+  });
+
+  test("agent-assist CLI commands emit JSON, agent text, and run detail by default", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-agent-assist-"));
+    const dbPath = join(root, "projects.db");
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+    const project = createWorkspace({
+      name: "Agent Assist",
+      slug: "agent-assist",
+      kind: "project",
+      primary_path: join(root, "agent-assist"),
+    }, db);
+    const run = startAgentRun({ workspace_id: project.id, prompt: "inspect state", model: "test-model" }, db);
+    completeAgentRun(run.id, { status: "completed", tool_calls: [{ name: "projects_show" }] }, db);
+    db.close();
+
+    const context = runProjects(["context", "agent-assist", "--json"], env);
+    expect(context.exitCode).toBe(0);
+    expect((JSON.parse(text(context.stdout)) as { kind: string; target: { resolved: boolean } }).kind).toBe("projects.agent_context");
+
+    const next = runProjects(["next", "agent-assist", "--json"], env);
+    expect(next.exitCode).toBe(0);
+    expect((JSON.parse(text(next.stdout)) as { kind: string; actions: unknown[] }).kind).toBe("projects.next");
+
+    const why = runProjects(["why", "agent-assist", "--for-agent"], env);
+    expect(why.exitCode).toBe(0);
+    expect(text(why.stdout)).toContain("Resolution");
+
+    const handoff = runProjects(["handoff", "agent-assist", "--json"], env);
+    expect(handoff.exitCode).toBe(0);
+    expect((JSON.parse(text(handoff.stdout)) as { kind: string }).kind).toBe("projects.handoff");
+
+    const runs = runProjects(["runs", "list", "agent-assist", "--json"], env);
+    expect(runs.exitCode).toBe(0);
+    expect((JSON.parse(text(runs.stdout)) as { kind: string; runs: unknown[] }).kind).toBe("projects.runs");
+
+    const showDefault = runProjects(["runs", "show", run.id, "agent-assist"], env);
+    expect(showDefault.exitCode).toBe(0);
+    const showText = text(showDefault.stdout);
+    expect(showText).toContain(`# Run ${run.id} [completed]`);
+    expect(showText).toContain("tool calls (1):");
   });
 
   test("top-level create, list, and show use project-first JSON", () => {

@@ -48,10 +48,10 @@ fi
 
 # Resolve the goal text.
 goal_file=""
-if [[ -n "${HASNA_GOAL_FILE:-}" && -f "${HASNA_GOAL_FILE}" ]]; then
-  goal_file="${HASNA_GOAL_FILE}"
-elif [[ -n "${cwd}" && -f "${cwd}/.hasna/goal.md" ]]; then
+if [[ -n "${cwd}" && -f "${cwd}/.hasna/goal.md" ]]; then
   goal_file="${cwd}/.hasna/goal.md"
+elif [[ -n "${HASNA_GOAL_FILE:-}" && -f "${HASNA_GOAL_FILE}" ]]; then
+  goal_file="${HASNA_GOAL_FILE}"
 elif [[ -f "${HOME}/.hasna/goal.md" ]]; then
   goal_file="${HOME}/.hasna/goal.md"
 fi
@@ -108,8 +108,8 @@ fi
   fi
   printf '\nIf the goal is genuinely complete, write `<!-- done -->` on its own line in %s and stop.\n' "$goal_file"
   printf 'Do not repeat work already finished. Pick the highest-leverage unfinished step and proceed.\n'
-} > /tmp/.hasna-goal-continue-msg.$$
-sys_msg="$(jq -Rs . < /tmp/.hasna-goal-continue-msg.$$)"
-rm -f /tmp/.hasna-goal-continue-msg.$$
-
-printf '{"decision": "block", "reason": %s}\n' "$sys_msg"
+} | {
+  sys_msg="$(jq -Rs .)"
+  printf '{"decision": "block", "reason": %s}\n' "$sys_msg"
+  exit 0
+}

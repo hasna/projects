@@ -26,7 +26,9 @@
     "CHANGELOG.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md"
+    "CODE_OF_CONDUCT.md",
+    ".cursor/hooks.json",
+    ".cursor/hooks/goal-continue.sh"
   ],
   "scripts": {
     "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts src/storage.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",

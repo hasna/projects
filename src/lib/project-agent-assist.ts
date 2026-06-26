@@ -737,8 +737,9 @@ export function getProjectAgentRunDetail(options: ProjectRunDetailOptions): Proj
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
   const resolution = safeResolveProjectTarget(target, options.db);
+  if (!resolution) throw new Error(`Project not found for run detail: ${target}`);
   const runs = listAgentRuns(
-    { workspace_id: resolution?.project.id, limit: 200 },
+    { workspace_id: resolution.project.id, limit: 200 },
     options.db,
   );
   const run = runs.find((r) => r.id === options.runId);
