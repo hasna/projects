@@ -122,6 +122,12 @@ describe("projects-mcp project-first surface", () => {
     expect(source).toContain("\"projects_render_start\"");
     expect(source).toContain("\"projects_render_show\"");
     expect(source).toContain("\"projects_render_list\"");
+    expect(source).toContain("\"projects_store_inspect\"");
+    expect(source).toContain("\"projects_canvases_list\"");
+    expect(source).toContain("\"projects_canvases_create\"");
+    expect(source).toContain("\"projects_render_canvas\"");
+    expect(source).toContain("\"projects_loops_link\"");
+    expect(source).toContain("\"projects_loops_list\"");
   });
 
   test("lists project tools over stdio JSON-RPC", async () => {
@@ -193,6 +199,12 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_render_start");
     expect(tools).toContain("projects_render_show");
     expect(tools).toContain("projects_render_list");
+    expect(tools).toContain("projects_store_inspect");
+    expect(tools).toContain("projects_canvases_list");
+    expect(tools).toContain("projects_canvases_create");
+    expect(tools).toContain("projects_render_canvas");
+    expect(tools).toContain("projects_loops_link");
+    expect(tools).toContain("projects_loops_list");
     expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
   });

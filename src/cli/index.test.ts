@@ -58,7 +58,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval store canvases loops locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -114,6 +114,45 @@ describe("project-first CLI surface", () => {
     const get = runProjects(["get", "surface-app", "--json"], env);
     expect(get.exitCode).toBe(0);
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
+  });
+
+  test("project store, canvas, and OpenLoops link commands use per-project project.db", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-store-"));
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "registry", "projects.db"),
+      HASNA_PROJECTS_HOME: join(root, "projects-home"),
+    };
+    const create = runProjects(["create", "--name", "Store CLI", "--path", join(root, "store-cli"), "--json"], env);
+    expect(create.exitCode).toBe(0);
+    const project = (JSON.parse(text(create.stdout)) as { project: { id: string; slug: string } }).project;
+
+    const inspect = runProjects(["store", "inspect", project.slug, "--json"], env);
+    expect(inspect.exitCode).toBe(0);
+    const store = (JSON.parse(text(inspect.stdout)) as { store: { paths: { db_path: string }; counts: { canvases: number } } }).store;
+    expect(store.paths.db_path).toBe(join(env.HASNA_PROJECTS_HOME, "by-id", project.id, "project.db"));
+    expect(store.counts.canvases).toBe(0);
+
+    const canvases = runProjects(["canvases", "list", project.slug, "--ensure-default", "--json"], env);
+    expect(canvases.exitCode).toBe(0);
+    const listed = JSON.parse(text(canvases.stdout)) as { canvases: Array<{ slug: string; layout_engine: string }> };
+    expect(listed.canvases[0]?.slug).toBe("dashboard");
+    expect(listed.canvases[0]?.layout_engine).toBe("react-flow");
+
+    const render = runProjects(["canvases", "show", project.slug, "dashboard", "--render-spec"], env);
+    expect(render.exitCode).toBe(0);
+    const spec = JSON.parse(text(render.stdout)) as { elements: { root?: { type?: string; props?: { ui_contract?: { canvas?: string } } } } };
+    expect(spec.elements.root?.type).toBe("Canvas");
+    expect(spec.elements.root?.props?.ui_contract?.canvas).toBe("react-flow");
+
+    const link = runProjects(["loops", "link", project.slug, "loop_123", "--name", "Daily Check", "--json"], env);
+    expect(link.exitCode).toBe(0);
+    expect((JSON.parse(text(link.stdout)) as { link: { loop_id: string } }).link.loop_id).toBe("loop_123");
+
+    const loops = runProjects(["loops", "list", project.slug, "--json"], env);
+    expect(loops.exitCode).toBe(0);
+    expect((JSON.parse(text(loops.stdout)) as { loops: Array<{ status: string }> }).loops[0]?.status).toBe("unavailable");
+
+    rmSync(root, { recursive: true, force: true });
   });
 
   test("top-level list hides eval fixtures by default and cleanup-evals removes them", () => {

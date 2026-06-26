@@ -6,7 +6,10 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval store canvases loops locations roots recipes agents tmux-profiles storage completion"
+  local store_commands="inspect"
+  local canvas_commands="create list show"
+  local loop_commands="link list"
   local location_commands="add list"
   local event_commands="list record"
   local root_commands="add list show update delete match"
@@ -21,6 +24,18 @@ _projects_completion() {
       ;;
     locations)
       COMPREPLY=( $(compgen -W "$location_commands" -- "$cur") )
+      return 0
+      ;;
+    store)
+      COMPREPLY=( $(compgen -W "$store_commands" -- "$cur") )
+      return 0
+      ;;
+    canvases)
+      COMPREPLY=( $(compgen -W "$canvas_commands" -- "$cur") )
+      return 0
+      ;;
+    loops)
+      COMPREPLY=( $(compgen -W "$loop_commands" -- "$cur") )
       return 0
       ;;
     events)
@@ -102,6 +117,9 @@ _project() {
     'unlock:Release a project mutation lock'
     'doctor:Validate project records'
     'agent-eval:Run project prompt-agent eval cases'
+    'store:Inspect per-project app data stores'
+    'canvases:Manage per-project React Flow canvases'
+    'loops:Link projects to OpenLoops SDK loops'
     'locations:Manage project folder locations'
     'roots:Manage project root folders'
     'recipes:Manage project recipes'

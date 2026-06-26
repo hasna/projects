@@ -68,6 +68,11 @@ projects sessions my-app --unrenamed --json
 projects start --bulk my-app docs-site service-api --agent opencode --dry-run --json
 projects start --bulk-file ./project-targets.json --agent claude --dry-run --json
 projects status my-app --profile dev --json
+projects store inspect my-app --json
+projects canvases list my-app --ensure-default --render-spec
+projects canvases create my-app --name "Research Board" --nodes-json '[{"id":"note","position":{"x":0,"y":0},"data":{"title":"Note"}}]'
+projects loops link my-app daily-check --name "Daily Check" --role maintenance
+projects loops list my-app --json
 projects import /path/to/existing --json
 projects import-github hasna/example --root open-source --clone --dry-run --json
 projects scan-roots --root open-source --repo-prefix project- --clone --json
@@ -134,6 +139,19 @@ does not force text into unknown panes. Use `projects start --rename-report` or
 execution still belongs in `todos`; long-form specs and decisions still belong
 in `brief`.
 
+Per-project app data is stored outside the global registry under
+`~/.hasna/projects/by-id/<project_id>/`. Each project gets one `project.db`
+there for project-specific canvases, custom JSON data models/records, and
+OpenLoops links. The global project registry remains
+`~/.hasna/projects/projects.db` by default. `projects canvases * --render-spec`
+emits a JSON Render contract for a TypeScript React surface using Tailwind,
+shadcn components, and React Flow as an infinite canvas; a project may have
+multiple canvases.
+
+OpenLoops integration uses the `@hasna/loops` SDK as an optional peer. Runtime
+commands that need live loop state load `@hasna/loops/sdk` dynamically, so
+Open Projects can still manage projects when OpenLoops is not installed.
+
 ## Storage Sync
 
 Production storage for Hasna XYZ uses the `projects` database on
@@ -191,6 +209,9 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_tmux_profiles_list` / `projects_tmux_profiles_add` / `projects_tmux_profiles_apply` | Manage reusable tmux sessions/windows |
 | `projects_list` / `projects_show` | Search and inspect projects |
 | `projects_render_list` / `projects_render_show` / `projects_render_start` / `projects_render_status` / `projects_render_sessions` / `projects_render_roots` / `projects_render_recipes` | Emit validated JSON Render specs for project surfaces |
+| `projects_store_inspect` | Inspect and initialize the per-project app store under `~/.hasna/projects/by-id/<project_id>` |
+| `projects_canvases_list` / `projects_canvases_create` / `projects_render_canvas` | Manage and render per-project React Flow canvas records |
+| `projects_loops_link` / `projects_loops_list` | Link project stores to OpenLoops loops and summarize them through `@hasna/loops` |
 | `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
 | `projects_create` | Plan or create a project anywhere on disk |
 | `projects_start` | Open or reuse a tmux session, ensure default `01`/`02` windows, and launch Codewith, Claude, OpenCode, Cursor, or no tool, with optional exact tmux windows |
@@ -267,9 +288,20 @@ Core internal tables:
 - `workspace_locks`: short-lived mutation locks
 - `workspace_migration_map`: one-time legacy project-to-workspace mapping
 
-DB path: `~/.hasna/projects/projects.db`
+Global registry DB path: `~/.hasna/projects/projects.db`
 
-Override: `HASNA_PROJECTS_DB_PATH`
+Per-project app data path: `~/.hasna/projects/by-id/<project_id>/project.db`
+
+Per-project app tables:
+
+- `project_canvases`: React Flow-compatible dashboard/canvas records
+- `project_data_models`: custom JSON data model definitions and render hints
+- `project_data_records`: custom per-model JSON records
+- `project_loop_links`: links to `@hasna/loops` loop ids/names
+
+Global registry override: `HASNA_PROJECTS_DB_PATH`
+
+Per-project app store root override: `HASNA_PROJECTS_HOME`
 
 ## SDK
 
@@ -283,8 +315,14 @@ import {
   executeProjectCreation,
   runProjectAgentPrompt,
   startProject,
+  ensureProjectStore,
+  ensureDefaultProjectCanvas,
+  listProjectCanvases,
+  linkProjectLoop,
 } from "@hasna/projects";
 ```
+
+Per-project store helpers are also available from `@hasna/projects/project-store`.
 
 ## Architecture
 
@@ -297,6 +335,7 @@ src/
 │       └── completion.ts         # project shell completion
 ├── db/
 │   ├── database.ts               # SQLite init/path resolution
+│   ├── project-store.ts          # per-project project.db helpers
 │   ├── schema.ts                 # migrations
 │   └── workspaces.ts             # workspace/root/recipe/agent/tmux services
 ├── lib/
@@ -309,6 +348,7 @@ src/
 │   └── workspace-doctor.ts       # marker/path/reference validation
 ├── mcp/
 │   └── index.ts                  # project-first MCP server
+├── project-store.ts              # per-project store SDK subpath exports
 ├── types/
 │   └── workspace.ts              # internal storage/project domain types
 └── index.ts                      # SDK exports

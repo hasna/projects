@@ -14,6 +14,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./project-store": {
+      "types": "./dist/project-store.d.ts",
+      "import": "./dist/project-store.js"
+    },
     "./storage": {
       "types": "./dist/storage.d.ts",
       "import": "./dist/storage.js"
@@ -29,7 +33,7 @@
     "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts src/storage.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/index.ts src/project-store.ts src/storage.ts --outdir dist --target bun && tsc --emitDeclarationOnly --outDir dist",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.ts",
@@ -77,6 +81,14 @@
     "nanoid": "^5.0.9",
     "pg": "^8.13.3",
     "zod": "3.25.76"
+  },
+  "peerDependencies": {
+    "@hasna/loops": ">=0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@hasna/loops": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/bun": "^1.2.4",

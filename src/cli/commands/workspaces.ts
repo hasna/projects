@@ -75,7 +75,19 @@ import {
   type ProjectStartResult,
 } from "../../lib/project-start.js";
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
-import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
+import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
+import {
+  createProjectCanvas,
+  ensureDefaultProjectCanvas,
+  inspectProjectStore,
+  inspectProjectStoreWithLoops,
+  linkProjectLoop,
+  listProjectCanvases,
+  listProjectDataModels,
+  listProjectLoopSummaries,
+  type ProjectCanvasEdge,
+  type ProjectCanvasNode,
+} from "../../db/project-store.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -189,6 +201,13 @@ function parseJsonObject(value: string | undefined, label: string): JsonObject |
     throw new Error(`${label} must be a JSON object`);
   }
   return parsed as JsonObject;
+}
+
+function parseJsonArray<T>(value: string | undefined, label: string): T[] | undefined {
+  if (!value) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array`);
+  return parsed as T[];
 }
 
 function parseIntegrationsJson(value: string | undefined): WorkspaceIntegrations | undefined {
@@ -634,6 +653,9 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectStatusCommand(program);
   registerProjectSessionsCommand(program);
   registerProjectCommands(program);
+  registerProjectStoreCommands(program);
+  registerProjectCanvasCommands(program);
+  registerProjectLoopCommands(program);
   registerBudgetCommands(program);
   registerLocationsCommand(program);
   registerRootsCommand(program);
@@ -2107,6 +2129,202 @@ function registerProjectCommands(program: Command): void {
           const hasMore = results.length > visible.length;
           printDiscoveryHint(`${hasMore ? `Showing ${visible.length} of more than ${limit} checked project(s).` : `Showing ${visible.length} checked project(s).`} Use --limit <n>, --verbose, --json, or 'projects doctor <slug>' for details.`);
         }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function registerProjectStoreCommands(program: Command): void {
+  const cmd = program.command("store").description("Inspect per-project app data stores");
+
+  cmd
+    .command("inspect <project>")
+    .description("Inspect and initialize the per-project app store under ~/.hasna/projects/by-id/<project_id>")
+    .option("--include-loops", "Include linked OpenLoops summaries through @hasna/loops")
+    .option("--include-runs", "Include recent linked loop runs with --include-loops")
+    .option("-j, --json", "Output JSON")
+    .action(async (projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const summary = opts.includeLoops
+          ? await inspectProjectStoreWithLoops(project, { includeRuns: opts.includeRuns })
+          : inspectProjectStore(project);
+        if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), store: summary }, opts); return; }
+        console.log(`${chalk.bold(project.slug)} app store`);
+        console.log(`  ${chalk.dim("project db:")} ${summary.paths.db_path}`);
+        console.log(`  ${chalk.dim("project dir:")} ${summary.paths.project_dir}`);
+        console.log(`  ${chalk.dim("schema:")} ${summary.schema_version ?? "unknown"}`);
+        console.log(`  ${chalk.dim("canvases:")} ${summary.counts.canvases}`);
+        console.log(`  ${chalk.dim("data models:")} ${summary.counts.data_models}`);
+        console.log(`  ${chalk.dim("data records:")} ${summary.counts.data_records}`);
+        console.log(`  ${chalk.dim("loop links:")} ${summary.counts.loop_links}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function registerProjectCanvasCommands(program: Command): void {
+  const cmd = program.command("canvases").description("Manage per-project React Flow canvas records");
+
+  cmd
+    .command("list <project>")
+    .description("List canvases stored in a project's project.db")
+    .option("--ensure-default", "Create the default dashboard canvas if missing")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        if (opts.ensureDefault) ensureDefaultProjectCanvas(project);
+        const canvases = listProjectCanvases(project);
+        const payload = buildProjectCanvasesPayload({ project, canvases });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
+        printRows(canvasRows(canvases), ["slug", "name", "status", "engine", "nodes", "edges", "updated_at"]);
+        printDiscoveryHint(`Showing ${canvases.length} canvas${canvases.length === 1 ? "" : "es"}. Use --ensure-default, --render-spec, or 'projects canvases show <project> <canvas>'.`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("show <project> [canvas]")
+    .description("Show one project canvas and its JSON Render React Flow contract")
+    .option("--include-loops", "Include linked OpenLoops summaries through @hasna/loops")
+    .option("--include-runs", "Include recent linked loop runs with --include-loops")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action(async (projectIdOrSlug, canvasIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const canvas = listProjectCanvases(project).find((item) => item.id === (canvasIdOrSlug ?? "dashboard") || item.slug === (canvasIdOrSlug ?? "dashboard"));
+        if (!canvas) throw new Error(`Project canvas not found: ${canvasIdOrSlug ?? "dashboard"}`);
+        const loops = opts.includeLoops ? await listProjectLoopSummaries(project, { includeRuns: opts.includeRuns }) : [];
+        const payload = buildProjectCanvasPayload({
+          project,
+          canvas,
+          loops,
+          dataModels: listProjectDataModels(project),
+        });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
+        console.log(`${chalk.bold(canvas.name)} ${chalk.dim(`(${canvas.slug})`)}`);
+        console.log(`  ${chalk.dim("id:")} ${canvas.id}`);
+        console.log(`  ${chalk.dim("engine:")} ${canvas.layout_engine}`);
+        console.log(`  ${chalk.dim("nodes:")} ${canvas.nodes.length}`);
+        console.log(`  ${chalk.dim("edges:")} ${canvas.edges.length}`);
+        printDiscoveryHint("Use --render-spec for the React Flow JSON Render contract.");
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("create <project>")
+    .description("Create a project canvas in the project's project.db")
+    .requiredOption("--name <name>", "Canvas name")
+    .option("--slug <slug>", "Canvas slug")
+    .option("--description <text>", "Canvas description")
+    .option("--viewport-json <json>", "React Flow viewport JSON object")
+    .option("--nodes-json <json>", "React Flow nodes JSON array")
+    .option("--edges-json <json>", "React Flow edges JSON array")
+    .option("--data-json <json>", "Canvas data JSON object")
+    .option("--metadata-json <json>", "Canvas metadata JSON object")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const canvas = createProjectCanvas(project, {
+          name: opts.name,
+          slug: opts.slug,
+          description: opts.description,
+          viewport: parseJsonObject(opts.viewportJson, "--viewport-json"),
+          nodes: parseJsonArray<ProjectCanvasNode>(opts.nodesJson, "--nodes-json"),
+          edges: parseJsonArray<ProjectCanvasEdge>(opts.edgesJson, "--edges-json"),
+          data: parseJsonObject(opts.dataJson, "--data-json"),
+          metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
+        });
+        const payload = buildProjectCanvasPayload({
+          project,
+          canvas,
+          dataModels: listProjectDataModels(project),
+        });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
+        console.log(chalk.green(`✓ Canvas created: ${canvas.slug}`));
+        console.log(`  ${chalk.dim("project db:")} ${inspectProjectStore(project).paths.db_path}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function canvasRows(canvases: ReturnType<typeof listProjectCanvases>): Array<Record<string, unknown>> {
+  return canvases.map((canvas) => ({
+    slug: canvas.slug,
+    name: canvas.name,
+    status: canvas.status,
+    engine: canvas.layout_engine,
+    nodes: canvas.nodes.length,
+    edges: canvas.edges.length,
+    updated_at: canvas.updated_at,
+  }));
+}
+
+function registerProjectLoopCommands(program: Command): void {
+  const cmd = program.command("loops").description("Link projects to OpenLoops SDK loops");
+
+  cmd
+    .command("link <project> <loop>")
+    .description("Link an @hasna/loops loop id or name to a project store")
+    .option("--name <name>", "Loop display name if different from the id")
+    .option("--role <role>", "Project-specific loop role", "project-loop")
+    .option("--metadata-json <json>", "Loop link metadata JSON object")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, loopId, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const link = linkProjectLoop(project, {
+          loop_id: loopId,
+          loop_name: opts.name,
+          role: opts.role,
+          metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
+        });
+        if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), link }, opts); return; }
+        console.log(chalk.green(`✓ Linked OpenLoops loop ${link.loop_id} to ${project.slug}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("list <project>")
+    .description("List linked OpenLoops loops for a project through @hasna/loops")
+    .option("--include-runs", "Include recent run status summaries")
+    .option("-j, --json", "Output JSON")
+    .action(async (projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const loops = await listProjectLoopSummaries(project, { includeRuns: opts.includeRuns });
+        if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), loops }, opts); return; }
+        printRows(loops.map((item) => ({
+          loop_id: item.link.loop_id,
+          name: item.link.loop_name ?? "",
+          role: item.link.role,
+          status: item.status,
+          loop_status: item.loop && typeof item.loop.status === "string" ? item.loop.status : "",
+          next_run_at: item.loop && typeof item.loop.next_run_at === "string" ? item.loop.next_run_at : "",
+        })), ["loop_id", "name", "role", "status", "loop_status", "next_run_at"]);
+        printDiscoveryHint(`Showing ${loops.length} linked loop${loops.length === 1 ? "" : "s"}.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
