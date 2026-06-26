@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runMigrations } from "./schema.js";
@@ -46,6 +46,8 @@ import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/w
 import { importRegisteredRoots, importWorkspace, planWorkspaceImport } from "../lib/workspace-import.js";
 import { cleanupWorkspaceCreation, executeWorkspaceCreation, planWorkspaceCreation } from "../lib/workspace-plan.js";
 import { applyWorkspaceTmuxProfile, prepareWorkspaceDirectory, tmuxProfileToSpec, workspaceMarkerPath } from "../lib/workspace-runtime.js";
+import { inspectProjectStore, migrateProjectToStore, planProjectStoreMigration } from "../lib/project-store.js";
+import { projectWorkspaceStorePath } from "../lib/project-store-paths.js";
 
 function makeDb(): Database {
   const db = new Database(":memory:");
@@ -77,6 +79,115 @@ describe("workspace schema", () => {
 });
 
 describe("workspace domain services", () => {
+  test("defaults rootless projects to the canonical ID-based workspace store", () => {
+    const db = makeDb();
+    const previousHome = process.env["HASNA_PROJECTS_HOME"];
+    const storeHome = tmpDir();
+    process.env["HASNA_PROJECTS_HOME"] = storeHome;
+    try {
+      const workspace = createWorkspace({ name: "Store Default", kind: "project", tags: ["kind:work-project"] }, db);
+      expect(workspace.primary_path).toBe(join(storeHome, "workspaces", workspace.id));
+      const inspection = inspectProjectStore(workspace);
+      expect(inspection.paths.data_path).toBe(join(storeHome, "data", workspace.id));
+      expect(inspection.primary_is_canonical).toBe(true);
+      expect(listWorkspaceLocations(workspace.id, db)[0]?.kind).toBe("local");
+    } finally {
+      if (previousHome === undefined) delete process.env["HASNA_PROJECTS_HOME"];
+      else process.env["HASNA_PROJECTS_HOME"] = previousHome;
+      rmSync(storeHome, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  test("rejects unsafe custom workspace IDs before deriving store paths", () => {
+    const db = makeDb();
+    const previousHome = process.env["HASNA_PROJECTS_HOME"];
+    const storeHome = tmpDir();
+    process.env["HASNA_PROJECTS_HOME"] = storeHome;
+    try {
+      expect(() => projectWorkspaceStorePath("../escape")).toThrow(/Invalid workspace id/);
+      expect(() => createWorkspace({ id: "../escape", name: "Bad ID", kind: "project" }, db)).toThrow(/Invalid workspace id/);
+      expect(() => createWorkspace({ id: "wks_bad/escape", name: "Bad Slash", kind: "project" }, db)).toThrow(/Invalid workspace id/);
+    } finally {
+      if (previousHome === undefined) delete process.env["HASNA_PROJECTS_HOME"];
+      else process.env["HASNA_PROJECTS_HOME"] = previousHome;
+      rmSync(storeHome, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  test("plans and applies safe migration into the canonical workspace store", () => {
+    const db = makeDb();
+    const previousHome = process.env["HASNA_PROJECTS_HOME"];
+    const storeHome = tmpDir();
+    const sourceDir = tmpDir();
+    mkdirSync(join(sourceDir, ".git"));
+    writeFileSync(join(sourceDir, "README.md"), "# migrated\n");
+    process.env["HASNA_PROJECTS_HOME"] = storeHome;
+    try {
+      const workspace = createWorkspace({
+        name: "Migrated Store",
+        kind: "project",
+        primary_path: sourceDir,
+        tags: ["client:example"],
+      }, db);
+      const plan = planProjectStoreMigration(workspace);
+      expect(plan.can_apply).toBe(true);
+      expect(plan.source_path).toBe(sourceDir);
+      expect(plan.target_path).toBe(join(storeHome, "workspaces", workspace.id));
+      expect(plan.actions.some((action) => action.action === "move")).toBe(true);
+      expect(existsSync(sourceDir)).toBe(true);
+
+      const result = migrateProjectToStore(workspace, { db, apply: true, source: "cli", command: "projects store migrate --apply" });
+      expect(result.verified).toBe(true);
+      expect(result.project.primary_path).toBe(join(storeHome, "workspaces", workspace.id));
+      expect(existsSync(sourceDir)).toBe(false);
+      expect(existsSync(join(result.target_path, ".git"))).toBe(true);
+      expect(existsSync(join(result.target_path, ".project.json"))).toBe(true);
+      expect(existsSync(result.plan_artifact_path!)).toBe(true);
+      const locations = listWorkspaceLocations(workspace.id, db);
+      expect(locations.some((location) => location.label === "previous-primary" && location.path === sourceDir)).toBe(true);
+      expect(locations.some((location) => location.label === "canonical" && location.is_primary)).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env["HASNA_PROJECTS_HOME"];
+      else process.env["HASNA_PROJECTS_HOME"] = previousHome;
+      rmSync(storeHome, { recursive: true, force: true });
+      rmSync(sourceDir, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  test("rolls back the directory move when store migration fails after moving files", () => {
+    const db = makeDb();
+    const previousHome = process.env["HASNA_PROJECTS_HOME"];
+    const storeHome = tmpDir();
+    const sourceDir = tmpDir();
+    mkdirSync(join(sourceDir, ".git"));
+    writeFileSync(join(sourceDir, "README.md"), "# rollback\n");
+    chmodSync(sourceDir, 0o555);
+    process.env["HASNA_PROJECTS_HOME"] = storeHome;
+    try {
+      const workspace = createWorkspace({
+        name: "Rollback Store",
+        kind: "project",
+        primary_path: sourceDir,
+      }, db);
+
+      expect(() => migrateProjectToStore(workspace, { db, apply: true, source: "cli", command: "projects store migrate --apply" })).toThrow();
+      expect(existsSync(sourceDir)).toBe(true);
+      expect(existsSync(join(sourceDir, ".git"))).toBe(true);
+      expect(existsSync(join(storeHome, "workspaces", workspace.id))).toBe(false);
+      expect((getWorkspaceBySlug(workspace.slug, db) ?? workspace).primary_path).toBe(sourceDir);
+    } finally {
+      chmodSync(sourceDir, 0o755);
+      if (previousHome === undefined) delete process.env["HASNA_PROJECTS_HOME"];
+      else process.env["HASNA_PROJECTS_HOME"] = previousHome;
+      rmSync(storeHome, { recursive: true, force: true });
+      rmSync(sourceDir, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
   test("creates roots, recipes, agents, workspaces, locations, and events", () => {
     const db = makeDb();
     const rootPath = tmpDir();

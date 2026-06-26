@@ -52,6 +52,11 @@ Removed public legacy surfaces:
 
 ## Root Inventory
 
+This section describes legacy path inference only. Current canonical physical
+project folders are `$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/`, with
+runtime state under `$HASNA_PROJECTS_HOME/data/<workspace_id>/`. Roots and
+explicit paths remain compatibility/import locations, not canonical identity.
+
 Built-in legacy path inference recognizes these current conventions:
 
 - `hasna-open-dev`: `/home/hasna/workspace/hasna/opensource/opensourcedev`, template `open-{slug}`

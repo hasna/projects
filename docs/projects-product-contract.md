@@ -35,6 +35,8 @@ projects show
 projects update
 projects tag
 projects untag
+projects labels
+projects store
 projects link
 projects unlink
 projects archive
@@ -73,12 +75,52 @@ Projects owns:
 - lifecycle: active, archived, deleted
 - type/kind: open source, internal app, docs, platform, generic, and similar
 - paths and locations across machines
-- roots and path templates for where projects usually live
-- tags and metadata for discovery
+- roots and path templates for explicit checkout/import locations
+- labels, tags, and metadata for discovery
 - integrations: GitHub, todos, brief, mementos, conversations, files
 - launch defaults: preferred agent, tmux profile, primary start command, session policy, start windows
 - runtime events: created, imported, updated, started, archived, deleted
 - agent attribution for all mutations and launch actions
+
+## Workspace Store Contract
+
+Canonical physical project folders are ID-based and live under the Projects
+home, not under org, client, slug, or kind folders:
+
+```text
+$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/
+```
+
+`HASNA_PROJECTS_HOME` defaults to `~/.hasna/projects`. Runtime app data is
+separate and also ID-based:
+
+```text
+$HASNA_PROJECTS_HOME/data/<workspace_id>/
+```
+
+The data directory may contain `project.db`, `logs/`, `artifacts/`, `context/`,
+or similar runtime state. Labels such as `org:hasnaxyz`, `kind:work-project`,
+and `client:foo` are metadata/query filters only. Labels must not become source
+of truth for directory layout. Optional aliases may exist only when they are
+rebuildable from metadata.
+
+Slugs, names, org labels, and client labels are mutable. They must not require a
+canonical folder move. Existing explicit `--path` projects, imports, and
+registered root checkouts remain valid locations for compatibility, especially
+for repository projects that intentionally live in checkout roots. New rootless
+physical projects should default to `workspaces/<workspace_id>` unless the user
+passes an explicit path/root override or creates a remote-only project.
+
+Store migration must be explicit and safe:
+
+- dry-run plan first by default
+- `--apply`/`--yes` required before moving files or changing primary path
+- write a plan artifact under `data/<workspace_id>`
+- move the existing primary directory to preserve git history and marker files
+- record the old path as a non-primary location
+- update `workspaces.primary_path` through the normal location/storage API
+- rewrite/verify the `.project.json` marker at the canonical path
+- never delete source data as a hidden side effect
 
 ## Metadata Taxonomy
 
@@ -167,6 +209,7 @@ Bulk start should be deterministic and non-interactive by default:
 
 ```bash
 projects start --bulk app1 app2 app3 --no-attach
+projects start --label kind:work-project --dry-run --json
 ```
 
 It should report created, reused, skipped, and failed projects.

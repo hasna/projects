@@ -64,6 +64,12 @@ import {
 } from "../../lib/workspace-github.js";
 import { importRegisteredRoots, importWorkspace, importWorkspaceBulk } from "../../lib/workspace-import.js";
 import { runWorkspaceLegacyMigration } from "../../lib/workspace-migration.js";
+import {
+  ensureProjectStore,
+  inspectProjectStore,
+  migrateProjectToStore,
+  planProjectStoreMigration,
+} from "../../lib/project-store.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
@@ -138,6 +144,10 @@ function splitList(value: string | undefined): string[] {
 
 function splitVariadicList(values: string[] | undefined): string[] {
   return splitList(values?.join(","));
+}
+
+function splitLabelFilters(...values: Array<string | undefined>): string[] {
+  return [...new Set(values.flatMap((value) => splitList(value)))];
 }
 
 function printObject(value: unknown, opts?: { json?: boolean }): void {
@@ -653,6 +663,8 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectCommands(program);
   registerBudgetCommands(program);
   registerAgentAssistCommands(program);
+  registerStoreCommand(program);
+  registerLabelsCommand(program);
   registerLocationsCommand(program);
   registerRootsCommand(program);
   registerRecipesCommand(program);
@@ -1102,6 +1114,8 @@ function registerProjectStartCommand(program: Command): void {
     .option("--window <name:command>", "Additional tmux window; repeatable", collectOption, [])
     .option("--windows-json <json>", "Exact tmux windows JSON array to create for this start")
     .option("--tags <tags>", "Tags to apply when registering an unknown folder")
+    .option("--label <labels>", "Start active projects matching comma-separated labels when no target is supplied")
+    .option("--labels <labels>", "Start active projects matching comma-separated labels when no target is supplied")
     .option("--metadata-json <json>", "Metadata JSON to apply when registering an unknown folder")
     .option("--actor <id-or-slug>", "Projects agent credited for the start event")
     .option("--attach", "Attach to the tmux session after starting", false)
@@ -1114,7 +1128,16 @@ function registerProjectStartCommand(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (targets, opts) => {
       try {
-        const startTargets = collectStartTargets(targets, opts.bulkFile);
+        const labelFilters = splitLabelFilters(opts.label, opts.labels);
+        const startTargets = (() => {
+          const explicitTargets = collectStartTargets(targets, opts.bulkFile);
+          const hasExplicitTargets = (targets?.length ?? 0) > 0 || Boolean(opts.bulkFile);
+          if (hasExplicitTargets || labelFilters.length === 0) return explicitTargets;
+          return listWorkspaces({ status: "active", tags: labelFilters, limit: parseHumanLimit(undefined, MAX_HUMAN_LIMIT) }).map((project) => project.slug);
+        })();
+        if (startTargets.length === 0 && labelFilters.length > 0) {
+          throw new Error(`No active projects matched label filter: ${labelFilters.join(", ")}`);
+        }
         const bulk = Boolean(opts.bulk || opts.bulkFile || startTargets.length > 1);
         if (bulk && opts.attach) {
           throw new Error("--attach is only supported for a single project start");
@@ -1134,7 +1157,7 @@ function registerProjectStartCommand(program: Command): void {
           requestedWindows,
           extraWindows: parseStartWindows(opts.window),
           register: opts.register,
-          importTags: splitList(opts.tags),
+          importTags: splitLabelFilters(opts.tags, opts.label, opts.labels),
           importMetadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
           dryRun: opts.dryRun,
           agentId,
@@ -1580,6 +1603,8 @@ function registerProjectCommands(program: Command): void {
     .option("--status <status>", "Filter by status")
     .option("--query <text>", "Search name, slug, description, path, tags, integrations, or metadata")
     .option("--tags <tags>", "Comma-separated tag filter")
+    .option("--label <labels>", "Comma-separated label filter (labels are stored as tags)")
+    .option("--labels <labels>", "Comma-separated label filter (alias for --label)")
     .option("--include-evals", "Include prompt-agent eval fixture projects")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show additional columns in terminal output")
@@ -1592,7 +1617,7 @@ function registerProjectCommands(program: Command): void {
           kind: parseKind(opts.kind),
           status: parseStatus(opts.status),
           query: opts.query,
-          tags: splitList(opts.tags),
+          tags: splitLabelFilters(opts.tags, opts.label, opts.labels),
         };
         if (wantsRenderSpec(opts)) {
           const projects = filterProjectEvalArtifacts(listWorkspaces({
@@ -2299,6 +2324,187 @@ function registerProjectCommands(program: Command): void {
           const hasMore = results.length > visible.length;
           printDiscoveryHint(`${hasMore ? `Showing ${visible.length} of more than ${limit} checked project(s).` : `Showing ${visible.length} checked project(s).`} Use --limit <n>, --verbose, --json, or 'projects doctor <slug>' for details.`);
         }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function registerStoreCommand(program: Command): void {
+  const cmd = program.command("store").description("Inspect, ensure, and safely migrate canonical project stores");
+
+  cmd
+    .command("inspect <project>")
+    .description("Inspect a project's canonical workspace and data store paths")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const inspection = inspectProjectStore(project);
+        if (wantsJson(opts)) { printObject(inspection, opts); return; }
+        console.log(`${chalk.bold(project.slug)} store`);
+        console.log(`  ${chalk.dim("home:")} ${inspection.paths.home}`);
+        console.log(`  ${chalk.dim("workspace:")} ${inspection.paths.workspace_path}${inspection.exists.workspace ? "" : " (missing)"}`);
+        console.log(`  ${chalk.dim("data:")} ${inspection.paths.data_path}${inspection.exists.data ? "" : " (missing)"}`);
+        console.log(`  ${chalk.dim("primary:")} ${inspection.primary_path ?? "none"}${inspection.primary_is_canonical ? " (canonical)" : ""}`);
+        if (inspection.migration_recommended) console.log(chalk.yellow("  migration recommended: primary path is not the canonical store path"));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("ensure <project>")
+    .description("Ensure canonical workspace/data store directories exist")
+    .option("--dry-run", "Preview directory creation and primary-path updates")
+    .option("--no-primary", "Do not set the canonical path as primary when the project has no primary path")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const ensure = () => ensureProjectStore(project, {
+          dryRun: opts.dryRun,
+          setPrimaryIfMissing: opts.primary,
+          agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        });
+        const result = opts.dryRun ? ensure() : withWorkspaceLock(project, agentId, "project store ensure", ensure);
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        console.log(result.dry_run ? chalk.dim(`[dry-run] Store ensure ${project.slug}`) : chalk.green(`✓ Store ensured: ${project.slug}`));
+        console.log(`  ${chalk.dim("workspace:")} ${result.paths.workspace_path}`);
+        console.log(`  ${chalk.dim("data:")} ${result.paths.data_path}`);
+        if (result.created.length) console.log(`  ${chalk.dim(result.dry_run ? "would create:" : "created:")} ${result.created.join(", ")}`);
+        if (result.primary_updated) console.log(`  ${chalk.dim(result.dry_run ? "would set primary:" : "primary set:")} ${result.paths.workspace_path}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("migrate <project>")
+    .description("Safely move a project primary path into the canonical workspace store")
+    .option("--apply", "Apply the migration plan")
+    .option("--yes", "Apply the migration plan (alias for --apply)")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const apply = Boolean(opts.apply || opts.yes);
+        const result = apply
+          ? withWorkspaceLock(project, agentId, "project store migrate", () => migrateProjectToStore(project, {
+              apply: true,
+              agentId,
+              source: "cli",
+              command: process.argv.join(" "),
+            }))
+          : planProjectStoreMigration(project, { dryRun: true });
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        const marker = apply ? chalk.green("✓") : chalk.dim("[dry-run]");
+        console.log(`${marker} Store migration ${project.slug}`);
+        console.log(`  ${chalk.dim("from:")} ${result.source_path ?? "none"}`);
+        console.log(`  ${chalk.dim("to:")} ${result.target_path}`);
+        if (result.warnings.length) for (const warning of result.warnings) console.log(`  ${chalk.yellow("warning:")} ${warning}`);
+        for (const action of result.actions) {
+          console.log(`  ${chalk.dim(action.type + ":")} ${action.status} ${action.action} ${action.source ? `${action.source} -> ` : ""}${action.target}`);
+        }
+        if (!apply) console.log(chalk.dim("  Re-run with --apply or --yes to move files and update the primary location."));
+        if ("verified" in result && result.verified) console.log(`  ${chalk.dim("verified:")} canonical primary exists`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function registerLabelsCommand(program: Command): void {
+  const cmd = program.command("labels").alias("label").description("Manage project labels (stored as normalized tags)");
+
+  cmd
+    .command("list [project]")
+    .description("List labels on one project, or label counts across projects")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        if (projectIdOrSlug) {
+          const project = resolveProjectTarget(projectIdOrSlug);
+          const payload = { project: projectWithManagement(project), labels: project.tags };
+          if (wantsJson(opts)) { printObject(payload, opts); return; }
+          console.log(`${project.slug}\t${project.tags.join(",")}`);
+          return;
+        }
+        const counts = new Map<string, number>();
+        for (const project of listWorkspaces({ limit: 10000 })) {
+          for (const label of project.tags) counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
+        const rows = [...counts.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([label, count]) => ({ label, count }));
+        if (wantsJson(opts)) { printObject(rows, opts); return; }
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        printRows(rows.slice(0, limit), ["label", "count"]);
+        printDiscoveryHint(`Showing ${Math.min(limit, rows.length)} of ${rows.length} label(s). Use --limit <n> or --json for full records.`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("add <project> <labels...>")
+    .description("Add labels to a project")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, labels, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const requestedLabels = splitVariadicList(labels);
+        if (requestedLabels.length === 0) throw new Error("Provide at least one label");
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const updated = withWorkspaceLock(project, agentId, "project labels add", () => updateWorkspace(project.id, {
+          tags: mergeProjectTags(project.tags, requestedLabels),
+          agent_id: agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        }));
+        const payload = { project: projectWithManagement(updated), labels: updated.tags };
+        if (wantsJson(opts)) { printObject(payload, opts); return; }
+        console.log(chalk.green(`✓ Added labels to ${updated.slug}: ${requestedLabels.join(", ")}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("remove <project> <labels...>")
+    .alias("rm")
+    .description("Remove labels from a project")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, labels, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const requestedLabels = splitVariadicList(labels);
+        if (requestedLabels.length === 0) throw new Error("Provide at least one label");
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const updated = withWorkspaceLock(project, agentId, "project labels remove", () => updateWorkspace(project.id, {
+          tags: removeProjectTags(project.tags, requestedLabels),
+          agent_id: agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        }));
+        const payload = { project: projectWithManagement(updated), labels: updated.tags };
+        if (wantsJson(opts)) { printObject(payload, opts); return; }
+        console.log(chalk.green(`✓ Removed labels from ${updated.slug}: ${requestedLabels.join(", ")}`));
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);

@@ -168,6 +168,28 @@ export {
   resolveRegisteredProjectTarget,
   resolveRegisteredProjectTargetOrThrow,
 } from "./lib/project-resolver.js";
+export {
+  PROJECTS_HOME_ENV,
+  getProjectsHome,
+  isProjectWorkspaceStorePath,
+  projectDataStorePath,
+  projectWorkspaceStorePath,
+} from "./lib/project-store-paths.js";
+export {
+  ensureProjectStore,
+  inspectProjectStore,
+  migrateProjectToStore,
+  planProjectStoreMigration,
+  projectStorePaths,
+} from "./lib/project-store.js";
+export type {
+  ProjectStoreEnsureResult,
+  ProjectStoreInspection,
+  ProjectStoreMigrationAction,
+  ProjectStoreMigrationPlan,
+  ProjectStoreMigrationResult,
+  ProjectStorePaths,
+} from "./lib/project-store.js";
 export type {
   ProjectMarkerReference,
   ProjectResolverOptions,

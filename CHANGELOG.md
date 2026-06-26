@@ -6,6 +6,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Canonical ID-based project store support:
+  `$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/` for physical workspace
+  folders and `$HASNA_PROJECTS_HOME/data/<workspace_id>/` for runtime state.
+- `projects store inspect`, `projects store ensure`, and dry-run-first
+  `projects store migrate` with explicit `--apply`/`--yes` migration, plan
+  artifacts, previous-location registration, marker rewrite, and verification.
+- `projects labels` / `projects label` commands for add/remove/list workflows
+  over normalized project tags, plus `--label` filters on `projects list` and
+  targetless `projects start`.
+
+### Changed
+
+- Rootless non-remote project creation now defaults the primary path to the
+  canonical ID-based workspace store unless an explicit path or root is passed.
+- Documented labels as metadata/query filters rather than path identity.
+
 ## [0.1.65] - 2026-06-26
 
 ### Added

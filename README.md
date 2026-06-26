@@ -53,6 +53,7 @@ projects create --name "My App" --path /path/to/my-app --stage active --priority
   --start-windows-json '[{"name":"server","command":"bun run dev"}]' \
   --todos-project-id todo_123 --brief-id brief_123 --mkdir --git-init --marker --json
 projects create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
+projects create --name "Store Work" --kind project --mkdir --marker --json  # defaults to $HASNA_PROJECTS_HOME/workspaces/<id>
 projects start                              # from inside a registered repo
 projects start open-notes                  # by slug/id/name/path
 projects start --json                      # operational structured output
@@ -67,6 +68,7 @@ projects start --rename-report --agent codewith
 projects sessions my-app --unrenamed --json
 projects start --bulk my-app docs-site service-api --agent opencode --dry-run --json
 projects start --bulk-file ./project-targets.json --agent claude --dry-run --json
+projects start --label kind:work-project --dry-run --json
 projects status my-app --profile dev --json
 projects import /path/to/existing --json
 projects import-github hasna/example --root open-source --clone --dry-run --json
@@ -74,6 +76,7 @@ projects scan-roots --root open-source --repo-prefix project- --clone --json
 projects sync-roots --root open-source --repo-prefix project- --tags open-source,project --json
 projects import /path/to/root --bulk --dry-run --json
 projects list --query app --tags web,ts
+projects list --label org:hasnaxyz --json
 projects list --limit 50 --verbose
 projects list --query app --tags web,ts --json
 projects show my-app --json
@@ -83,6 +86,13 @@ projects get my-app --json
 projects update my-app --description "New description" --tags web,ts --priority critical --launch-profile dev
 projects tag my-app security cameras
 projects untag my-app cameras
+projects labels add my-app org:hasnaxyz kind:work-project client:foo
+projects labels list my-app
+projects labels remove my-app client:foo
+projects store inspect my-app --json
+projects store ensure my-app --json
+projects store migrate my-app --json          # dry-run plan
+projects store migrate my-app --apply --json  # explicit move/update
 projects link my-app --github-url https://github.com/hasna/my-app --todos-project-id todo_123 --todos-task-list-id list_123
 projects unlink my-app --todos --brief
 projects locations add my-app /path/to/another-folder --label docs
@@ -157,6 +167,35 @@ does not force text into unknown panes. Use `projects start --rename-report` or
 `projects sessions <project> --unrenamed` to inspect rename status. Detailed
 execution still belongs in `todos`; long-form specs and decisions still belong
 in `brief`.
+
+## Workspace Store
+
+Projects has one canonical physical workspace store under `HASNA_PROJECTS_HOME`,
+defaulting to `~/.hasna/projects`:
+
+- canonical workspace path: `$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/`
+- runtime data path: `$HASNA_PROJECTS_HOME/data/<workspace_id>/`
+- common runtime children: `project.db`, `logs/`, `artifacts/`, and `context/`
+
+Rootless new projects default to the canonical workspace path. Explicit
+`--path`, registered roots, imports, and GitHub checkout roots keep their
+requested paths for compatibility until a user runs an explicit store migration.
+Slugs, names, and org labels are mutable metadata and never define the canonical
+folder name.
+
+`projects store inspect` reports the canonical workspace/data paths and whether
+the current primary path is canonical. `projects store ensure` creates missing
+workspace/data directories and only sets the canonical path as primary when the
+project had no primary path. `projects store migrate` is dry-run by default; it
+requires `--apply` or `--yes` to move an existing primary folder into
+`workspaces/<id>`, writes a migration plan under `data/<id>`, preserves git
+history by moving the directory, records the old path as a non-primary location,
+updates `workspaces.primary_path` through the normal location API, rewrites the
+marker, and verifies the canonical primary path exists.
+
+Labels are project metadata/query filters stored in the existing normalized tag
+list. Use labels such as `org:hasnaxyz`, `kind:work-project`, and `client:foo`;
+they do not create canonical folders and are safe to add, remove, or rename.
 
 ## Storage Sync
 
@@ -296,6 +335,10 @@ Core internal tables:
 DB path: `~/.hasna/projects/projects.db`
 
 Override: `HASNA_PROJECTS_DB_PATH`
+
+Projects home: `~/.hasna/projects`
+
+Override: `HASNA_PROJECTS_HOME`
 
 ## SDK
 

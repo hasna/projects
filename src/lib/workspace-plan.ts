@@ -5,6 +5,7 @@ import {
   acquireWorkspaceLock,
   createWorkspace,
   deleteWorkspace,
+  generateWorkspaceId,
   getRecipe,
   getRoot,
   getWorkspaceBySlug,
@@ -34,6 +35,7 @@ import {
   type WorkspaceTmuxResult,
   type WorkspaceTmuxWindowSpec,
 } from "./workspace-runtime.js";
+import { assertProjectWorkspaceId, projectWorkspaceStorePath } from "./project-store-paths.js";
 
 export interface WorkspaceCreationPlanInput extends CreateWorkspaceInput {
   createDirectory?: boolean;
@@ -64,8 +66,7 @@ export interface WorkspaceCreationPlan {
   created_at: string;
   can_execute: boolean;
   warnings: string[];
-  workspace: Omit<Workspace, "id" | "created_at" | "updated_at" | "last_opened_at" | "synced_at"> & {
-    id: null;
+  workspace: Omit<Workspace, "created_at" | "updated_at" | "last_opened_at" | "synced_at"> & {
     created_at: null;
     updated_at: null;
     last_opened_at: null;
@@ -141,13 +142,14 @@ function uniqueWorkspaceSlug(base: string, db?: Database): string {
   return candidate;
 }
 
-function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slug: string): string | null {
+function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slug: string, id: string, kind: WorkspaceKind): string | null {
   if (input.primary_path) return resolve(input.primary_path);
+  if (!root && kind !== "remote-only") return projectWorkspaceStorePath(id);
   if (!root) return null;
   const rendered = renderTemplate(root.path_template || root.name_template || "{slug}", {
     slug,
     name: input.name,
-    kind: input.kind ?? root.default_kind ?? "generic",
+    kind,
     root: root.slug,
     org: root.github_org,
   });
@@ -165,9 +167,10 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
   const recipe = input.recipe_id ? getRecipe(input.recipe_id, db) : null;
   if (input.recipe_id && !recipe) throw new Error(`Recipe not found: ${input.recipe_id}`);
 
+  const id = input.id ? assertProjectWorkspaceId(input.id) : generateWorkspaceId();
   const slug = uniqueWorkspaceSlug(input.slug ?? workspaceSlugify(input.name), db);
-  const primaryPath = deriveWorkspacePath(input, root, slug);
   const kind = input.kind ?? recipe?.kind ?? root?.default_kind ?? "generic";
+  const primaryPath = deriveWorkspacePath(input, root, slug, id, kind);
   const tags = normalizeList([
     ...(root?.tags ?? []),
     ...(recipe?.default_tags ?? []),
@@ -175,7 +178,7 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
   ]);
 
   const workspace = {
-    id: null,
+    id,
     slug,
     name: input.name,
     description: input.description ?? null,
@@ -199,6 +202,7 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
   return {
     workspace,
     workspace_input: {
+      id,
       name: input.name,
       slug,
       description: input.description,
@@ -226,7 +230,6 @@ function asRuntimeWorkspace(workspace: WorkspaceCreationPlan["workspace"]): Work
   const ts = new Date().toISOString();
   return {
     ...workspace,
-    id: "planned",
     created_at: ts,
     updated_at: ts,
   };

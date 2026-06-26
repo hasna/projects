@@ -44,6 +44,8 @@ describe("project-first CLI surface", () => {
       expect(stdout).toContain("show");
       expect(stdout).toContain("sessions");
       expect(stdout).not.toContain("workspaces");
+      expect(stdout).toContain("store");
+      expect(stdout).toContain("labels");
       expect(stdout).toContain("roots");
       expect(stdout).toContain("tmux-profiles");
       expect(stdout).toContain("hasna-events");
@@ -58,7 +60,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs store locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -71,6 +73,8 @@ describe("project-first CLI surface", () => {
     expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
     expect(zshStdout).toContain("'context:Emit an agent-priming bundle for a project'");
     expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
+    expect(zshStdout).toContain("'store:Inspect, ensure, and migrate canonical project stores'");
+    expect(zshStdout).toContain("'labels:Manage project labels'");
   });
 
   test("package publishes Cursor goal hook files", () => {
@@ -167,6 +171,59 @@ describe("project-first CLI surface", () => {
     expect(get.exitCode).toBe(0);
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
   });
+
+  test("workspace store and labels commands use temp home and support label start filtering", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-store-"));
+    const env = {
+      HASNA_PROJECTS_HOME: join(root, "home"),
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+    };
+
+    const create = runProjects([
+      "create",
+      "--name",
+      "Store Work",
+      "--kind",
+      "project",
+      "--mkdir",
+      "--marker",
+      "--json",
+    ], env);
+    expect(create.exitCode).toBe(0);
+    const created = JSON.parse(text(create.stdout)) as { project: { id: string; slug: string; primary_path: string } };
+    expect(created.project.primary_path).toBe(join(env.HASNA_PROJECTS_HOME, "workspaces", created.project.id));
+
+    const inspect = runProjects(["store", "inspect", "store-work", "--json"], env);
+    expect(inspect.exitCode).toBe(0);
+    const inspected = JSON.parse(text(inspect.stdout)) as { primary_is_canonical: boolean; paths: { data_path: string } };
+    expect(inspected.primary_is_canonical).toBe(true);
+    expect(inspected.paths.data_path).toBe(join(env.HASNA_PROJECTS_HOME, "data", created.project.id));
+
+    const migratePlan = runProjects(["store", "migrate", "store-work", "--json"], env);
+    expect(migratePlan.exitCode).toBe(0);
+    const planned = JSON.parse(text(migratePlan.stdout)) as { dry_run: boolean; no_op: boolean; target_path: string };
+    expect(planned.dry_run).toBe(true);
+    expect(planned.no_op).toBe(true);
+    expect(planned.target_path).toBe(created.project.primary_path);
+
+    const labelsAdd = runProjects(["labels", "add", "store-work", "org:hasnaxyz", "kind:work-project", "client:foo", "--json"], env);
+    expect(labelsAdd.exitCode).toBe(0);
+    const labelsPayload = JSON.parse(text(labelsAdd.stdout)) as { labels: string[] };
+    expect(labelsPayload.labels).toContain("kind:work-project");
+
+    const filtered = runProjects(["list", "--label", "kind:work-project", "--json"], env);
+    expect(filtered.exitCode).toBe(0);
+    expect((JSON.parse(text(filtered.stdout)) as Array<{ slug: string }>).map((project) => project.slug)).toEqual(["store-work"]);
+
+    const started = runProjects(["start", "--label", "kind:work-project", "--dry-run", "--json"], env);
+    expect(started.exitCode).toBe(0);
+    const startPayload = JSON.parse(text(started.stdout)) as { project: { slug: string; primary_path: string }; tmux: { windows: Array<{ metadata?: { path?: string } }> } };
+    expect(startPayload.project.slug).toBe("store-work");
+    expect(startPayload.project.primary_path).toBe(created.project.primary_path);
+    expect(startPayload.tmux.windows[0]?.metadata?.path).toBe(created.project.primary_path);
+
+    rmSync(root, { recursive: true, force: true });
+  }, 10000);
 
   test("top-level list hides eval fixtures by default and cleanup-evals removes them", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-eval-cleanup-"));
