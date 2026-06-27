@@ -35,13 +35,22 @@ describe("OSS project matrix", () => {
         }]);
       }
       if (command === "gh") {
+        expect(args).toContain("--search");
+        expect(args).toContain("sort:updated-desc");
         return JSON.stringify([{
+          number: 41,
+          title: "Older Alpha PR",
+          state: "OPEN",
+          url: "https://github.com/hasna/open-alpha/pull/41",
+          updatedAt: "2026-06-26T11:01:00Z",
+          headRefName: "feat/older-alpha",
+        }, {
           number: 42,
-          title: "Alpha PR",
+          title: "Latest Alpha PR",
           state: "OPEN",
           url: "https://github.com/hasna/open-alpha/pull/42",
           updatedAt: "2026-06-26T12:01:00Z",
-          headRefName: "feat/alpha",
+          headRefName: "feat/latest-alpha",
         }]);
       }
       throw new Error(`unexpected command: ${command} ${args.join(" ")}`);

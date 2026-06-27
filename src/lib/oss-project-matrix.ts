@@ -310,6 +310,8 @@ function prRefs(githubRepo: string | null, limit: number, runner: OssMatrixComma
     githubRepo,
     "--state",
     "all",
+    "--search",
+    "sort:updated-desc",
     "--limit",
     String(limit),
     "--json",
@@ -322,7 +324,19 @@ function prRefs(githubRepo: string | null, limit: number, runner: OssMatrixComma
   try {
     const parsed = JSON.parse(result.value) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, limit).map((item) => {
+    return parsed
+      .slice()
+      .sort((a, b) => {
+        const aUpdated = a && typeof a === "object" && typeof (a as Record<string, unknown>).updatedAt === "string"
+          ? Date.parse((a as Record<string, unknown>).updatedAt as string)
+          : 0;
+        const bUpdated = b && typeof b === "object" && typeof (b as Record<string, unknown>).updatedAt === "string"
+          ? Date.parse((b as Record<string, unknown>).updatedAt as string)
+          : 0;
+        return bUpdated - aUpdated;
+      })
+      .slice(0, limit)
+      .map((item) => {
       const pr = item && typeof item === "object" ? item as Record<string, unknown> : {};
       return {
         number: typeof pr.number === "number" ? pr.number : Number(pr.number ?? 0),

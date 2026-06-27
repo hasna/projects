@@ -128,6 +128,29 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("oss matrix CLI rejects malformed positive integer options", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-oss-matrix-invalid-"));
+    try {
+      const result = runProjects([
+        "oss",
+        "matrix",
+        "--root",
+        root,
+        "--limit",
+        "1abc",
+        "--no-tasks",
+        "--no-prs",
+        "--no-tmux",
+        "--json",
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(text(result.stderr)).toContain("--limit must be a positive integer");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("package publishes Cursor goal hook files", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as { files: string[] };
     expect(pkg.files).toContain(".cursor/hooks.json");
