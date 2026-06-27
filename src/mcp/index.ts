@@ -52,7 +52,18 @@ import {
   startProject,
 } from "../lib/project-start.js";
 import { projectTmuxStatus } from "../lib/project-tmux-status.js";
-import { buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../lib/project-render.js";
+import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../lib/project-render.js";
+import { inspectProjectStore as inspectCanonicalProjectStore } from "../lib/project-store.js";
+import {
+  createProjectCanvas,
+  ensureDefaultProjectCanvas,
+  inspectProjectStore as inspectProjectAppStore,
+  inspectProjectStoreWithLoops as inspectProjectAppStoreWithLoops,
+  linkProjectLoop,
+  listProjectCanvases,
+  listProjectDataModels,
+  listProjectLoopSummaries,
+} from "../db/project-store.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -1054,6 +1065,158 @@ server.tool(
   "Return a validated JSON Render spec for project recipes.",
   {},
   async () => jsonText(buildRecipesRender(listRecipes())),
+);
+
+server.tool(
+  "projects_store_inspect",
+  "Inspect canonical project storage and the per-project app store under $HASNA_PROJECTS_HOME/data/<workspace_id>/project.db.",
+  {
+    project: z.string(),
+    include_loops: z.boolean().optional(),
+    include_runs: z.boolean().optional(),
+  },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText({
+      project: projectWithManagement(project),
+      store: inspectCanonicalProjectStore(project),
+      app_store: input.include_loops
+        ? await inspectProjectAppStoreWithLoops(project, { includeRuns: input.include_runs })
+        : inspectProjectAppStore(project),
+    });
+  },
+);
+
+server.tool(
+  "projects_canvases_list",
+  "List per-project React Flow canvas records from the project's project.db.",
+  {
+    project: z.string(),
+    ensure_default: z.boolean().optional(),
+    render_spec: z.boolean().optional(),
+  },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    if (input.ensure_default) ensureDefaultProjectCanvas(project);
+    const payload = buildProjectCanvasesPayload({ project, canvases: listProjectCanvases(project) });
+    return jsonText(input.render_spec ? payload.render : withoutRender(payload));
+  },
+);
+
+server.tool(
+  "projects_canvases_create",
+  "Create a per-project React Flow canvas record in the project's project.db.",
+  {
+    project: z.string(),
+    name: z.string(),
+    slug: z.string().optional(),
+    description: z.string().optional(),
+    viewport: z.record(z.unknown()).optional(),
+    nodes: z.array(z.record(z.unknown())).optional(),
+    edges: z.array(z.record(z.unknown())).optional(),
+    data: z.record(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    render_spec: z.boolean().optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const canvas = withWorkspaceMutationLock(project, owner, "project canvas create", () => createProjectCanvas(project, {
+        name: input.name,
+        slug: input.slug,
+        description: input.description,
+        viewport: input.viewport as JsonObject | undefined,
+        nodes: input.nodes as never,
+        edges: input.edges as never,
+        data: input.data as JsonObject | undefined,
+        metadata: input.metadata as JsonObject | undefined,
+      }));
+      const payload = buildProjectCanvasPayload({
+        project,
+        canvas,
+        dataModels: listProjectDataModels(project),
+      });
+      return jsonText(input.render_spec ? payload.render : withoutRender(payload));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_render_canvas",
+  "Return a validated JSON Render spec for one per-project React Flow canvas.",
+  {
+    project: z.string(),
+    canvas: z.string().optional(),
+    include_loops: z.boolean().optional(),
+    include_runs: z.boolean().optional(),
+  },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    const target = input.canvas ?? "dashboard";
+    const canvas = listProjectCanvases(project).find((item) => item.id === target || item.slug === target);
+    if (!canvas) return errorText(`Project canvas not found: ${target}`);
+    const payload = buildProjectCanvasPayload({
+      project,
+      canvas,
+      loops: input.include_loops ? await listProjectLoopSummaries(project, { includeRuns: input.include_runs }) : [],
+      dataModels: listProjectDataModels(project),
+    });
+    return jsonText(payload.render);
+  },
+);
+
+server.tool(
+  "projects_loops_link",
+  "Link an @hasna/loops loop id or name to a project store.",
+  {
+    project: z.string(),
+    loop: z.string(),
+    name: z.string().optional(),
+    role: z.string().optional(),
+    metadata: z.record(z.unknown()).optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const link = withWorkspaceMutationLock(project, owner, "project OpenLoops link", () => linkProjectLoop(project, {
+        loop_id: input.loop,
+        loop_name: input.name,
+        role: input.role,
+        metadata: input.metadata as JsonObject | undefined,
+      }));
+      return jsonText({ project: projectWithManagement(project), link });
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_loops_list",
+  "List linked OpenLoops summaries for a project through @hasna/loops.",
+  {
+    project: z.string(),
+    include_runs: z.boolean().optional(),
+  },
+  async (input) => {
+    const project = findProjectTarget(input.project);
+    if (!project) return errorText(`Project not found: ${input.project}`);
+    return jsonText({
+      project: projectWithManagement(project),
+      loops: await listProjectLoopSummaries(project, { includeRuns: input.include_runs }),
+    });
+  },
 );
 server.tool(
   "projects_locations_list",

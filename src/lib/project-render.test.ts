@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
-import { buildProjectListRender, buildProjectStatusRender, projectsJsonRenderCatalog, validateProjectsRenderSpec } from "./project-render.js";
+import { defaultProjectCanvasInput } from "../db/project-store.js";
+import { buildProjectCanvasPayload, buildProjectListRender, buildProjectStatusRender, projectsJsonRenderCatalog, validateProjectsRenderSpec } from "./project-render.js";
 
 function makeDb(): Database {
   const db = new Database(":memory:");
@@ -33,6 +34,7 @@ describe("Projects JSON Render specs", () => {
       "Tabs",
       "Timeline",
       "Actions",
+      "Canvas",
     ]));
     expect(validated.root).toBe("root");
     expect(validated.elements.root?.type).toBe("Card");
@@ -76,6 +78,45 @@ describe("Projects JSON Render specs", () => {
     const actions = spec.elements.actions?.props.actions as Array<{ command: string }>;
 
     expect(actions[0]?.command).toBe("projects start 'odd project'\\''s'");
+    db.close();
+  });
+
+  test("builds a React Flow canvas render payload", () => {
+    const db = makeDb();
+    const project = createWorkspace({
+      name: "Canvas Project",
+      slug: "canvas-project",
+      kind: "project",
+      primary_path: "/tmp/canvas-project",
+    }, db);
+    const canvas = {
+      id: "pcv_test",
+      slug: "dashboard",
+      name: "Dashboard",
+      description: "Default dashboard",
+      status: "active" as const,
+      layout_engine: "react-flow",
+      viewport: { x: 0, y: 0, zoom: 1 },
+      nodes: defaultProjectCanvasInput(project).nodes!,
+      edges: defaultProjectCanvasInput(project).edges!,
+      data: { surface: "project-dashboard" },
+      metadata: {},
+      created_at: "2026-06-26T00:00:00.000Z",
+      updated_at: "2026-06-26T00:00:00.000Z",
+    };
+
+    const payload = buildProjectCanvasPayload({ project, canvas });
+    const spec = validateProjectsRenderSpec(payload.render);
+    expect(spec.elements.root?.type).toBe("Canvas");
+    expect(spec.elements.root?.props.ui_contract).toMatchObject({
+      styling: "tailwind",
+      components: "shadcn",
+      canvas: "react-flow",
+    });
+    expect(spec.elements.root?.props.capabilities).toMatchObject({
+      infinite_canvas: true,
+      multiple_canvases_per_project: true,
+    });
     db.close();
   });
 

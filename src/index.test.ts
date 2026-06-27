@@ -32,6 +32,9 @@ describe("project-first SDK barrel", () => {
     expect(source).toContain("readProjectMarker");
     expect(source).toContain("importWorkspace as importProject");
     expect(source).toContain("publishWorkspaceToGitHub as publishProjectToGitHub");
+    expect(source).toContain("buildProjectCanvasPayload");
+    expect(source).toContain("buildProjectCanvasesPayload");
+    expect(source).toContain("PROJECT_RENDER_UI_CONTRACT");
     expect(source).not.toContain("export * from \"./types/workspace.js\"");
     expect(source).not.toMatch(/^\s*createWorkspace,\s*$/m);
     expect(source).not.toMatch(/^\s*runWorkspaceAgentPrompt,\s*$/m);

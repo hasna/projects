@@ -61,7 +61,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -76,6 +76,8 @@ describe("project-first CLI surface", () => {
     expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
     expect(zshStdout).toContain("'oss:Open-source workspace routing helpers'");
     expect(zshStdout).toContain("'store:Inspect, ensure, and migrate canonical project stores'");
+    expect(zshStdout).toContain("'canvases:Manage per-project React Flow canvases'");
+    expect(zshStdout).toContain("'loops:Link projects to OpenLoops SDK loops'");
     expect(zshStdout).toContain("'labels:Manage project labels'");
   });
 
@@ -246,7 +248,7 @@ describe("project-first CLI surface", () => {
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
   });
 
-  test("workspace store and labels commands use temp home and support label start filtering", () => {
+  test("workspace store, app store, canvases, loops, and labels use temp home", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-store-"));
     const env = {
       HASNA_PROJECTS_HOME: join(root, "home"),
@@ -269,9 +271,15 @@ describe("project-first CLI surface", () => {
 
     const inspect = runProjects(["store", "inspect", "store-work", "--json"], env);
     expect(inspect.exitCode).toBe(0);
-    const inspected = JSON.parse(text(inspect.stdout)) as { primary_is_canonical: boolean; paths: { data_path: string } };
+    const inspected = JSON.parse(text(inspect.stdout)) as {
+      primary_is_canonical: boolean;
+      paths: { data_path: string };
+      app_store: { paths: { db_path: string }; counts: { canvases: number } };
+    };
     expect(inspected.primary_is_canonical).toBe(true);
     expect(inspected.paths.data_path).toBe(join(env.HASNA_PROJECTS_HOME, "data", created.project.id));
+    expect(inspected.app_store.paths.db_path).toBe(join(env.HASNA_PROJECTS_HOME, "data", created.project.id, "project.db"));
+    expect(inspected.app_store.counts.canvases).toBe(0);
 
     const migratePlan = runProjects(["store", "migrate", "store-work", "--json"], env);
     expect(migratePlan.exitCode).toBe(0);
@@ -279,6 +287,26 @@ describe("project-first CLI surface", () => {
     expect(planned.dry_run).toBe(true);
     expect(planned.no_op).toBe(true);
     expect(planned.target_path).toBe(created.project.primary_path);
+
+    const canvases = runProjects(["canvases", "list", "store-work", "--ensure-default", "--json"], env);
+    expect(canvases.exitCode).toBe(0);
+    const listed = JSON.parse(text(canvases.stdout)) as { canvases: Array<{ slug: string; layout_engine: string }> };
+    expect(listed.canvases[0]?.slug).toBe("dashboard");
+    expect(listed.canvases[0]?.layout_engine).toBe("react-flow");
+
+    const render = runProjects(["canvases", "show", "store-work", "dashboard", "--render-spec"], env);
+    expect(render.exitCode).toBe(0);
+    const spec = JSON.parse(text(render.stdout)) as { elements: { root?: { type?: string; props?: { ui_contract?: { canvas?: string } } } } };
+    expect(spec.elements.root?.type).toBe("Canvas");
+    expect(spec.elements.root?.props?.ui_contract?.canvas).toBe("react-flow");
+
+    const link = runProjects(["loops", "link", "store-work", "loop_123", "--name", "Daily Check", "--json"], env);
+    expect(link.exitCode).toBe(0);
+    expect((JSON.parse(text(link.stdout)) as { link: { loop_id: string } }).link.loop_id).toBe("loop_123");
+
+    const loops = runProjects(["loops", "list", "store-work", "--json"], env);
+    expect(loops.exitCode).toBe(0);
+    expect((JSON.parse(text(loops.stdout)) as { loops: Array<{ status: string }> }).loops[0]?.status).toBe("unavailable");
 
     const labelsAdd = runProjects(["labels", "add", "store-work", "org:hasnaxyz", "kind:work-project", "client:foo", "--json"], env);
     expect(labelsAdd.exitCode).toBe(0);

@@ -1,6 +1,12 @@
 import { defineCatalog, defineSchema, type InferSpec } from "@json-render/core";
 import { z } from "zod/v4";
 import type {
+  ProjectCanvas,
+  ProjectDataModel,
+  ProjectDataRecord,
+  ProjectLoopSummary,
+} from "../db/project-store.js";
+import type {
   JsonObject,
   Workspace,
   WorkspaceAgentAssignment,
@@ -109,6 +115,21 @@ export const projectsJsonRenderCatalog = defineCatalog(projectsJsonRenderSchema,
         actions: z.array(renderActionSchema),
       })),
       description: "A set of commands or links related to the project.",
+    },
+    Canvas: {
+      props: catalogSchema(z.object({
+        title: z.string(),
+        project: z.record(z.string(), z.unknown()),
+        canvas: z.record(z.string(), z.unknown()),
+        engine: z.literal("react-flow").or(z.string()),
+        viewport: z.record(z.string(), z.unknown()),
+        nodes: z.array(z.record(z.string(), z.unknown())),
+        edges: z.array(z.record(z.string(), z.unknown())),
+        data: z.record(z.string(), z.unknown()),
+        capabilities: z.record(z.string(), z.unknown()),
+        ui_contract: z.record(z.string(), z.unknown()),
+      })),
+      description: "A React Flow-compatible infinite canvas surface for project dashboards and custom project views.",
     },
   },
   actions: {
@@ -627,4 +648,191 @@ export function buildProjectSessionsPayload(args: {
       [{ label: "start", command: renderCommand("projects", ["start", args.project.slug]) }],
     ),
   };
+}
+
+export const PROJECT_RENDER_UI_CONTRACT = {
+  frontend: "typescript-react",
+  styling: "tailwind",
+  components: "shadcn",
+  canvas: "react-flow",
+  infinite_canvas: true,
+  multiple_canvases_per_project: true,
+} as const;
+
+function canvasRows(canvases: ProjectCanvas[]): JsonObject[] {
+  return canvases.map((canvas) => ({
+    id: canvas.id,
+    slug: canvas.slug,
+    name: canvas.name,
+    status: canvas.status,
+    engine: canvas.layout_engine,
+    nodes: canvas.nodes.length,
+    edges: canvas.edges.length,
+    updated_at: canvas.updated_at,
+  }));
+}
+
+export function buildProjectCanvasesPayload(args: {
+  project: Workspace;
+  canvases: ProjectCanvas[];
+}): JsonObject {
+  return {
+    schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+    kind: "projects.canvases",
+    project: projectWithManagement(args.project),
+    canvases: args.canvases,
+    ui_contract: PROJECT_RENDER_UI_CONTRACT,
+    render: renderBlock(
+      "projects.canvases",
+      `Canvases ${args.project.name}`,
+      "ok",
+      `${args.canvases.length} project canvas${args.canvases.length === 1 ? "" : "es"}`,
+      [
+        { label: "project", value: args.project.slug },
+        { label: "count", value: args.canvases.length },
+        { label: "canvas_engine", value: "react-flow" },
+      ],
+      [{ title: "canvases", items: canvasRows(args.canvases) }],
+      [
+        { label: "create canvas", command: renderCommand("projects", ["canvases", "create", args.project.slug, "--name", "New Canvas"]) },
+        { label: "show project", command: renderCommand("projects", ["show", args.project.slug]) },
+      ],
+    ),
+  };
+}
+
+function loopRows(loops: ProjectLoopSummary[] = []): JsonObject[] {
+  return loops.map((item) => ({
+    loop_id: item.link.loop_id,
+    loop_name: item.link.loop_name,
+    role: item.link.role,
+    status: item.status,
+    linked_status: item.loop && typeof item.loop.status === "string" ? item.loop.status : "",
+    next_run_at: item.loop && typeof item.loop.next_run_at === "string" ? item.loop.next_run_at : "",
+    error: item.error ?? "",
+  }));
+}
+
+function dataModelRows(models: ProjectDataModel[] = []): JsonObject[] {
+  return models.map((model) => ({
+    id: model.id,
+    slug: model.slug,
+    name: model.name,
+    description: model.description ?? "",
+    updated_at: model.updated_at,
+  }));
+}
+
+export function buildProjectCanvasPayload(args: {
+  project: Workspace;
+  canvas: ProjectCanvas;
+  loops?: ProjectLoopSummary[];
+  dataModels?: ProjectDataModel[];
+}): JsonObject {
+  const elements: Record<string, ProjectsRenderElement> = {
+    root: renderElement("Canvas", {
+      title: args.canvas.name,
+      project: {
+        id: args.project.id,
+        slug: args.project.slug,
+        name: args.project.name,
+        kind: args.project.kind,
+        status: args.project.status,
+        primary_path: args.project.primary_path,
+      },
+      canvas: {
+        id: args.canvas.id,
+        slug: args.canvas.slug,
+        name: args.canvas.name,
+        description: args.canvas.description,
+        status: args.canvas.status,
+        updated_at: args.canvas.updated_at,
+      },
+      engine: args.canvas.layout_engine,
+      viewport: args.canvas.viewport,
+      nodes: args.canvas.nodes,
+      edges: args.canvas.edges,
+      data: args.canvas.data,
+      capabilities: {
+        infinite_canvas: true,
+        multiple_canvases_per_project: true,
+        node_renderer: "react-flow",
+      },
+      ui_contract: PROJECT_RENDER_UI_CONTRACT,
+    }, ["actions"]),
+    actions: renderElement("Actions", {
+      actions: [
+        { label: "list canvases", command: renderCommand("projects", ["canvases", "list", args.project.slug]), variant: "secondary" },
+        { label: "show project", command: renderCommand("projects", ["show", args.project.slug]), variant: "secondary" },
+      ],
+    }),
+  };
+
+  if (args.dataModels?.length) {
+    elements.data_models = renderElement("Table", {
+      title: "Data Models",
+      columns: ["id", "slug", "name", "description", "updated_at"],
+      rows: dataModelRows(args.dataModels),
+    });
+    elements.root.children.push("data_models");
+  }
+
+  if (args.loops?.length) {
+    elements.loops = renderElement("Table", {
+      title: "OpenLoops",
+      columns: ["loop_id", "loop_name", "role", "status", "linked_status", "next_run_at", "error"],
+      rows: loopRows(args.loops),
+    });
+    elements.root.children.push("loops");
+  }
+
+  return {
+    schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+    kind: "projects.canvas",
+    project: projectWithManagement(args.project),
+    canvas: args.canvas,
+    loops: args.loops ?? [],
+    data_models: args.dataModels ?? [],
+    ui_contract: PROJECT_RENDER_UI_CONTRACT,
+    render: validateProjectsRenderSpec({
+      root: "root",
+      elements,
+      metadata: {
+        schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+        kind: "projects.canvas",
+        project_id: args.project.id,
+        canvas_id: args.canvas.id,
+        ui_contract: PROJECT_RENDER_UI_CONTRACT,
+      },
+    }) as unknown as JsonObject,
+  };
+}
+
+export function buildProjectDataModelRender(args: {
+  project: Workspace;
+  model: ProjectDataModel;
+  records: ProjectDataRecord[];
+}): JsonObject {
+  const rows = args.records.map((record) => ({
+    key: record.key,
+    title: record.title ?? "",
+    data: record.data,
+    updated_at: record.updated_at,
+  }));
+  return renderBlock(
+    "projects.data_model",
+    args.model.name,
+    "ok",
+    `${rows.length} record${rows.length === 1 ? "" : "s"} for ${args.project.slug}`,
+    [
+      { label: "project", value: args.project.slug },
+      { label: "model", value: args.model.slug },
+      { label: "records", value: rows.length },
+    ],
+    [
+      { title: "schema", items: [args.model.schema] },
+      { title: "records", items: rows },
+    ],
+    [{ label: "show project", command: renderCommand("projects", ["show", args.project.slug]) }],
+  );
 }

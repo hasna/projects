@@ -6,9 +6,11 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage completion"
   local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
+  local canvas_commands="create list show"
+  local loop_commands="link list"
   local label_commands="list add remove rm"
   local location_commands="add list"
   local event_commands="list record"
@@ -32,6 +34,14 @@ _projects_completion() {
       ;;
     store)
       COMPREPLY=( $(compgen -W "$store_commands" -- "$cur") )
+      return 0
+      ;;
+    canvases)
+      COMPREPLY=( $(compgen -W "$canvas_commands" -- "$cur") )
+      return 0
+      ;;
+    loops)
+      COMPREPLY=( $(compgen -W "$loop_commands" -- "$cur") )
       return 0
       ;;
     labels|label)
@@ -118,13 +128,15 @@ _project() {
     'unlock:Release a project mutation lock'
     'doctor:Validate project records'
     'agent-eval:Run project prompt-agent eval cases'
+    'store:Inspect, ensure, and migrate canonical project stores'
+    'canvases:Manage per-project React Flow canvases'
+    'loops:Link projects to OpenLoops SDK loops'
     'context:Emit an agent-priming bundle for a project'
     'next:Suggest high-leverage next actions for a project'
     'why:Explain how a project target resolves'
     'handoff:Emit a cross-agent handoff bundle'
     'runs:Inspect prompt-agent run ledger entries'
     'oss:Open-source workspace routing helpers'
-    'store:Inspect, ensure, and migrate canonical project stores'
     'locations:Manage project folder locations'
     'roots:Manage project root folders'
     'recipes:Manage project recipes'

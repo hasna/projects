@@ -21,6 +21,12 @@
         "@types/pg": "^8.11.11",
         "typescript": "^5.7.3",
       },
+      "peerDependencies": {
+        "@hasna/loops": ">=0.3.0",
+      },
+      "optionalPeers": [
+        "@hasna/loops",
+      ],
     },
   },
   "packages": {
