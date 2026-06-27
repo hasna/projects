@@ -89,6 +89,8 @@ projects untag my-app cameras
 projects labels add my-app org:hasnaxyz kind:work-project client:foo
 projects labels list my-app
 projects labels remove my-app client:foo
+projects oss matrix --root /home/me/opensource --prefix open- --json
+projects oss matrix --root /home/me/opensource --limit 50 --no-prs --no-tasks
 projects store inspect my-app --json
 projects store ensure my-app --json
 projects store migrate my-app --json          # dry-run plan
@@ -196,6 +198,28 @@ marker, and verifies the canonical primary path exists.
 Labels are project metadata/query filters stored in the existing normalized tag
 list. Use labels such as `org:hasnaxyz`, `kind:work-project`, and `client:foo`;
 they do not create canonical folders and are safe to add, remove, or rename.
+
+## OSS Routing Matrix
+
+`projects oss matrix` emits a compact routing matrix for direct child
+repositories under an OSS workspace root. It is designed for orchestration
+prompts and dispatch loops that need a capped, machine-readable snapshot without
+walking an entire monorepo tree.
+
+```bash
+projects oss matrix \
+  --root /home/hasna/Workspace/hasna/opensource \
+  --prefix open- \
+  --json
+```
+
+Each row includes the repo name/path, package name/version/bin metadata from
+`package.json`, git branch/dirty/ahead/behind/remote state, tmux session/window
+hints, latest task refs from `todos`, and latest pull request refs from `gh`
+when those tools are available. The default limit is 25 repos, with an enforced
+maximum of 200. Use `--limit`, `--no-prs`, `--no-tasks`, `--no-tmux`, and
+`--timeout-ms` to keep routing scans fast in large workspaces or offline
+contexts.
 
 ## Storage Sync
 

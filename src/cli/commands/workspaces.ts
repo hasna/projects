@@ -70,6 +70,11 @@ import {
   migrateProjectToStore,
   planProjectStoreMigration,
 } from "../../lib/project-store.js";
+import {
+  buildOssProjectMatrix,
+  DEFAULT_OSS_MATRIX_LIMIT,
+  MAX_OSS_MATRIX_LIMIT,
+} from "../../lib/oss-project-matrix.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
@@ -261,7 +266,7 @@ function parseGitHubRemoteProtocol(value: string | undefined): GitHubRemoteProto
 
 function parsePositiveInteger(value: string | undefined, label: string): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`);
   return parsed;
 }
@@ -663,6 +668,7 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectCommands(program);
   registerBudgetCommands(program);
   registerAgentAssistCommands(program);
+  registerOssCommands(program);
   registerStoreCommand(program);
   registerLabelsCommand(program);
   registerLocationsCommand(program);
@@ -1088,6 +1094,74 @@ function registerProjectSessionsCommand(program: Command): void {
           const unrenamed = session.unrenamed ? chalk.yellow("rename pending") : chalk.green("rename ok");
           console.log(`  ${session.created_at} ${chalk.dim(String(session.session_name ?? ""))} ${session.session_action ?? ""} ${unrenamed}`);
         }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+  });
+}
+
+function registerOssCommands(program: Command): void {
+  const cmd = program.command("oss").description("Open-source workspace routing helpers");
+
+  cmd
+    .command("matrix")
+    .description("Build a compact matrix for routing work across open-* repositories")
+    .option("--root <path>", "Parent folder to scan for open-* repositories", process.cwd())
+    .option("--prefix <prefix>", "Directory prefix to include", "open-")
+    .option("--limit <n>", `Maximum repositories to inspect (default ${DEFAULT_OSS_MATRIX_LIMIT}, max ${MAX_OSS_MATRIX_LIMIT})`)
+    .option("--task-limit <n>", "Maximum latest task refs per repository", "1")
+    .option("--pr-limit <n>", "Maximum latest pull request refs per repository", "1")
+    .option("--timeout-ms <n>", "Per external command timeout in milliseconds", "1500")
+    .option("--no-tasks", "Skip todos CLI task refs")
+    .option("--no-prs", "Skip GitHub pull request refs")
+    .option("--no-tmux", "Skip tmux session/window hints")
+    .option("--verbose", "Show package, warning, and ref detail in terminal output")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const matrix = buildOssProjectMatrix({
+          root: opts.root,
+          prefix: opts.prefix,
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? DEFAULT_OSS_MATRIX_LIMIT,
+          taskLimit: parsePositiveInteger(opts.taskLimit, "--task-limit") ?? 1,
+          prLimit: parsePositiveInteger(opts.prLimit, "--pr-limit") ?? 1,
+          timeoutMs: parsePositiveInteger(opts.timeoutMs, "--timeout-ms") ?? 1500,
+          includeTasks: opts.tasks,
+          includePullRequests: opts.prs,
+          includeTmux: opts.tmux,
+        });
+        if (wantsJson(opts)) { printObject(matrix, opts); return; }
+
+        printRows(matrix.rows.map((row) => {
+          const task = row.task_refs[0];
+          const pr = row.pr_refs[0];
+          const tmuxSessions = row.tmux?.sessions.map((session) => session.name).join(",") ?? "";
+          const base = {
+            repo: row.name,
+            branch: row.git.branch ?? "",
+            dirty: row.git.dirty ? String(row.git.changed_files) : "",
+            tmux: compactText(tmuxSessions, 28),
+            task: task ? `${task.id.slice(0, 8)}:${task.status ?? ""}` : "",
+            pr: pr ? `#${pr.number}:${pr.state}` : "",
+            path: compactText(row.path, opts.verbose ? 100 : 54),
+          };
+          if (!opts.verbose) return base;
+          return {
+            ...base,
+            package: row.package?.name ?? "",
+            version: row.package?.version ?? "",
+            bin: compactText(row.package?.bins.join(",") ?? "", 36),
+            github: row.git.github_repo ?? "",
+            warnings: row.warnings.length,
+          };
+        }), opts.verbose
+          ? ["repo", "branch", "dirty", "tmux", "task", "pr", "package", "version", "bin", "github", "warnings", "path"]
+          : ["repo", "branch", "dirty", "tmux", "task", "pr", "path"]);
+        const more = matrix.truncated
+          ? `Showing ${matrix.returned} of ${matrix.total_candidates} matching repositories.`
+          : `Showing ${matrix.returned} matching repositories.`;
+        printDiscoveryHint(`${more} Use --limit <n>, --verbose, --json, --no-tasks, or --no-prs to tune the matrix.`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
