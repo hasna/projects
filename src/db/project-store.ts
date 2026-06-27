@@ -1,11 +1,16 @@
 import { Database } from "bun:sqlite";
 import { customAlphabet } from "nanoid";
 import { existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join } from "node:path";
+import {
+  PROJECTS_HOME_ENV,
+  assertProjectWorkspaceId,
+  getProjectsHome as getCanonicalProjectsHome,
+  projectDataStorePath,
+} from "../lib/project-store-paths.js";
 import type { JsonObject, Workspace } from "../types/workspace.js";
 
-export const PROJECTS_HOME_ENV = "HASNA_PROJECTS_HOME";
+export { PROJECTS_HOME_ENV } from "../lib/project-store-paths.js";
 export const PROJECT_STORE_SCHEMA_VERSION = 1 as const;
 const LOOPS_SDK_SPECIFIER: string = "@hasna/loops/sdk";
 
@@ -230,10 +235,11 @@ function now(): string {
 
 function projectIdOf(project: string | Pick<Workspace, "id">): string {
   const projectId = typeof project === "string" ? project : project.id;
-  if (!/^[A-Za-z0-9_.:-]+$/.test(projectId) || projectId === "." || projectId === "..") {
+  try {
+    return assertProjectWorkspaceId(projectId);
+  } catch {
     throw new Error(`Invalid project id for project store path: ${projectId}`);
   }
-  return projectId;
 }
 
 function slugify(value: string): string {
@@ -336,19 +342,13 @@ function openDbForProject(project: string | Pick<Workspace, "id">, db?: Database
 }
 
 export function getProjectsHome(): string {
-  const configured = process.env[PROJECTS_HOME_ENV];
-  if (configured) return resolve(configured);
-  return join(homedir(), ".hasna", "projects");
+  return getCanonicalProjectsHome();
 }
 
 export function getProjectStorePaths(project: string | Pick<Workspace, "id">): ProjectStorePaths {
   const projectId = projectIdOf(project);
   const homeDir = getProjectsHome();
-  const byIdDir = resolve(homeDir, "by-id");
-  const projectDir = resolve(byIdDir, projectId);
-  if (!projectDir.startsWith(`${byIdDir}${sep}`)) {
-    throw new Error(`Invalid project id for project store path: ${projectId}`);
-  }
+  const projectDir = projectDataStorePath(projectId);
   return {
     project_id: projectId,
     home_dir: homeDir,

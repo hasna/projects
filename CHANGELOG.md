@@ -8,10 +8,47 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Canonical ID-based project store support:
+  `$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/` for physical workspace
+  folders and `$HASNA_PROJECTS_HOME/data/<workspace_id>/` for runtime state.
+- `projects store inspect`, `projects store ensure`, and dry-run-first
+  `projects store migrate` with explicit `--apply`/`--yes` migration, plan
+  artifacts, previous-location registration, marker rewrite, and verification.
+- `projects labels` / `projects label` commands for add/remove/list workflows
+  over normalized project tags, plus `--label` filters on `projects list` and
+  targetless `projects start`.
+- `projects oss matrix`, a bounded routing matrix for open-source workspace
+  roots that reports repo paths, package metadata, git status, tmux hints, and
+  best-effort latest task/PR refs for `open-*` work.
+
+### Changed
+
+- Rootless non-remote project creation now defaults the primary path to the
+  canonical ID-based workspace store unless an explicit path or root is passed.
+- Documented labels as metadata/query filters rather than path identity.
+
+## [0.1.65] - 2026-06-26
+
+### Added
+
 - Compact terminal defaults for noisy project list/detail/history commands,
   with `--limit` and `--verbose` controls while keeping `--json` detailed.
 - Opt-in compact MCP summaries via `compact: true` while preserving existing
   full-record defaults for MCP clients.
+- Agent-assist CLI commands and MCP tools to help coding agents orient, decide,
+  and continue: `projects context` (one-shot priming bundle), `projects next`
+  (high-leverage next-action suggestions), `projects why` (resolution trace and
+  fix tips), `projects handoff` (cross-agent/machine handoff bundle), and
+  `projects runs list` / `projects runs show` (prompt-agent run ledger read
+  view). All emit JSON (`-j/--json`) or LLM-friendly text (`--for-agent`), and
+  are exposed as `projects_context`, `projects_next`, `projects_why`,
+  `projects_handoff`, `projects_runs_list`, and `projects_runs_show` MCP tools.
+- `--for-agent` output mode for the agent-assist commands: compact, references
+  resolved, truncated long values.
+- Goal-continue Cursor `stop` hook (`.cursor/hooks.json` +
+  `.cursor/hooks/goal-continue.sh`) that blocks an agent's stop with a
+  continuation prompt when an active goal is set, folding in `projects next`
+  suggestions. Modeled on the codewith `/goal` slash command.
 
 ### Changed
 

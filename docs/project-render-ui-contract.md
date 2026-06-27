@@ -13,10 +13,10 @@ the per-project canvas store plus JSON Render `Canvas` component emitted by:
 
 The global registry remains `~/.hasna/projects/projects.db`.
 
-Project-specific app data lives under:
+Project-specific app data lives under each project's canonical runtime data path:
 
 ```text
-~/.hasna/projects/by-id/<project_id>/
+~/.hasna/projects/data/<workspace_id>/
 ├── project.db
 ├── assets/
 └── canvases/

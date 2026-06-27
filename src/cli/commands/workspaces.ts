@@ -64,6 +64,17 @@ import {
 } from "../../lib/workspace-github.js";
 import { importRegisteredRoots, importWorkspace, importWorkspaceBulk } from "../../lib/workspace-import.js";
 import { runWorkspaceLegacyMigration } from "../../lib/workspace-migration.js";
+import {
+  ensureProjectStore as ensureCanonicalProjectStore,
+  inspectProjectStore as inspectCanonicalProjectStore,
+  migrateProjectToStore,
+  planProjectStoreMigration,
+} from "../../lib/project-store.js";
+import {
+  buildOssProjectMatrix,
+  DEFAULT_OSS_MATRIX_LIMIT,
+  MAX_OSS_MATRIX_LIMIT,
+} from "../../lib/oss-project-matrix.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
@@ -79,8 +90,8 @@ import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDet
 import {
   createProjectCanvas,
   ensureDefaultProjectCanvas,
-  inspectProjectStore,
-  inspectProjectStoreWithLoops,
+  inspectProjectStore as inspectProjectAppStore,
+  inspectProjectStoreWithLoops as inspectProjectAppStoreWithLoops,
   linkProjectLoop,
   listProjectCanvases,
   listProjectDataModels,
@@ -88,6 +99,15 @@ import {
   type ProjectCanvasEdge,
   type ProjectCanvasNode,
 } from "../../db/project-store.js";
+import {
+  buildProjectAgentContext,
+  buildProjectHandoff,
+  explainProjectResolution,
+  getProjectAgentRunDetail,
+  listProjectAgentRunsView,
+  suggestProjectNextActions,
+  toAgentText,
+} from "../../lib/project-agent-assist.js";
 import {
   createProjectBudget,
   getProjectBudgetStatuses,
@@ -123,6 +143,14 @@ function wantsRenderSpec(opts?: { renderSpec?: boolean }): boolean {
   return Boolean(opts?.renderSpec || process.argv.includes("--render-spec"));
 }
 
+function wantsAgentText(opts?: { forAgent?: boolean }): boolean {
+  return Boolean(opts?.forAgent || process.argv.includes("--for-agent"));
+}
+
+function resolveCwdOption(opts: { cwd?: string }): string {
+  return opts.cwd && opts.cwd.trim() ? opts.cwd : process.cwd();
+}
+
 function wantsJson(opts?: { json?: boolean }): boolean {
   return Boolean(opts?.json || process.env["PROJECTS_JSON"] || process.env["WORKSPACES_JSON"] || process.argv.includes("--json") || process.argv.includes("-j"));
 }
@@ -133,6 +161,10 @@ function splitList(value: string | undefined): string[] {
 
 function splitVariadicList(values: string[] | undefined): string[] {
   return splitList(values?.join(","));
+}
+
+function splitLabelFilters(...values: Array<string | undefined>): string[] {
+  return [...new Set(values.flatMap((value) => splitList(value)))];
 }
 
 function printObject(value: unknown, opts?: { json?: boolean }): void {
@@ -253,7 +285,7 @@ function parseGitHubRemoteProtocol(value: string | undefined): GitHubRemoteProto
 
 function parsePositiveInteger(value: string | undefined, label: string): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label} must be a positive integer`);
   return parsed;
 }
@@ -653,15 +685,192 @@ export function registerWorkspaceCommands(program: Command): void {
   registerProjectStatusCommand(program);
   registerProjectSessionsCommand(program);
   registerProjectCommands(program);
-  registerProjectStoreCommands(program);
+  registerBudgetCommands(program);
+  registerAgentAssistCommands(program);
+  registerOssCommands(program);
+  registerStoreCommand(program);
   registerProjectCanvasCommands(program);
   registerProjectLoopCommands(program);
-  registerBudgetCommands(program);
+  registerLabelsCommand(program);
   registerLocationsCommand(program);
   registerRootsCommand(program);
   registerRecipesCommand(program);
   registerAgentsCommand(program);
   registerTmuxProfilesCommand(program);
+}
+
+function registerAgentAssistCommands(program: Command): void {
+  program
+    .command("context [target]")
+    .description("Emit a compact agent-priming bundle for a project (orientation in one call)")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--events-limit <n>", "Maximum recent events to include", "8")
+    .option("--siblings-limit <n>", "Maximum sibling projects to include", "12")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const context = buildProjectAgentContext({
+          target,
+          cwd: resolveCwdOption(opts),
+          eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 8,
+          siblingsLimit: parsePositiveInteger(opts.siblingsLimit, "--siblings-limit") ?? 12,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(context)); return; }
+        if (wantsJson(opts)) { printObject(context, opts); return; }
+        console.log(toAgentText(context));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("next [target]")
+    .description("Suggest high-leverage next actions for a project to an agent")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--limit <n>", "Maximum suggestions", "6")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = suggestProjectNextActions({
+          target,
+          cwd: resolveCwdOption(opts),
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? 6,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        if (!result.actions.length) {
+          console.log(chalk.dim("No suggestions. Project is in good shape."));
+          return;
+        }
+        for (const a of result.actions) {
+          const color = a.priority === "high" ? chalk.red : a.priority === "medium" ? chalk.yellow : chalk.dim;
+          console.log(`${color(`[${a.priority}]`)} ${chalk.bold(a.title)}`);
+          console.log(`  ${chalk.dim("why:")} ${a.rationale}`);
+          console.log(`  ${chalk.dim("run:")} ${a.command}`);
+        }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("why [target]")
+    .description("Explain how a project target resolves (or why it does not)")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = explainProjectResolution(target, { cwd: resolveCwdOption(opts) });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        console.log(toAgentText(result));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("handoff [target]")
+    .description("Emit a cross-agent/cross-machine handoff bundle for a project")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--events-limit <n>", "Maximum recent events to include", "10")
+    .option("--runs-limit <n>", "Maximum recent agent runs to include", "5")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const handoff = buildProjectHandoff({
+          target,
+          cwd: resolveCwdOption(opts),
+          eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 10,
+          runsLimit: parsePositiveInteger(opts.runsLimit, "--runs-limit") ?? 5,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(handoff)); return; }
+        if (wantsJson(opts)) { printObject(handoff, opts); return; }
+        console.log(toAgentText(handoff));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  const runs = program.command("runs").description("Inspect prompt-agent run ledger entries for a project");
+
+  runs
+    .command("list [target]")
+    .description("List recent agent runs for a project")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--limit <n>", "Maximum runs to return", "20")
+    .option("--status <status>", "Filter by status: planned, running, completed, failed")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const result = listProjectAgentRunsView({
+          target,
+          cwd: resolveCwdOption(opts),
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? 20,
+          status: opts.status as "planned" | "running" | "completed" | "failed" | undefined,
+        });
+        if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        if (!result.runs.length) {
+          console.log(chalk.dim("No agent runs recorded for this project."));
+          return;
+        }
+        printRows(result.runs.map((r) => ({
+          id: r.id,
+          status: r.status,
+          model: r.model ?? "",
+          tool_calls: r.tool_calls,
+          started_at: r.started_at,
+        })), ["id", "status", "model", "tool_calls", "started_at"]);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  runs
+    .command("show <run-id> [target]")
+    .description("Show full detail for one agent run, including tool-call trace")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--for-agent", "Output LLM-friendly text instead of JSON")
+    .option("-j, --json", "Output JSON")
+    .action((runId, target, opts) => {
+      try {
+        const detail = getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
+        if (wantsJson(opts)) {
+          printObject(detail, opts);
+          return;
+        }
+        if (wantsAgentText(opts) || !wantsJson(opts)) {
+          console.log(`# Run ${detail.run.id} [${detail.run.status}]`);
+          console.log(`model: ${detail.run.model ?? "—"}`);
+          console.log(`agent: ${detail.agent?.slug ?? detail.run.agent_id ?? "—"}`);
+          console.log(`started: ${detail.run.started_at}`);
+          console.log(`\nprompt: ${detail.run.prompt}`);
+          if (detail.run.error) console.log(`\nerror: ${detail.run.error}`);
+          if (Array.isArray(detail.run.tool_calls_json)) {
+            console.log(`\ntool calls (${detail.run.tool_calls_json.length}):`);
+            for (const tc of detail.run.tool_calls_json) {
+              const t = tc as JsonObject;
+              console.log(`  - ${t["name"] ?? t["type"] ?? "call"} ${t["args"] ? JSON.stringify(t["args"]).slice(0, 120) : ""}`);
+            }
+          }
+          return;
+        }
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
 }
 
 function registerBudgetCommands(program: Command): void {
@@ -910,6 +1119,74 @@ function registerProjectSessionsCommand(program: Command): void {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
       }
+  });
+}
+
+function registerOssCommands(program: Command): void {
+  const cmd = program.command("oss").description("Open-source workspace routing helpers");
+
+  cmd
+    .command("matrix")
+    .description("Build a compact matrix for routing work across open-* repositories")
+    .option("--root <path>", "Parent folder to scan for open-* repositories", process.cwd())
+    .option("--prefix <prefix>", "Directory prefix to include", "open-")
+    .option("--limit <n>", `Maximum repositories to inspect (default ${DEFAULT_OSS_MATRIX_LIMIT}, max ${MAX_OSS_MATRIX_LIMIT})`)
+    .option("--task-limit <n>", "Maximum latest task refs per repository", "1")
+    .option("--pr-limit <n>", "Maximum latest pull request refs per repository", "1")
+    .option("--timeout-ms <n>", "Per external command timeout in milliseconds", "1500")
+    .option("--no-tasks", "Skip todos CLI task refs")
+    .option("--no-prs", "Skip GitHub pull request refs")
+    .option("--no-tmux", "Skip tmux session/window hints")
+    .option("--verbose", "Show package, warning, and ref detail in terminal output")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const matrix = buildOssProjectMatrix({
+          root: opts.root,
+          prefix: opts.prefix,
+          limit: parsePositiveInteger(opts.limit, "--limit") ?? DEFAULT_OSS_MATRIX_LIMIT,
+          taskLimit: parsePositiveInteger(opts.taskLimit, "--task-limit") ?? 1,
+          prLimit: parsePositiveInteger(opts.prLimit, "--pr-limit") ?? 1,
+          timeoutMs: parsePositiveInteger(opts.timeoutMs, "--timeout-ms") ?? 1500,
+          includeTasks: opts.tasks,
+          includePullRequests: opts.prs,
+          includeTmux: opts.tmux,
+        });
+        if (wantsJson(opts)) { printObject(matrix, opts); return; }
+
+        printRows(matrix.rows.map((row) => {
+          const task = row.task_refs[0];
+          const pr = row.pr_refs[0];
+          const tmuxSessions = row.tmux?.sessions.map((session) => session.name).join(",") ?? "";
+          const base = {
+            repo: row.name,
+            branch: row.git.branch ?? "",
+            dirty: row.git.dirty ? String(row.git.changed_files) : "",
+            tmux: compactText(tmuxSessions, 28),
+            task: task ? `${task.id.slice(0, 8)}:${task.status ?? ""}` : "",
+            pr: pr ? `#${pr.number}:${pr.state}` : "",
+            path: compactText(row.path, opts.verbose ? 100 : 54),
+          };
+          if (!opts.verbose) return base;
+          return {
+            ...base,
+            package: row.package?.name ?? "",
+            version: row.package?.version ?? "",
+            bin: compactText(row.package?.bins.join(",") ?? "", 36),
+            github: row.git.github_repo ?? "",
+            warnings: row.warnings.length,
+          };
+        }), opts.verbose
+          ? ["repo", "branch", "dirty", "tmux", "task", "pr", "package", "version", "bin", "github", "warnings", "path"]
+          : ["repo", "branch", "dirty", "tmux", "task", "pr", "path"]);
+        const more = matrix.truncated
+          ? `Showing ${matrix.returned} of ${matrix.total_candidates} matching repositories.`
+          : `Showing ${matrix.returned} matching repositories.`;
+        printDiscoveryHint(`${more} Use --limit <n>, --verbose, --json, --no-tasks, or --no-prs to tune the matrix.`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
     });
 }
 
@@ -932,6 +1209,8 @@ function registerProjectStartCommand(program: Command): void {
     .option("--window <name:command>", "Additional tmux window; repeatable", collectOption, [])
     .option("--windows-json <json>", "Exact tmux windows JSON array to create for this start")
     .option("--tags <tags>", "Tags to apply when registering an unknown folder")
+    .option("--label <labels>", "Start active projects matching comma-separated labels when no target is supplied")
+    .option("--labels <labels>", "Start active projects matching comma-separated labels when no target is supplied")
     .option("--metadata-json <json>", "Metadata JSON to apply when registering an unknown folder")
     .option("--actor <id-or-slug>", "Projects agent credited for the start event")
     .option("--attach", "Attach to the tmux session after starting", false)
@@ -944,7 +1223,16 @@ function registerProjectStartCommand(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (targets, opts) => {
       try {
-        const startTargets = collectStartTargets(targets, opts.bulkFile);
+        const labelFilters = splitLabelFilters(opts.label, opts.labels);
+        const startTargets = (() => {
+          const explicitTargets = collectStartTargets(targets, opts.bulkFile);
+          const hasExplicitTargets = (targets?.length ?? 0) > 0 || Boolean(opts.bulkFile);
+          if (hasExplicitTargets || labelFilters.length === 0) return explicitTargets;
+          return listWorkspaces({ status: "active", tags: labelFilters, limit: parseHumanLimit(undefined, MAX_HUMAN_LIMIT) }).map((project) => project.slug);
+        })();
+        if (startTargets.length === 0 && labelFilters.length > 0) {
+          throw new Error(`No active projects matched label filter: ${labelFilters.join(", ")}`);
+        }
         const bulk = Boolean(opts.bulk || opts.bulkFile || startTargets.length > 1);
         if (bulk && opts.attach) {
           throw new Error("--attach is only supported for a single project start");
@@ -964,7 +1252,7 @@ function registerProjectStartCommand(program: Command): void {
           requestedWindows,
           extraWindows: parseStartWindows(opts.window),
           register: opts.register,
-          importTags: splitList(opts.tags),
+          importTags: splitLabelFilters(opts.tags, opts.label, opts.labels),
           importMetadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
           dryRun: opts.dryRun,
           agentId,
@@ -1410,6 +1698,8 @@ function registerProjectCommands(program: Command): void {
     .option("--status <status>", "Filter by status")
     .option("--query <text>", "Search name, slug, description, path, tags, integrations, or metadata")
     .option("--tags <tags>", "Comma-separated tag filter")
+    .option("--label <labels>", "Comma-separated label filter (labels are stored as tags)")
+    .option("--labels <labels>", "Comma-separated label filter (alias for --label)")
     .option("--include-evals", "Include prompt-agent eval fixture projects")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show additional columns in terminal output")
@@ -1422,7 +1712,7 @@ function registerProjectCommands(program: Command): void {
           kind: parseKind(opts.kind),
           status: parseStatus(opts.status),
           query: opts.query,
-          tags: splitList(opts.tags),
+          tags: splitLabelFilters(opts.tags, opts.label, opts.labels),
         };
         if (wantsRenderSpec(opts)) {
           const projects = filterProjectEvalArtifacts(listWorkspaces({
@@ -2136,30 +2426,100 @@ function registerProjectCommands(program: Command): void {
     });
 }
 
-function registerProjectStoreCommands(program: Command): void {
-  const cmd = program.command("store").description("Inspect per-project app data stores");
+function registerStoreCommand(program: Command): void {
+  const cmd = program.command("store").description("Inspect, ensure, and safely migrate canonical project stores");
 
   cmd
     .command("inspect <project>")
-    .description("Inspect and initialize the per-project app store under ~/.hasna/projects/by-id/<project_id>")
-    .option("--include-loops", "Include linked OpenLoops summaries through @hasna/loops")
+    .description("Inspect a project's canonical workspace and data store paths")
+    .option("--include-loops", "Include linked OpenLoops summaries in app_store through @hasna/loops")
     .option("--include-runs", "Include recent linked loop runs with --include-loops")
     .option("-j, --json", "Output JSON")
     .action(async (projectIdOrSlug, opts) => {
       try {
         const project = resolveProjectTarget(projectIdOrSlug);
-        const summary = opts.includeLoops
-          ? await inspectProjectStoreWithLoops(project, { includeRuns: opts.includeRuns })
-          : inspectProjectStore(project);
-        if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), store: summary }, opts); return; }
-        console.log(`${chalk.bold(project.slug)} app store`);
-        console.log(`  ${chalk.dim("project db:")} ${summary.paths.db_path}`);
-        console.log(`  ${chalk.dim("project dir:")} ${summary.paths.project_dir}`);
-        console.log(`  ${chalk.dim("schema:")} ${summary.schema_version ?? "unknown"}`);
-        console.log(`  ${chalk.dim("canvases:")} ${summary.counts.canvases}`);
-        console.log(`  ${chalk.dim("data models:")} ${summary.counts.data_models}`);
-        console.log(`  ${chalk.dim("data records:")} ${summary.counts.data_records}`);
-        console.log(`  ${chalk.dim("loop links:")} ${summary.counts.loop_links}`);
+        const inspection = inspectCanonicalProjectStore(project);
+        const appStore = opts.includeLoops
+          ? await inspectProjectAppStoreWithLoops(project, { includeRuns: opts.includeRuns })
+          : inspectProjectAppStore(project);
+        if (wantsJson(opts)) { printObject({ ...inspection, app_store: appStore }, opts); return; }
+        console.log(`${chalk.bold(project.slug)} store`);
+        console.log(`  ${chalk.dim("home:")} ${inspection.paths.home}`);
+        console.log(`  ${chalk.dim("workspace:")} ${inspection.paths.workspace_path}${inspection.exists.workspace ? "" : " (missing)"}`);
+        console.log(`  ${chalk.dim("data:")} ${inspection.paths.data_path}${inspection.exists.data ? "" : " (missing)"}`);
+        console.log(`  ${chalk.dim("primary:")} ${inspection.primary_path ?? "none"}${inspection.primary_is_canonical ? " (canonical)" : ""}`);
+        console.log(`  ${chalk.dim("app db:")} ${appStore.paths.db_path}`);
+        console.log(`  ${chalk.dim("app canvases:")} ${appStore.counts.canvases}`);
+        console.log(`  ${chalk.dim("app loop links:")} ${appStore.counts.loop_links}`);
+        if (inspection.migration_recommended) console.log(chalk.yellow("  migration recommended: primary path is not the canonical store path"));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("ensure <project>")
+    .description("Ensure canonical workspace/data store directories exist")
+    .option("--dry-run", "Preview directory creation and primary-path updates")
+    .option("--no-primary", "Do not set the canonical path as primary when the project has no primary path")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const ensure = () => ensureCanonicalProjectStore(project, {
+          dryRun: opts.dryRun,
+          setPrimaryIfMissing: opts.primary,
+          agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        });
+        const result = opts.dryRun ? ensure() : withWorkspaceLock(project, agentId, "project store ensure", ensure);
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        console.log(result.dry_run ? chalk.dim(`[dry-run] Store ensure ${project.slug}`) : chalk.green(`✓ Store ensured: ${project.slug}`));
+        console.log(`  ${chalk.dim("workspace:")} ${result.paths.workspace_path}`);
+        console.log(`  ${chalk.dim("data:")} ${result.paths.data_path}`);
+        if (result.created.length) console.log(`  ${chalk.dim(result.dry_run ? "would create:" : "created:")} ${result.created.join(", ")}`);
+        if (result.primary_updated) console.log(`  ${chalk.dim(result.dry_run ? "would set primary:" : "primary set:")} ${result.paths.workspace_path}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("migrate <project>")
+    .description("Safely move a project primary path into the canonical workspace store")
+    .option("--apply", "Apply the migration plan")
+    .option("--yes", "Apply the migration plan (alias for --apply)")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const apply = Boolean(opts.apply || opts.yes);
+        const result = apply
+          ? withWorkspaceLock(project, agentId, "project store migrate", () => migrateProjectToStore(project, {
+              apply: true,
+              agentId,
+              source: "cli",
+              command: process.argv.join(" "),
+            }))
+          : planProjectStoreMigration(project, { dryRun: true });
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+        const marker = apply ? chalk.green("✓") : chalk.dim("[dry-run]");
+        console.log(`${marker} Store migration ${project.slug}`);
+        console.log(`  ${chalk.dim("from:")} ${result.source_path ?? "none"}`);
+        console.log(`  ${chalk.dim("to:")} ${result.target_path}`);
+        if (result.warnings.length) for (const warning of result.warnings) console.log(`  ${chalk.yellow("warning:")} ${warning}`);
+        for (const action of result.actions) {
+          console.log(`  ${chalk.dim(action.type + ":")} ${action.status} ${action.action} ${action.source ? `${action.source} -> ` : ""}${action.target}`);
+        }
+        if (!apply) console.log(chalk.dim("  Re-run with --apply or --yes to move files and update the primary location."));
+        if ("verified" in result && result.verified) console.log(`  ${chalk.dim("verified:")} canonical primary exists`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2259,7 +2619,7 @@ function registerProjectCanvasCommands(program: Command): void {
         if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
         if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
         console.log(chalk.green(`✓ Canvas created: ${canvas.slug}`));
-        console.log(`  ${chalk.dim("project db:")} ${inspectProjectStore(project).paths.db_path}`);
+        console.log(`  ${chalk.dim("project db:")} ${inspectProjectAppStore(project).paths.db_path}`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2325,6 +2685,94 @@ function registerProjectLoopCommands(program: Command): void {
           next_run_at: item.loop && typeof item.loop.next_run_at === "string" ? item.loop.next_run_at : "",
         })), ["loop_id", "name", "role", "status", "loop_status", "next_run_at"]);
         printDiscoveryHint(`Showing ${loops.length} linked loop${loops.length === 1 ? "" : "s"}.`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+}
+
+function registerLabelsCommand(program: Command): void {
+  const cmd = program.command("labels").alias("label").description("Manage project labels (stored as normalized tags)");
+
+  cmd
+    .command("list [project]")
+    .description("List labels on one project, or label counts across projects")
+    .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        if (projectIdOrSlug) {
+          const project = resolveProjectTarget(projectIdOrSlug);
+          const payload = { project: projectWithManagement(project), labels: project.tags };
+          if (wantsJson(opts)) { printObject(payload, opts); return; }
+          console.log(`${project.slug}\t${project.tags.join(",")}`);
+          return;
+        }
+        const counts = new Map<string, number>();
+        for (const project of listWorkspaces({ limit: 10000 })) {
+          for (const label of project.tags) counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
+        const rows = [...counts.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([label, count]) => ({ label, count }));
+        if (wantsJson(opts)) { printObject(rows, opts); return; }
+        const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
+        printRows(rows.slice(0, limit), ["label", "count"]);
+        printDiscoveryHint(`Showing ${Math.min(limit, rows.length)} of ${rows.length} label(s). Use --limit <n> or --json for full records.`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("add <project> <labels...>")
+    .description("Add labels to a project")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, labels, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const requestedLabels = splitVariadicList(labels);
+        if (requestedLabels.length === 0) throw new Error("Provide at least one label");
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const updated = withWorkspaceLock(project, agentId, "project labels add", () => updateWorkspace(project.id, {
+          tags: mergeProjectTags(project.tags, requestedLabels),
+          agent_id: agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        }));
+        const payload = { project: projectWithManagement(updated), labels: updated.tags };
+        if (wantsJson(opts)) { printObject(payload, opts); return; }
+        console.log(chalk.green(`✓ Added labels to ${updated.slug}: ${requestedLabels.join(", ")}`));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("remove <project> <labels...>")
+    .alias("rm")
+    .description("Remove labels from a project")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, labels, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const requestedLabels = splitVariadicList(labels);
+        if (requestedLabels.length === 0) throw new Error("Provide at least one label");
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const updated = withWorkspaceLock(project, agentId, "project labels remove", () => updateWorkspace(project.id, {
+          tags: removeProjectTags(project.tags, requestedLabels),
+          agent_id: agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+        }));
+        const payload = { project: projectWithManagement(updated), labels: updated.tags };
+        if (wantsJson(opts)) { printObject(payload, opts); return; }
+        console.log(chalk.green(`✓ Removed labels from ${updated.slug}: ${requestedLabels.join(", ")}`));
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);

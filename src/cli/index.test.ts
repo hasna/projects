@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireWorkspaceLock, createRoot, createWorkspace } from "../db/workspaces.js";
+import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, startAgentRun } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
@@ -44,6 +44,9 @@ describe("project-first CLI surface", () => {
       expect(stdout).toContain("show");
       expect(stdout).toContain("sessions");
       expect(stdout).not.toContain("workspaces");
+      expect(stdout).toContain("store");
+      expect(stdout).toContain("labels");
+      expect(stdout).toContain("oss");
       expect(stdout).toContain("roots");
       expect(stdout).toContain("tmux-profiles");
       expect(stdout).toContain("hasna-events");
@@ -58,7 +61,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval store canvases loops locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -69,6 +72,135 @@ describe("project-first CLI surface", () => {
     expect(zsh.exitCode).toBe(0);
     expect(zshStdout).toContain("'scan-roots:Dry-run import plans for configured GitHub roots'");
     expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
+    expect(zshStdout).toContain("'context:Emit an agent-priming bundle for a project'");
+    expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
+    expect(zshStdout).toContain("'oss:Open-source workspace routing helpers'");
+    expect(zshStdout).toContain("'store:Inspect, ensure, and migrate canonical project stores'");
+    expect(zshStdout).toContain("'canvases:Manage per-project React Flow canvases'");
+    expect(zshStdout).toContain("'loops:Link projects to OpenLoops SDK loops'");
+    expect(zshStdout).toContain("'labels:Manage project labels'");
+  });
+
+  test("oss matrix CLI emits capped JSON without optional external refs", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-oss-matrix-"));
+    mkdirSync(join(root, "open-alpha"));
+    mkdirSync(join(root, "open-beta"));
+    mkdirSync(join(root, "not-open"));
+    writeFileSync(join(root, "open-alpha", "package.json"), JSON.stringify({
+      name: "@hasna/open-alpha",
+      version: "0.0.1",
+      bin: { "open-alpha": "dist/cli.js" },
+    }));
+
+    try {
+      const result = runProjects([
+        "oss",
+        "matrix",
+        "--root",
+        root,
+        "--prefix",
+        "open-",
+        "--limit",
+        "1",
+        "--no-tasks",
+        "--no-prs",
+        "--no-tmux",
+        "--json",
+      ]);
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(text(result.stdout)) as {
+        kind: string;
+        total_candidates: number;
+        returned: number;
+        truncated: boolean;
+        rows: Array<{ name: string; package: { name: string; bins: string[] } | null; task_refs: unknown[]; pr_refs: unknown[]; tmux: unknown }>;
+      };
+      expect(payload.kind).toBe("projects.oss_matrix");
+      expect(payload.total_candidates).toBe(2);
+      expect(payload.returned).toBe(1);
+      expect(payload.truncated).toBe(true);
+      expect(payload.rows[0]?.name).toBe("open-alpha");
+      expect(payload.rows[0]?.package?.name).toBe("@hasna/open-alpha");
+      expect(payload.rows[0]?.package?.bins).toEqual(["open-alpha"]);
+      expect(payload.rows[0]?.task_refs).toEqual([]);
+      expect(payload.rows[0]?.pr_refs).toEqual([]);
+      expect(payload.rows[0]?.tmux).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("oss matrix CLI rejects malformed positive integer options", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-oss-matrix-invalid-"));
+    try {
+      const result = runProjects([
+        "oss",
+        "matrix",
+        "--root",
+        root,
+        "--limit",
+        "1abc",
+        "--no-tasks",
+        "--no-prs",
+        "--no-tmux",
+        "--json",
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(text(result.stderr)).toContain("--limit must be a positive integer");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("package publishes Cursor goal hook files", () => {
+    const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as { files: string[] };
+    expect(pkg.files).toContain(".cursor/hooks.json");
+    expect(pkg.files).toContain(".cursor/hooks/goal-continue.sh");
+  });
+
+  test("agent-assist CLI commands emit JSON, agent text, and run detail by default", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-agent-assist-"));
+    const dbPath = join(root, "projects.db");
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+    const project = createWorkspace({
+      name: "Agent Assist",
+      slug: "agent-assist",
+      kind: "project",
+      primary_path: join(root, "agent-assist"),
+    }, db);
+    const run = startAgentRun({ workspace_id: project.id, prompt: "inspect state", model: "test-model" }, db);
+    completeAgentRun(run.id, { status: "completed", tool_calls: [{ name: "projects_show" }] }, db);
+    db.close();
+
+    const context = runProjects(["context", "agent-assist", "--json"], env);
+    expect(context.exitCode).toBe(0);
+    expect((JSON.parse(text(context.stdout)) as { kind: string; target: { resolved: boolean } }).kind).toBe("projects.agent_context");
+
+    const next = runProjects(["next", "agent-assist", "--json"], env);
+    expect(next.exitCode).toBe(0);
+    expect((JSON.parse(text(next.stdout)) as { kind: string; actions: unknown[] }).kind).toBe("projects.next");
+
+    const why = runProjects(["why", "agent-assist", "--for-agent"], env);
+    expect(why.exitCode).toBe(0);
+    expect(text(why.stdout)).toContain("Resolution");
+
+    const handoff = runProjects(["handoff", "agent-assist", "--json"], env);
+    expect(handoff.exitCode).toBe(0);
+    expect((JSON.parse(text(handoff.stdout)) as { kind: string }).kind).toBe("projects.handoff");
+
+    const runs = runProjects(["runs", "list", "agent-assist", "--json"], env);
+    expect(runs.exitCode).toBe(0);
+    expect((JSON.parse(text(runs.stdout)) as { kind: string; runs: unknown[] }).kind).toBe("projects.runs");
+
+    const showDefault = runProjects(["runs", "show", run.id, "agent-assist"], env);
+    expect(showDefault.exitCode).toBe(0);
+    const showText = text(showDefault.stdout);
+    expect(showText).toContain(`# Run ${run.id} [completed]`);
+    expect(showText).toContain("tool calls (1):");
   });
 
   test("top-level create, list, and show use project-first JSON", () => {
@@ -116,44 +248,84 @@ describe("project-first CLI surface", () => {
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
   });
 
-  test("project store, canvas, and OpenLoops link commands use per-project project.db", () => {
+  test("workspace store, app store, canvases, loops, and labels use temp home", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-store-"));
     const env = {
-      HASNA_PROJECTS_DB_PATH: join(root, "registry", "projects.db"),
-      HASNA_PROJECTS_HOME: join(root, "projects-home"),
+      HASNA_PROJECTS_HOME: join(root, "home"),
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
     };
-    const create = runProjects(["create", "--name", "Store CLI", "--path", join(root, "store-cli"), "--json"], env);
+
+    const create = runProjects([
+      "create",
+      "--name",
+      "Store Work",
+      "--kind",
+      "project",
+      "--mkdir",
+      "--marker",
+      "--json",
+    ], env);
     expect(create.exitCode).toBe(0);
-    const project = (JSON.parse(text(create.stdout)) as { project: { id: string; slug: string } }).project;
+    const created = JSON.parse(text(create.stdout)) as { project: { id: string; slug: string; primary_path: string } };
+    expect(created.project.primary_path).toBe(join(env.HASNA_PROJECTS_HOME, "workspaces", created.project.id));
 
-    const inspect = runProjects(["store", "inspect", project.slug, "--json"], env);
+    const inspect = runProjects(["store", "inspect", "store-work", "--json"], env);
     expect(inspect.exitCode).toBe(0);
-    const store = (JSON.parse(text(inspect.stdout)) as { store: { paths: { db_path: string }; counts: { canvases: number } } }).store;
-    expect(store.paths.db_path).toBe(join(env.HASNA_PROJECTS_HOME, "by-id", project.id, "project.db"));
-    expect(store.counts.canvases).toBe(0);
+    const inspected = JSON.parse(text(inspect.stdout)) as {
+      primary_is_canonical: boolean;
+      paths: { data_path: string };
+      app_store: { paths: { db_path: string }; counts: { canvases: number } };
+    };
+    expect(inspected.primary_is_canonical).toBe(true);
+    expect(inspected.paths.data_path).toBe(join(env.HASNA_PROJECTS_HOME, "data", created.project.id));
+    expect(inspected.app_store.paths.db_path).toBe(join(env.HASNA_PROJECTS_HOME, "data", created.project.id, "project.db"));
+    expect(inspected.app_store.counts.canvases).toBe(0);
 
-    const canvases = runProjects(["canvases", "list", project.slug, "--ensure-default", "--json"], env);
+    const migratePlan = runProjects(["store", "migrate", "store-work", "--json"], env);
+    expect(migratePlan.exitCode).toBe(0);
+    const planned = JSON.parse(text(migratePlan.stdout)) as { dry_run: boolean; no_op: boolean; target_path: string };
+    expect(planned.dry_run).toBe(true);
+    expect(planned.no_op).toBe(true);
+    expect(planned.target_path).toBe(created.project.primary_path);
+
+    const canvases = runProjects(["canvases", "list", "store-work", "--ensure-default", "--json"], env);
     expect(canvases.exitCode).toBe(0);
     const listed = JSON.parse(text(canvases.stdout)) as { canvases: Array<{ slug: string; layout_engine: string }> };
     expect(listed.canvases[0]?.slug).toBe("dashboard");
     expect(listed.canvases[0]?.layout_engine).toBe("react-flow");
 
-    const render = runProjects(["canvases", "show", project.slug, "dashboard", "--render-spec"], env);
+    const render = runProjects(["canvases", "show", "store-work", "dashboard", "--render-spec"], env);
     expect(render.exitCode).toBe(0);
     const spec = JSON.parse(text(render.stdout)) as { elements: { root?: { type?: string; props?: { ui_contract?: { canvas?: string } } } } };
     expect(spec.elements.root?.type).toBe("Canvas");
     expect(spec.elements.root?.props?.ui_contract?.canvas).toBe("react-flow");
 
-    const link = runProjects(["loops", "link", project.slug, "loop_123", "--name", "Daily Check", "--json"], env);
+    const link = runProjects(["loops", "link", "store-work", "loop_123", "--name", "Daily Check", "--json"], env);
     expect(link.exitCode).toBe(0);
     expect((JSON.parse(text(link.stdout)) as { link: { loop_id: string } }).link.loop_id).toBe("loop_123");
 
-    const loops = runProjects(["loops", "list", project.slug, "--json"], env);
+    const loops = runProjects(["loops", "list", "store-work", "--json"], env);
     expect(loops.exitCode).toBe(0);
     expect((JSON.parse(text(loops.stdout)) as { loops: Array<{ status: string }> }).loops[0]?.status).toBe("unavailable");
 
+    const labelsAdd = runProjects(["labels", "add", "store-work", "org:hasnaxyz", "kind:work-project", "client:foo", "--json"], env);
+    expect(labelsAdd.exitCode).toBe(0);
+    const labelsPayload = JSON.parse(text(labelsAdd.stdout)) as { labels: string[] };
+    expect(labelsPayload.labels).toContain("kind:work-project");
+
+    const filtered = runProjects(["list", "--label", "kind:work-project", "--json"], env);
+    expect(filtered.exitCode).toBe(0);
+    expect((JSON.parse(text(filtered.stdout)) as Array<{ slug: string }>).map((project) => project.slug)).toEqual(["store-work"]);
+
+    const started = runProjects(["start", "--label", "kind:work-project", "--dry-run", "--json"], env);
+    expect(started.exitCode).toBe(0);
+    const startPayload = JSON.parse(text(started.stdout)) as { project: { slug: string; primary_path: string }; tmux: { windows: Array<{ metadata?: { path?: string } }> } };
+    expect(startPayload.project.slug).toBe("store-work");
+    expect(startPayload.project.primary_path).toBe(created.project.primary_path);
+    expect(startPayload.tmux.windows[0]?.metadata?.path).toBe(created.project.primary_path);
+
     rmSync(root, { recursive: true, force: true });
-  });
+  }, 10000);
 
   test("top-level list hides eval fixtures by default and cleanup-evals removes them", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-eval-cleanup-"));

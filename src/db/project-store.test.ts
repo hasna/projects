@@ -24,7 +24,7 @@ describe("project store", () => {
     delete process.env[PROJECTS_HOME_ENV];
   });
 
-  test("stores project-specific app data under by-id/<project_id>/project.db", () => {
+  test("stores project-specific app data under data/<workspace_id>/project.db", () => {
     const root = mkdtempSync(join(tmpdir(), "project-store-"));
     process.env[PROJECTS_HOME_ENV] = root;
     const project: ProjectStoreProject = {
@@ -39,7 +39,7 @@ describe("project store", () => {
     try {
       const summary = ensureProjectStore(project);
       const paths = getProjectStorePaths(project);
-      expect(summary.paths.db_path).toBe(join(root, "by-id", project.id, "project.db"));
+      expect(summary.paths.db_path).toBe(join(root, "data", project.id, "project.db"));
       expect(existsSync(paths.db_path)).toBe(true);
 
       const dashboard = ensureDefaultProjectCanvas(project);
@@ -78,7 +78,7 @@ describe("project store", () => {
       expect(() => getProjectStorePaths(".")).toThrow("Invalid project id");
       expect(() => getProjectStorePaths("..")).toThrow("Invalid project id");
       expect(() => getProjectStorePaths("../escape")).toThrow("Invalid project id");
-      expect(getProjectStorePaths("wks_safe").project_dir).toBe(join(root, "by-id", "wks_safe"));
+      expect(getProjectStorePaths("wks_safe").project_dir).toBe(join(root, "data", "wks_safe"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

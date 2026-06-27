@@ -35,6 +35,9 @@ projects show
 projects update
 projects tag
 projects untag
+projects labels
+projects oss matrix
+projects store
 projects link
 projects unlink
 projects archive
@@ -73,12 +76,74 @@ Projects owns:
 - lifecycle: active, archived, deleted
 - type/kind: open source, internal app, docs, platform, generic, and similar
 - paths and locations across machines
-- roots and path templates for where projects usually live
-- tags and metadata for discovery
+- roots and path templates for explicit checkout/import locations
+- labels, tags, and metadata for discovery
 - integrations: GitHub, todos, brief, mementos, conversations, files
 - launch defaults: preferred agent, tmux profile, primary start command, session policy, start windows
 - runtime events: created, imported, updated, started, archived, deleted
 - agent attribution for all mutations and launch actions
+
+## Workspace Store Contract
+
+Canonical physical project folders are ID-based and live under the Projects
+home, not under org, client, slug, or kind folders:
+
+```text
+$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/
+```
+
+`HASNA_PROJECTS_HOME` defaults to `~/.hasna/projects`. Runtime app data is
+separate and also ID-based:
+
+```text
+$HASNA_PROJECTS_HOME/data/<workspace_id>/
+```
+
+The data directory may contain `project.db`, `logs/`, `artifacts/`, `context/`,
+or similar runtime state. Labels such as `org:hasnaxyz`, `kind:work-project`,
+and `client:foo` are metadata/query filters only. Labels must not become source
+of truth for directory layout. Optional aliases may exist only when they are
+rebuildable from metadata.
+
+Slugs, names, org labels, and client labels are mutable. They must not require a
+canonical folder move. Existing explicit `--path` projects, imports, and
+registered root checkouts remain valid locations for compatibility, especially
+for repository projects that intentionally live in checkout roots. New rootless
+physical projects should default to `workspaces/<workspace_id>` unless the user
+passes an explicit path/root override or creates a remote-only project.
+
+Store migration must be explicit and safe:
+
+- dry-run plan first by default
+- `--apply`/`--yes` required before moving files or changing primary path
+- write a plan artifact under `data/<workspace_id>`
+- move the existing primary directory to preserve git history and marker files
+- record the old path as a non-primary location
+- update `workspaces.primary_path` through the normal location/storage API
+- rewrite/verify the `.project.json` marker at the canonical path
+- never delete source data as a hidden side effect
+
+## OSS Matrix Contract
+
+`projects oss matrix` is a routing and orchestration surface for open-source
+repo roots. It scans only direct child directories under an explicit `--root`,
+filters by `--prefix` (default `open-`), and is capped by default. The command
+must not recursively walk large trees or treat labels, org names, or slugs as
+physical path identity.
+
+Each row should be compact and machine-readable:
+
+- repo name and absolute path
+- `package.json` name/version/bin metadata when present
+- git branch, upstream, ahead/behind, dirty count, remote, and GitHub repo
+- tmux session/window hints from current local tmux state
+- latest task refs from `todos` when available
+- latest pull request refs from `gh` when a GitHub remote is available
+
+Task and PR refs are best-effort external lookups with timeouts. Their failure
+must not fail the matrix; rows should carry warnings instead. Operators can use
+`--no-tasks`, `--no-prs`, `--no-tmux`, `--limit`, and `--timeout-ms` to keep
+routing scans predictable.
 
 ## Metadata Taxonomy
 
@@ -167,6 +232,7 @@ Bulk start should be deterministic and non-interactive by default:
 
 ```bash
 projects start --bulk app1 app2 app3 --no-attach
+projects start --label kind:work-project --dry-run --json
 ```
 
 It should report created, reused, skipped, and failed projects.

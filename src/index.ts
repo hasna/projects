@@ -43,24 +43,22 @@ export * from "./db/storage-sync.js";
 export * from "./db/remote-storage.js";
 export * from "./db/pg-migrations.js";
 export {
-  PROJECTS_HOME_ENV,
   PROJECT_STORE_SCHEMA_VERSION,
   createProjectCanvas,
   createProjectDataModel,
   createProjectDataRecord,
   defaultProjectCanvasInput,
   ensureDefaultProjectCanvas,
-  ensureProjectStore,
-  ensureProjectStoreDirs,
+  ensureProjectStore as ensureProjectAppStore,
+  ensureProjectStoreDirs as ensureProjectAppStoreDirs,
   getProjectCanvas,
   getProjectDataModel,
   getProjectDataRecord,
-  getProjectDatabase,
+  getProjectDatabase as getProjectAppDatabase,
   getProjectLoopLink,
-  getProjectStorePaths,
-  getProjectsHome,
-  inspectProjectStore,
-  inspectProjectStoreWithLoops,
+  getProjectStorePaths as getProjectAppStorePaths,
+  inspectProjectStore as inspectProjectAppStore,
+  inspectProjectStoreWithLoops as inspectProjectAppStoreWithLoops,
   linkProjectLoop,
   listProjectCanvases,
   listProjectDataModels,
@@ -84,9 +82,9 @@ export type {
   ProjectLoopLink,
   ProjectLoopRunSummary,
   ProjectLoopSummary,
-  ProjectStorePaths,
-  ProjectStoreProject,
-  ProjectStoreSummary,
+  ProjectStorePaths as ProjectAppStorePaths,
+  ProjectStoreProject as ProjectAppStoreProject,
+  ProjectStoreSummary as ProjectAppStoreSummary,
 } from "./db/project-store.js";
 export {
   createRoot,
@@ -214,6 +212,46 @@ export {
   resolveRegisteredProjectTarget,
   resolveRegisteredProjectTargetOrThrow,
 } from "./lib/project-resolver.js";
+export {
+  PROJECTS_HOME_ENV,
+  getProjectsHome,
+  isProjectWorkspaceStorePath,
+  projectDataStorePath,
+  projectWorkspaceStorePath,
+} from "./lib/project-store-paths.js";
+export {
+  ensureProjectStore,
+  inspectProjectStore,
+  migrateProjectToStore,
+  planProjectStoreMigration,
+  projectStorePaths,
+} from "./lib/project-store.js";
+export type {
+  ProjectStoreEnsureResult,
+  ProjectStoreInspection,
+  ProjectStoreMigrationAction,
+  ProjectStoreMigrationPlan,
+  ProjectStoreMigrationResult,
+  ProjectStorePaths,
+} from "./lib/project-store.js";
+export {
+  DEFAULT_OSS_MATRIX_LIMIT,
+  MAX_OSS_MATRIX_LIMIT,
+  OSS_PROJECT_MATRIX_SCHEMA_VERSION,
+  buildOssProjectMatrix,
+} from "./lib/oss-project-matrix.js";
+export type {
+  OssGitStatus,
+  OssMatrixCommandOptions,
+  OssMatrixCommandRunner,
+  OssPackageMetadata,
+  OssProjectMatrix,
+  OssProjectMatrixOptions,
+  OssProjectMatrixRow,
+  OssPullRequestRef,
+  OssTaskRef,
+  OssTmuxHint,
+} from "./lib/oss-project-matrix.js";
 export type {
   ProjectMarkerReference,
   ProjectResolverOptions,
@@ -355,3 +393,28 @@ export {
   buildRecipesRender,
   type ProjectsJsonRenderSpec,
 } from "./lib/project-render.js";
+
+export {
+  buildProjectAgentContext,
+  buildProjectHandoff,
+  explainProjectResolution,
+  getProjectAgentRunDetail,
+  listProjectAgentRunsView,
+  suggestProjectNextActions,
+  toAgentText,
+} from "./lib/project-agent-assist.js";
+export type {
+  ProjectAgentContext,
+  ProjectAgentContextOptions,
+  ProjectHandoff,
+  ProjectHandoffOptions,
+  ProjectNextAction,
+  ProjectNextOptions,
+  ProjectNextResult,
+  ProjectRunDetail,
+  ProjectRunDetailOptions,
+  ProjectRunsOptions,
+  ProjectRunsResult,
+  ProjectWhyResult,
+  ProjectWhyStep,
+} from "./lib/project-agent-assist.js";

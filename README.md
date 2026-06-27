@@ -53,6 +53,7 @@ projects create --name "My App" --path /path/to/my-app --stage active --priority
   --start-windows-json '[{"name":"server","command":"bun run dev"}]' \
   --todos-project-id todo_123 --brief-id brief_123 --mkdir --git-init --marker --json
 projects create --name "Planned App" --path /tmp/planned --mkdir --dry-run --json
+projects create --name "Store Work" --kind project --mkdir --marker --json  # defaults to $HASNA_PROJECTS_HOME/workspaces/<id>
 projects start                              # from inside a registered repo
 projects start open-notes                  # by slug/id/name/path
 projects start --json                      # operational structured output
@@ -67,6 +68,7 @@ projects start --rename-report --agent codewith
 projects sessions my-app --unrenamed --json
 projects start --bulk my-app docs-site service-api --agent opencode --dry-run --json
 projects start --bulk-file ./project-targets.json --agent claude --dry-run --json
+projects start --label kind:work-project --dry-run --json
 projects status my-app --profile dev --json
 projects store inspect my-app --json
 projects canvases list my-app --ensure-default --render-spec
@@ -79,6 +81,7 @@ projects scan-roots --root open-source --repo-prefix project- --clone --json
 projects sync-roots --root open-source --repo-prefix project- --tags open-source,project --json
 projects import /path/to/root --bulk --dry-run --json
 projects list --query app --tags web,ts
+projects list --label org:hasnaxyz --json
 projects list --limit 50 --verbose
 projects list --query app --tags web,ts --json
 projects show my-app --json
@@ -88,6 +91,15 @@ projects get my-app --json
 projects update my-app --description "New description" --tags web,ts --priority critical --launch-profile dev
 projects tag my-app security cameras
 projects untag my-app cameras
+projects labels add my-app org:hasnaxyz kind:work-project client:foo
+projects labels list my-app
+projects labels remove my-app client:foo
+projects oss matrix --root /home/me/opensource --prefix open- --json
+projects oss matrix --root /home/me/opensource --limit 50 --no-prs --no-tasks
+projects store inspect my-app --json
+projects store ensure my-app --json
+projects store migrate my-app --json          # dry-run plan
+projects store migrate my-app --apply --json  # explicit move/update
 projects link my-app --github-url https://github.com/hasna/my-app --todos-project-id todo_123 --todos-task-list-id list_123
 projects unlink my-app --todos --brief
 projects locations add my-app /path/to/another-folder --label docs
@@ -109,10 +121,34 @@ projects agent-eval --json
 projects agent-eval --mock --json
 projects agent-eval --case create-explicit-path,tmux-apply-existing --fail-on-error
 
+# Agent assist — help coding agents orient, decide, and continue
+projects context my-app --for-agent        # one-shot priming bundle
+projects next my-app --for-agent           # suggested next actions
+projects why my-app --for-agent            # resolution trace + fix tips
+projects handoff my-app --for-agent        # cross-agent/machine handoff bundle
+projects runs list my-app --for-agent      # prompt-agent run ledger
+projects runs show <run-id> my-app         # full run detail + tool-call trace
+# All six also emit JSON with -j/--json and are available as MCP tools:
+#   projects_context, projects_next, projects_why, projects_handoff,
+#   projects_runs_list, projects_runs_show
+
 # Shell completion, including workon
 eval "$(projects completion)"
 eval "$(projects completion --shell zsh)"
 ```
+
+## Goal-continue Cursor hook (ralph-style)
+
+A `stop` hook lives in `.cursor/hooks.json` + `.cursor/hooks/goal-continue.sh`.
+When an agent stops, it checks for an active goal and, if incomplete, blocks the
+stop with a continuation prompt that includes `projects next` suggestions —
+modeled on the codewith `/goal` slash command but driven as a Cursor hook.
+
+Goal sources (first wins): `./.hasna/goal.md`, `$HASNA_GOAL_FILE`,
+`~/.hasna/goal.md`. Mark a goal complete by adding a `<!-- done -->` line.
+
+Env knobs: `HASNA_GOAL_SKIP=1` (disable), `HASNA_GOAL_CONTINUE=0` (status only,
+no continuation), `HASNA_GOAL_MAX_SUGGESTIONS=N`. The hook never fails closed.
 
 Projects stores high-level management fields directly on the project record:
 `stage`, `priority`, `owner`, `launch_profile`, `start_agent`,
@@ -139,18 +175,67 @@ does not force text into unknown panes. Use `projects start --rename-report` or
 execution still belongs in `todos`; long-form specs and decisions still belong
 in `brief`.
 
-Per-project app data is stored outside the global registry under
-`~/.hasna/projects/by-id/<project_id>/`. Each project gets one `project.db`
-there for project-specific canvases, custom JSON data models/records, and
-OpenLoops links. The global project registry remains
-`~/.hasna/projects/projects.db` by default. `projects canvases * --render-spec`
-emits a JSON Render contract for a TypeScript React surface using Tailwind,
-shadcn components, and React Flow as an infinite canvas; a project may have
-multiple canvases.
+## Workspace Store
+
+Projects has one canonical physical workspace store under `HASNA_PROJECTS_HOME`,
+defaulting to `~/.hasna/projects`:
+
+- canonical workspace path: `$HASNA_PROJECTS_HOME/workspaces/<workspace_id>/`
+- runtime data path: `$HASNA_PROJECTS_HOME/data/<workspace_id>/`
+- common runtime children: `project.db`, `logs/`, `artifacts/`, and `context/`
+
+Rootless new projects default to the canonical workspace path. Explicit
+`--path`, registered roots, imports, and GitHub checkout roots keep their
+requested paths for compatibility until a user runs an explicit store migration.
+Slugs, names, and org labels are mutable metadata and never define the canonical
+folder name.
+
+`projects store inspect` reports the canonical workspace/data paths and whether
+the current primary path is canonical. `projects store ensure` creates missing
+workspace/data directories and only sets the canonical path as primary when the
+project had no primary path. `projects store migrate` is dry-run by default; it
+requires `--apply` or `--yes` to move an existing primary folder into
+`workspaces/<id>`, writes a migration plan under `data/<id>`, preserves git
+history by moving the directory, records the old path as a non-primary location,
+updates `workspaces.primary_path` through the normal location API, rewrites the
+marker, and verifies the canonical primary path exists.
+
+Labels are project metadata/query filters stored in the existing normalized tag
+list. Use labels such as `org:hasnaxyz`, `kind:work-project`, and `client:foo`;
+they do not create canonical folders and are safe to add, remove, or rename.
+
+Per-project app data lives in the canonical runtime data path at
+`$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db`. That project database
+stores project-specific canvases, custom JSON data models/records, and OpenLoops
+links. `projects canvases * --render-spec` emits a JSON Render contract for a
+TypeScript React surface using Tailwind, shadcn components, and React Flow as an
+infinite canvas; a project may have multiple canvases.
 
 OpenLoops integration uses the `@hasna/loops` SDK as an optional peer. Runtime
-commands that need live loop state load `@hasna/loops/sdk` dynamically, so
-Open Projects can still manage projects when OpenLoops is not installed.
+commands that need live loop state load `@hasna/loops/sdk` dynamically, so Open
+Projects can still manage projects when OpenLoops is not installed.
+
+## OSS Routing Matrix
+
+`projects oss matrix` emits a compact routing matrix for direct child
+repositories under an OSS workspace root. It is designed for orchestration
+prompts and dispatch loops that need a capped, machine-readable snapshot without
+walking an entire monorepo tree.
+
+```bash
+projects oss matrix \
+  --root /home/hasna/Workspace/hasna/opensource \
+  --prefix open- \
+  --json
+```
+
+Each row includes the repo name/path, package name/version/bin metadata from
+`package.json`, git branch/dirty/ahead/behind/remote state, tmux session/window
+hints, latest task refs from `todos`, and latest pull request refs from `gh`
+when those tools are available. The default limit is 25 repos, with an enforced
+maximum of 200. Use `--limit`, `--no-prs`, `--no-tasks`, `--no-tmux`, and
+`--timeout-ms` to keep routing scans fast in large workspaces or offline
+contexts.
 
 ## Storage Sync
 
@@ -209,7 +294,7 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_tmux_profiles_list` / `projects_tmux_profiles_add` / `projects_tmux_profiles_apply` | Manage reusable tmux sessions/windows |
 | `projects_list` / `projects_show` | Search and inspect projects |
 | `projects_render_list` / `projects_render_show` / `projects_render_start` / `projects_render_status` / `projects_render_sessions` / `projects_render_roots` / `projects_render_recipes` | Emit validated JSON Render specs for project surfaces |
-| `projects_store_inspect` | Inspect and initialize the per-project app store under `~/.hasna/projects/by-id/<project_id>` |
+| `projects_store_inspect` | Inspect canonical project storage and the per-project app store under `$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db` |
 | `projects_canvases_list` / `projects_canvases_create` / `projects_render_canvas` | Manage and render per-project React Flow canvas records |
 | `projects_loops_link` / `projects_loops_list` | Link project stores to OpenLoops loops and summarize them through `@hasna/loops` |
 | `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
@@ -230,6 +315,8 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_lock` / `projects_unlock` / `projects_locks` | Coordinate project mutations |
 | `projects_agent_eval` | Run prompt-agent eval cases and return success/confidence |
 | `projects_agent_prompt` | Run the AI SDK/OpenRouter project agent loop |
+| `projects_context` / `projects_next` / `projects_why` / `projects_handoff` | Agent-assist bundles: orientation, next-action suggestions, resolution trace, cross-agent handoff |
+| `projects_runs_list` / `projects_runs_show` | Read the prompt-agent run ledger (list + full detail with tool-call trace) |
 
 Workspace-named MCP aliases are removed from the public contract.
 
@@ -290,7 +377,7 @@ Core internal tables:
 
 Global registry DB path: `~/.hasna/projects/projects.db`
 
-Per-project app data path: `~/.hasna/projects/by-id/<project_id>/project.db`
+Per-project app data path: `~/.hasna/projects/data/<workspace_id>/project.db`
 
 Per-project app tables:
 
@@ -302,6 +389,10 @@ Per-project app tables:
 Global registry override: `HASNA_PROJECTS_DB_PATH`
 
 Per-project app store root override: `HASNA_PROJECTS_HOME`
+
+Projects home: `~/.hasna/projects`
+
+Override: `HASNA_PROJECTS_HOME`
 
 ## SDK
 

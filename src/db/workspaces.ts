@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
+import { assertProjectWorkspaceId, projectWorkspaceStorePath } from "../lib/project-store-paths.js";
 import type {
   Agent,
   AgentRow,
@@ -599,13 +600,14 @@ function machineId(): string {
   return process.env["HOSTNAME"] || hostname();
 }
 
-function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slug: string): string | null {
+function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slug: string, id: string, kind: WorkspaceKind): string | null {
   if (input.primary_path) return resolve(input.primary_path);
+  if (!root && kind !== "remote-only") return projectWorkspaceStorePath(id);
   if (!root) return null;
   const rendered = renderTemplate(root.path_template || root.name_template || "{slug}", {
     slug,
     name: input.name,
-    kind: input.kind ?? root.default_kind ?? "generic",
+    kind,
     root: root.slug,
     org: root.github_org,
   });
@@ -614,7 +616,7 @@ function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slu
 
 export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Workspace {
   const d = db || getDatabase();
-  const id = generateWorkspaceId();
+  const id = input.id ? assertProjectWorkspaceId(input.id) : generateWorkspaceId();
   const ts = now();
   const slug = ensureUniqueSlug("workspaces", input.slug ?? workspaceSlugify(input.name), d);
   const root = input.root_id ? getRoot(input.root_id, d) : null;
@@ -624,8 +626,8 @@ export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Wor
   assertAgentPermission(input.agent_id, "workspace:create", d);
   assertRootWorkspacePolicy(root, recipe, input.agent_id, d);
 
-  const primaryPath = deriveWorkspacePath(input, root, slug);
   const kind = input.kind ?? recipe?.kind ?? root?.default_kind ?? "generic";
+  const primaryPath = deriveWorkspacePath(input, root, slug, id, kind);
   const tags = normalizeList([
     ...(root?.tags ?? []),
     ...(recipe?.default_tags ?? []),
