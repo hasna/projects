@@ -4,7 +4,15 @@ import {
   buildProjectDashboardRender,
   type BuildProjectDashboardSnapshotOptions,
 } from "./project-dashboard.js";
+import { buildProjectCanvasPayload, type ProjectsJsonRenderSpec } from "./project-render.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
+import {
+  getProjectCanvas,
+  listProjectCanvases,
+  listProjectDataModels,
+  type ProjectCanvas,
+} from "../db/project-store.js";
+import type { Workspace } from "../types/workspace.js";
 
 export interface ProjectDashboardServerOptions extends BuildProjectDashboardSnapshotOptions {
   target?: string;
@@ -22,6 +30,32 @@ export interface ProjectDashboardServer {
   token: string;
 }
 
+interface DashboardCanvasSummary {
+  id: string;
+  slug: string;
+  routeId: string;
+  name: string;
+  description: string | null;
+  status: string;
+  kind: "dashboard" | "project-canvas";
+  href: string;
+  active: boolean;
+  nodes: number;
+  edges: number;
+}
+
+interface DashboardCanvasContext {
+  canvas: DashboardCanvasSummary;
+  canvases: DashboardCanvasSummary[];
+  render: ProjectsJsonRenderSpec;
+}
+
+type DashboardRoute =
+  | { kind: "redirect"; location: string }
+  | { kind: "page"; canvasRef: string; canonicalPath: string }
+  | { kind: "api"; canvasRef: string; api: string }
+  | { kind: "not-found" };
+
 export async function serveProjectDashboard(options: ProjectDashboardServerOptions): Promise<ProjectDashboardServer> {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 3344;
@@ -36,27 +70,39 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
   const target = options.target ?? ".";
   const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
   let dashboard = await buildProjectDashboard(target, options);
+  const canonicalDashboardPath = dashboardCanvasPath(resolution.project.slug, "dashboard");
 
   const server = Bun.serve({
     hostname: host,
     port,
     async fetch(request) {
       const url = new URL(request.url);
-      if (url.pathname === "/" || url.pathname === "") {
-        return Response.redirect(new URL("/dashboard", url).toString(), 302);
-      }
       if (url.pathname === "/health") {
         return Response.json({ ok: true, project: resolution.project.slug });
       }
-      if (url.pathname === "/dashboard") {
-        return new Response(projectDashboardHtml({ projectSlug: resolution.project.slug }), {
+
+      const route = dashboardRoute(url.pathname, resolution.project.slug);
+      if (route.kind === "redirect") {
+        return Response.redirect(new URL(route.location, url).toString(), 302);
+      }
+      if (route.kind === "page" && url.pathname !== route.canonicalPath) {
+        return Response.redirect(new URL(route.canonicalPath, url).toString(), 302);
+      }
+      if (route.kind === "page") {
+        return new Response(projectDashboardHtml({
+          projectSlug: resolution.project.slug,
+          canvasRef: route.canvasRef,
+          canonicalPath: route.canonicalPath,
+        }), {
           headers: {
             "content-type": "text/html; charset=utf-8",
             ...(selfIssueCookie ? { "set-cookie": dashboardCookie(token) } : {}),
           },
         });
       }
-      if (url.pathname === "/api/session" && request.method === "POST") {
+      if (route.kind !== "api") return new Response("not found", { status: 404 });
+
+      if (route.api === "session" && request.method === "POST") {
         const submitted = await readSubmittedToken(request);
         if (!submitted || !tokensMatch(submitted, token)) {
           return Response.json({ ok: false, error: "invalid dashboard token" }, { status: 401 });
@@ -66,25 +112,31 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
       if (!hasDashboardCookie(request, token)) {
         return Response.json({ ok: false, error: "dashboard token required" }, { status: 401 });
       }
-      if (url.pathname === "/api/snapshot") {
+      if (route.api === "snapshot") {
         if (url.searchParams.get("refresh") === "1") dashboard = await buildProjectDashboard(target, options);
         return Response.json(dashboard.snapshot);
       }
-      if (url.pathname === "/api/render") {
-        return Response.json(buildProjectDashboardRender(resolution.project, dashboard.snapshot));
+      if (route.api === "render") {
+        const context = buildDashboardCanvasContext(resolution.project, route.canvasRef, dashboard.snapshot);
+        if (!context) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        return Response.json(context.render);
       }
-      if (url.pathname === "/api/bootstrap") {
+      if (route.api === "canvases") {
         return Response.json({
-          project: {
-            id: resolution.project.id,
-            slug: resolution.project.slug,
-            name: resolution.project.name,
-            kind: resolution.project.kind,
-            status: resolution.project.status,
-            primary_path: resolution.project.primary_path,
-          },
+          project: projectPayload(resolution.project),
+          canvases: listDashboardCanvasSummaries(resolution.project, route.canvasRef),
+        });
+      }
+      if (route.api === "bootstrap") {
+        if (url.searchParams.get("refresh") === "1") dashboard = await buildProjectDashboard(target, options);
+        const context = buildDashboardCanvasContext(resolution.project, route.canvasRef, dashboard.snapshot);
+        if (!context) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        return Response.json({
+          project: projectPayload(resolution.project),
+          canvas: context.canvas,
+          canvases: context.canvases,
           snapshot: dashboard.snapshot,
-          render: dashboard.render,
+          render: context.render,
         });
       }
       return new Response("not found", { status: 404 });
@@ -93,11 +145,126 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
 
   return {
     server,
-    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${server.port}/dashboard`,
+    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${server.port}${canonicalDashboardPath}`,
     host,
     port: server.port ?? port,
     token,
   };
+}
+
+function projectPayload(project: Workspace): Record<string, unknown> {
+  return {
+    id: project.id,
+    slug: project.slug,
+    name: project.name,
+    kind: project.kind,
+    status: project.status,
+    primary_path: project.primary_path,
+  };
+}
+
+function dashboardRoute(pathname: string, projectSlug: string): DashboardRoute {
+  const segments = pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  if (segments.length === 0) return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
+  if (segments.length === 1 && segments[0] === "dashboard") return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
+  if (segments[0] === "api") return { kind: "api", canvasRef: "dashboard", api: segments[1] ?? "" };
+  if (segments[0] !== projectSlug) return { kind: "not-found" };
+  if (segments.length === 1) return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
+  const canvasRef = segments[1] || "dashboard";
+  if (segments.length === 2) return { kind: "page", canvasRef, canonicalPath: dashboardCanvasPath(projectSlug, canvasRef) };
+  if (segments.length === 4 && segments[2] === "api") return { kind: "api", canvasRef, api: segments[3] };
+  return { kind: "not-found" };
+}
+
+function dashboardCanvasPath(projectSlug: string, canvasRef: string): string {
+  return `/${encodeURIComponent(projectSlug)}/${encodeURIComponent(canvasRef)}/`;
+}
+
+function buildDashboardCanvasContext(
+  project: Workspace,
+  canvasRef: string,
+  snapshot: Awaited<ReturnType<typeof buildProjectDashboard>>["snapshot"],
+): DashboardCanvasContext | null {
+  if (isDashboardCanvasRef(canvasRef)) {
+    const render = buildProjectDashboardRender(project, snapshot);
+    return {
+      canvas: virtualDashboardCanvasSummary(project, "dashboard", true, render),
+      canvases: listDashboardCanvasSummaries(project, "dashboard"),
+      render,
+    };
+  }
+  const canvas = findProjectCanvas(project, canvasRef);
+  if (!canvas) return null;
+  const render = buildProjectCanvasPayload({
+    project,
+    canvas,
+    dataModels: listProjectDataModels(project),
+  }).render as ProjectsJsonRenderSpec;
+  return {
+    canvas: storedCanvasSummary(project, canvas, true),
+    canvases: listDashboardCanvasSummaries(project, routeIdForCanvas(canvas)),
+    render,
+  };
+}
+
+function isDashboardCanvasRef(canvasRef: string): boolean {
+  return canvasRef === "" || canvasRef === "dashboard";
+}
+
+function findProjectCanvas(project: Workspace, canvasRef: string): ProjectCanvas | null {
+  const exact = getProjectCanvas(project, canvasRef);
+  if (exact) return exact;
+  return listProjectCanvases(project).find((canvas) => routeIdForCanvas(canvas) === canvasRef || shortCanvasId(canvas.id) === canvasRef) ?? null;
+}
+
+function listDashboardCanvasSummaries(project: Workspace, activeRef: string): DashboardCanvasSummary[] {
+  const dashboard = virtualDashboardCanvasSummary(project, "dashboard", isDashboardCanvasRef(activeRef));
+  const stored = listProjectCanvases(project)
+    .filter((canvas) => canvas.status === "active")
+    .map((canvas) => storedCanvasSummary(project, canvas, activeRef === routeIdForCanvas(canvas) || activeRef === canvas.id || activeRef === shortCanvasId(canvas.id)));
+  return [dashboard, ...stored];
+}
+
+function virtualDashboardCanvasSummary(project: Workspace, routeId: string, active: boolean, render?: ProjectsJsonRenderSpec): DashboardCanvasSummary {
+  const root = render?.elements?.[String(render.root)]?.props as { nodes?: unknown[]; edges?: unknown[] } | undefined;
+  return {
+    id: `dashboard:${project.slug}`,
+    slug: "dashboard",
+    routeId,
+    name: "Dashboard",
+    description: "Provider-backed project dashboard canvas",
+    status: "active",
+    kind: "dashboard",
+    href: dashboardCanvasPath(project.slug, routeId),
+    active,
+    nodes: Array.isArray(root?.nodes) ? root.nodes.length : 0,
+    edges: Array.isArray(root?.edges) ? root.edges.length : 0,
+  };
+}
+
+function storedCanvasSummary(project: Workspace, canvas: ProjectCanvas, active: boolean): DashboardCanvasSummary {
+  const routeId = routeIdForCanvas(canvas);
+  return {
+    id: canvas.id,
+    slug: canvas.slug,
+    routeId,
+    name: canvas.name,
+    description: canvas.description,
+    status: canvas.status,
+    kind: "project-canvas",
+    href: dashboardCanvasPath(project.slug, routeId),
+    active,
+    nodes: canvas.nodes.length,
+    edges: canvas.edges.length,
+  };
+}
+
+function routeIdForCanvas(canvas: ProjectCanvas): string {
+  return canvas.slug || shortCanvasId(canvas.id);
+}
+
+function shortCanvasId(id: string): string {
+  return id.startsWith("pcv_") ? id.slice(4, 12) : id.slice(0, 8);
 }
 
 function dashboardCookie(token: string): string {
@@ -134,14 +301,18 @@ function tokensMatch(submitted: string, expected: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function projectDashboardHtml(args: { projectSlug: string }): string {
-  const bootstrap = JSON.stringify({ projectSlug: args.projectSlug });
+export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: string; canonicalPath?: string }): string {
+  const bootstrap = JSON.stringify({
+    projectSlug: args.projectSlug,
+    canvasRef: args.canvasRef ?? "dashboard",
+    canonicalPath: args.canonicalPath ?? dashboardCanvasPath(args.projectSlug, args.canvasRef ?? "dashboard"),
+  });
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Projects Dashboard - ${escapeHtml(args.projectSlug)}</title>
+    <title>Projects Dashboard - ${escapeHtml(args.projectSlug)} / ${escapeHtml(args.canvasRef ?? "dashboard")}</title>
     <link rel="stylesheet" href="https://esm.sh/@xyflow/react@12.8.2/dist/style.css" />
     <style>
       :root {
@@ -178,7 +349,16 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
       .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
       .brand h1 { margin: 0; font-size: 16px; line-height: 1.2; font-weight: 700; white-space: nowrap; }
       .brand span { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .toolbar { display: flex; gap: 8px; align-items: center; }
+      .toolbar { display: flex; gap: 8px; align-items: center; min-width: 0; }
+      .canvas-select {
+        max-width: min(280px, 32vw);
+        height: 36px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 0 10px;
+      }
       .icon-button {
         width: 36px;
         height: 36px;
@@ -223,6 +403,7 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
       .items { border-top: 1px solid #edf0f5; padding: 8px 12px 12px; display: grid; gap: 6px; }
       .item { font-size: 12px; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
       .overview-node { width: 340px; border-color: #cbd8ff; }
+      .generic-node { width: 300px; }
       .overview-path { color: var(--muted); font-size: 11px; padding: 0 12px 12px; overflow-wrap: anywhere; }
       .empty-state { padding: 16px; color: var(--muted); }
       .react-flow__node { cursor: default; }
@@ -236,6 +417,8 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
       {
         "imports": {
           "react": "https://esm.sh/react@18.3.1",
+          "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime",
+          "react-dom": "https://esm.sh/react-dom@18.3.1?external=react",
           "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
           "@xyflow/react": "https://esm.sh/@xyflow/react@12.8.2?external=react,react-dom"
         }
@@ -288,9 +471,48 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
         ]);
       }
 
+      function GenericNode({ id, data, type }) {
+        const title = data.title || data.name || data.label || id;
+        const summary = data.description || data.summary || data.kind || type || "";
+        return h("div", { className: "node generic-node" }, [
+          h(Handle, { key: "target", type: "target", position: Position.Left }),
+          h("div", { key: "head", className: "node-header" }, [
+            h("h3", { key: "title", className: "node-title" }, String(title)),
+            h("span", { key: "state", className: "badge" }, String(data.status || type || "node")),
+          ]),
+          h("p", { key: "summary", className: "node-summary" }, String(summary)),
+          h(Handle, { key: "source", type: "source", position: Position.Right }),
+        ]);
+      }
+
+      function apiPath(name, refresh = false) {
+        return "api/" + name + (refresh ? "?refresh=1" : "");
+      }
+
+      function renderCanvas(render) {
+        const rootId = render?.root || "root";
+        return render?.elements?.[rootId]?.props || {};
+      }
+
+      function selectedFromNode(snapshot, node) {
+        const panel = snapshot?.panels?.find((item) => item.id === node.id);
+        if (panel) return panel;
+        return {
+          id: node.id,
+          title: node.data?.title || node.data?.name || node.data?.label || node.id,
+          summary: node.data?.description || node.data?.summary || node.type || "",
+          state: node.data?.status || "ready",
+          kind: node.type || "node",
+          warnings: node.data?.warnings || [],
+          items: [],
+        };
+      }
+
       function App() {
         const [snapshot, setSnapshot] = useState(null);
         const [render, setRender] = useState(null);
+        const [canvasMeta, setCanvasMeta] = useState(null);
+        const [canvases, setCanvases] = useState([]);
         const [selected, setSelected] = useState(null);
         const [error, setError] = useState("");
         const [needsToken, setNeedsToken] = useState(false);
@@ -298,27 +520,25 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
         const load = useCallback(async (refresh = false) => {
           setError("");
           setNeedsToken(false);
-          const suffix = refresh ? "?refresh=1" : "";
-          const [nextSnapshot, nextRender] = await Promise.all([
-            fetch("/api/snapshot" + suffix, { credentials: "same-origin" }).then((res) => {
-              if (res.status === 401) setNeedsToken(true);
-              if (!res.ok) throw new Error("Snapshot request failed " + res.status);
-              return res.json();
-            }),
-            fetch("/api/render", { credentials: "same-origin" }).then((res) => {
-              if (res.status === 401) setNeedsToken(true);
-              if (!res.ok) throw new Error("Render request failed " + res.status);
-              return res.json();
-            }),
-          ]);
-          setSnapshot(nextSnapshot);
-          setRender(nextRender);
-          setSelected(nextSnapshot.panels?.[0] || null);
+          const res = await fetch(apiPath("bootstrap", refresh), { credentials: "same-origin" });
+          if (res.status === 401) {
+            setNeedsToken(true);
+            throw new Error("Dashboard access token required");
+          }
+          if (!res.ok) throw new Error("Dashboard bootstrap failed " + res.status);
+          const next = await res.json();
+          setSnapshot(next.snapshot);
+          setRender(next.render);
+          setCanvasMeta(next.canvas);
+          setCanvases(next.canvases || []);
+          const nextCanvas = renderCanvas(next.render);
+          const firstNode = (nextCanvas.nodes || [])[0] || { id: "canvas", data: next.canvas || {}, type: "canvas" };
+          setSelected(next.canvas?.kind === "dashboard" && next.snapshot?.panels?.[0] ? next.snapshot.panels[0] : selectedFromNode(next.snapshot, firstNode));
         }, []);
         const unlock = useCallback(async (event) => {
           event.preventDefault();
           setError("");
-          const res = await fetch("/api/session", {
+          const res = await fetch(apiPath("session"), {
             method: "POST",
             headers: { "content-type": "application/json" },
             credentials: "same-origin",
@@ -333,21 +553,36 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
           await load(true);
         }, [load, token]);
         useEffect(() => { load().catch((err) => setError(err.message)); }, [load]);
-        const canvas = render?.elements?.root?.props || {};
+        const canvas = renderCanvas(render);
         const nodes = canvas.nodes || [];
         const edges = canvas.edges || [];
-        const nodeTypes = useMemo(() => ({ projectPanel: ProjectNode, projectOverview: OverviewNode }), []);
+        const nodeTypes = useMemo(() => {
+          const types = { projectPanel: ProjectNode, projectOverview: OverviewNode };
+          for (const node of nodes) {
+            if (node?.type && !types[node.type]) types[node.type] = GenericNode;
+          }
+          return types;
+        }, [nodes]);
         const onNodeClick = useCallback((_, node) => {
-          const panel = snapshot?.panels?.find((item) => item.id === node.id);
-          setSelected(panel || null);
+          setSelected(selectedFromNode(snapshot, node));
         }, [snapshot]);
         return h("div", { className: "shell" }, [
           h("header", { key: "top", className: "topbar" }, [
             h("div", { key: "brand", className: "brand" }, [
               h("h1", { key: "title" }, snapshot?.projectId || window.__PROJECTS_DASHBOARD__.projectSlug),
-              h("span", { key: "subtitle" }, snapshot ? snapshot.generatedAt : "Loading dashboard"),
+              h("span", { key: "subtitle" }, canvasMeta ? canvasMeta.name : "Loading dashboard"),
             ]),
             h("div", { key: "tools", className: "toolbar" }, [
+              canvases.length ? h("select", {
+                key: "canvas",
+                className: "canvas-select",
+                value: canvasMeta?.routeId || window.__PROJECTS_DASHBOARD__.canvasRef,
+                title: "Canvas",
+                onChange: (event) => {
+                  const next = canvases.find((item) => item.routeId === event.target.value);
+                  if (next?.href) window.location.href = next.href;
+                },
+              }, canvases.map((item) => h("option", { key: item.routeId, value: item.routeId }, item.name))) : null,
               h("button", { key: "refresh", className: "icon-button", title: "Refresh", onClick: () => load(true).catch((err) => setError(err.message)) }, "R"),
             ]),
           ]),
