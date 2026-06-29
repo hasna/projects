@@ -16,11 +16,16 @@ import {
 } from "@hasna/contracts/schemas";
 import type { JsonObject, Workspace } from "../types/workspace.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
-import { buildProjectCanvasPayload, validateProjectsRenderSpec, type ProjectsJsonRenderSpec } from "./project-render.js";
+import {
+  buildProjectCanvasPayload,
+  validateProjectsRenderSpec,
+  type ProjectsJsonRenderSpec,
+} from "./project-render.js";
 
 export const PROJECT_DASHBOARD_DIR = ".hasna/project" as const;
 export const PROJECT_DASHBOARD_RENDER_DIR = ".hasna/project/dashboard" as const;
-export const PROJECT_DASHBOARD_SNAPSHOTS_DIR = ".hasna/project/dashboard/snapshots" as const;
+export const PROJECT_DASHBOARD_SNAPSHOTS_DIR =
+  ".hasna/project/dashboard/snapshots" as const;
 
 export interface ProjectDashboardProvider {
   id: string;
@@ -52,7 +57,9 @@ export interface ProviderRunResult {
   unavailable?: boolean;
 }
 
-export type ProjectDashboardProviderRunner = (request: ProviderRunRequest) => Promise<ProviderRunResult>;
+export type ProjectDashboardProviderRunner = (
+  request: ProviderRunRequest,
+) => Promise<ProviderRunResult>;
 
 export interface BuildProjectDashboardSnapshotOptions {
   db?: Database;
@@ -108,9 +115,18 @@ export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
     panelKind: "mailery",
     title: "Mailery",
     command: "mailery",
-    args: ["project-panel", "--project", "{project}", "--limit", "20", "--json", "--contract"],
+    args: [
+      "project-panel",
+      "--project",
+      "{project}",
+      "--limit",
+      "20",
+      "--json",
+      "--contract",
+    ],
     optional: true,
-    warning: "Mailery provider is workspace-scoped until project-to-email mapping is configured.",
+    warning:
+      "Mailery provider is workspace-scoped until project-to-email mapping is configured.",
   },
   {
     id: "conversations",
@@ -118,7 +134,15 @@ export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
     panelKind: "conversations",
     title: "Conversations",
     command: "conversations",
-    args: ["project-panel", "--project", "{project}", "--limit", "30", "--json", "--contract"],
+    args: [
+      "project-panel",
+      "--project",
+      "{project}",
+      "--limit",
+      "30",
+      "--json",
+      "--contract",
+    ],
     optional: true,
   },
   {
@@ -127,7 +151,17 @@ export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
     panelKind: "knowledge",
     title: "Knowledge",
     command: "knowledge",
-    args: ["project-panel", "--project", "{project}", "--scope", "project", "--limit", "30", "--json", "--contract"],
+    args: [
+      "project-panel",
+      "--project",
+      "{project}",
+      "--scope",
+      "project",
+      "--limit",
+      "30",
+      "--json",
+      "--contract",
+    ],
     optional: true,
   },
   {
@@ -148,38 +182,71 @@ export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
     args: ["project-panel", "--project", "{project}", "--json", "--contract"],
     optional: true,
   },
+  {
+    id: "datasets",
+    kind: "custom",
+    panelKind: "custom",
+    title: "Datasets",
+    command: "datasets",
+    args: ["project-panel", "--project", "{project}", "--json", "--contract"],
+    optional: true,
+    warning:
+      "Datasets provider uses the @hasna/datasets custom panel until contracts add a first-class datasets kind.",
+  },
 ];
 
-export function projectDashboardPaths(project: Workspace): ProjectDashboardPaths {
-  const projectPath = project.primary_path ? resolve(project.primary_path) : process.cwd();
+export function projectDashboardPaths(
+  project: Workspace,
+): ProjectDashboardPaths {
+  const projectPath = project.primary_path
+    ? resolve(project.primary_path)
+    : process.cwd();
   return {
     projectPath,
     rootDir: join(projectPath, PROJECT_DASHBOARD_DIR),
     manifestPath: join(projectPath, PROJECT_DASHBOARD_DIR, "manifest.json"),
     renderDir: join(projectPath, PROJECT_DASHBOARD_RENDER_DIR),
-    renderManifestPath: join(projectPath, PROJECT_DASHBOARD_RENDER_DIR, "render.json"),
+    renderManifestPath: join(
+      projectPath,
+      PROJECT_DASHBOARD_RENDER_DIR,
+      "render.json",
+    ),
     snapshotsDir: join(projectPath, PROJECT_DASHBOARD_SNAPSHOTS_DIR),
-    latestSnapshotPath: join(projectPath, PROJECT_DASHBOARD_SNAPSHOTS_DIR, "latest.snapshot.json"),
+    latestSnapshotPath: join(
+      projectPath,
+      PROJECT_DASHBOARD_SNAPSHOTS_DIR,
+      "latest.snapshot.json",
+    ),
   };
 }
 
-export function ensureProjectDashboardStructure(project: Workspace, now = new Date().toISOString()): ProjectDashboardPaths {
+export function ensureProjectDashboardStructure(
+  project: Workspace,
+  now = new Date().toISOString(),
+): ProjectDashboardPaths {
   const paths = projectDashboardPaths(project);
   mkdirSync(paths.rootDir, { recursive: true });
   mkdirSync(paths.renderDir, { recursive: true });
   mkdirSync(paths.snapshotsDir, { recursive: true });
   if (!existsSync(paths.manifestPath)) {
-    writeFileSync(paths.manifestPath, `${JSON.stringify({
-      schema: "hasna.projects_dashboard_manifest.v1",
-      projectId: project.slug,
-      projectName: project.name,
-      generatedBy: "@hasna/projects",
-      updatedAt: now,
-      layout: {
-        dashboardDir: PROJECT_DASHBOARD_RENDER_DIR,
-        snapshotsDir: PROJECT_DASHBOARD_SNAPSHOTS_DIR,
-      },
-    }, null, 2)}\n`);
+    writeFileSync(
+      paths.manifestPath,
+      `${JSON.stringify(
+        {
+          schema: "hasna.projects_dashboard_manifest.v1",
+          projectId: project.slug,
+          projectName: project.name,
+          generatedBy: "@hasna/projects",
+          updatedAt: now,
+          layout: {
+            dashboardDir: PROJECT_DASHBOARD_RENDER_DIR,
+            snapshotsDir: PROJECT_DASHBOARD_SNAPSHOTS_DIR,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
   }
   if (!existsSync(paths.renderManifestPath)) {
     const manifest: ProjectDashboardRenderManifest = {
@@ -189,26 +256,41 @@ export function ensureProjectDashboardStructure(project: Workspace, now = new Da
       imports: [],
       updatedAt: now,
     };
-    writeFileSync(paths.renderManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(
+      paths.renderManifestPath,
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
   }
   return paths;
 }
 
-export function loadProjectDashboardRenderManifest(project: Workspace): ProjectDashboardRenderManifest | null {
+export function loadProjectDashboardRenderManifest(
+  project: Workspace,
+): ProjectDashboardRenderManifest | null {
   const paths = projectDashboardPaths(project);
   if (!existsSync(paths.renderManifestPath)) return null;
-  const parsed = JSON.parse(readFileSync(paths.renderManifestPath, "utf-8")) as ProjectDashboardRenderManifest;
+  const parsed = JSON.parse(
+    readFileSync(paths.renderManifestPath, "utf-8"),
+  ) as ProjectDashboardRenderManifest;
   resolveDashboardImports(paths.renderDir, parsed.imports ?? []);
   return parsed;
 }
 
-export function resolveDashboardImports(baseDir: string, imports: Array<{ id: string; path: string; kind?: string }>): string[] {
+export function resolveDashboardImports(
+  baseDir: string,
+  imports: Array<{ id: string; path: string; kind?: string }>,
+): string[] {
   return imports.map((item) => {
-    if (isAbsolute(item.path)) throw new Error(`Dashboard import must be relative: ${item.path}`);
+    if (isAbsolute(item.path))
+      throw new Error(`Dashboard import must be relative: ${item.path}`);
     const resolved = resolve(baseDir, normalize(item.path));
     const rel = relative(baseDir, resolved);
-    if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`Dashboard import escapes render directory: ${item.path}`);
-    if (!existsSync(resolved) || !statSync(resolved).isFile()) throw new Error(`Dashboard import not found: ${item.path}`);
+    if (rel.startsWith("..") || isAbsolute(rel))
+      throw new Error(
+        `Dashboard import escapes render directory: ${item.path}`,
+      );
+    if (!existsSync(resolved) || !statSync(resolved).isFile())
+      throw new Error(`Dashboard import not found: ${item.path}`);
     return resolved;
   });
 }
@@ -217,30 +299,40 @@ export async function buildProjectDashboardSnapshot(
   target: string | undefined,
   options: BuildProjectDashboardSnapshotOptions = {},
 ): Promise<ProjectSnapshot> {
-  const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
+  const resolution = resolveRegisteredProjectTargetOrThrow(target, {
+    db: options.db,
+  });
   const project = resolution.project;
   const generatedAt = options.generatedAt ?? new Date().toISOString();
-  const paths = options.initialize ? ensureProjectDashboardStructure(project, generatedAt) : projectDashboardPaths(project);
+  const paths = options.initialize
+    ? ensureProjectDashboardStructure(project, generatedAt)
+    : projectDashboardPaths(project);
   const cwd = options.cwd ?? project.primary_path ?? paths.projectPath;
   const requestedKinds = new Set(options.providerKinds ?? []);
-  const providers = (options.providers ?? DEFAULT_PROJECT_DASHBOARD_PROVIDERS)
-    .filter((provider) => requestedKinds.size === 0 || requestedKinds.has(provider.id) || requestedKinds.has(provider.kind));
+  const providers = (
+    options.providers ?? DEFAULT_PROJECT_DASHBOARD_PROVIDERS
+  ).filter(
+    (provider) =>
+      requestedKinds.size === 0 ||
+      requestedKinds.has(provider.id) ||
+      requestedKinds.has(provider.kind),
+  );
   const runner = options.runner ?? defaultProjectDashboardProviderRunner;
   const warnings: string[] = [];
-  const panels: ProjectPanel[] = [
-    overviewPanel(project, generatedAt),
-  ];
+  const panels: ProjectPanel[] = [overviewPanel(project, generatedAt)];
 
   for (const provider of providers) {
     if (provider.warning) warnings.push(`${provider.id}: ${provider.warning}`);
-    panels.push(await collectProviderPanel({
-      provider,
-      project,
-      cwd,
-      generatedAt,
-      timeoutMs: options.timeoutMs ?? provider.timeoutMs ?? 15_000,
-      runner,
-    }));
+    panels.push(
+      await collectProviderPanel({
+        provider,
+        project,
+        cwd,
+        generatedAt,
+        timeoutMs: options.timeoutMs ?? provider.timeoutMs ?? 15_000,
+        runner,
+      }),
+    );
   }
 
   panels.push(actionsPanel(project, generatedAt));
@@ -270,24 +362,36 @@ export async function buildProjectDashboardSnapshot(
     resourceRefs: panels.flatMap((panel) => panel.resourceRefs),
     evidenceRefs: panels.flatMap((panel) => panel.evidenceRefs),
     warnings,
-    freshness: panels.some((panel) => panel.freshness === "stale") ? "stale" : "fresh",
+    freshness: panels.some((panel) => panel.freshness === "stale")
+      ? "stale"
+      : "fresh",
   });
   return snapshot;
 }
 
-export function writeProjectDashboardSnapshot(project: Workspace, snapshot: ProjectSnapshot): ProjectDashboardPaths {
+export function writeProjectDashboardSnapshot(
+  project: Workspace,
+  snapshot: ProjectSnapshot,
+): ProjectDashboardPaths {
   const paths = ensureProjectDashboardStructure(project, snapshot.generatedAt);
-  writeFileSync(paths.latestSnapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+  writeFileSync(
+    paths.latestSnapshotPath,
+    `${JSON.stringify(snapshot, null, 2)}\n`,
+  );
   return paths;
 }
 
-export function buildProjectDashboardRender(project: Workspace, snapshot: ProjectSnapshot): ProjectsJsonRenderSpec {
+export function buildProjectDashboardRender(
+  project: Workspace,
+  snapshot: ProjectSnapshot,
+): ProjectsJsonRenderSpec {
   const nodes = [
     {
       id: "overview",
       type: "projectOverview",
       position: { x: 40, y: 80 },
       data: {
+        id: "overview",
         title: project.name,
         subtitle: project.description ?? project.slug,
         status: project.status,
@@ -295,6 +399,15 @@ export function buildProjectDashboardRender(project: Workspace, snapshot: Projec
         kind: project.kind,
         path: project.primary_path ?? "",
         warnings: snapshot.warnings,
+        component: "ProjectCanvasCard",
+        size: "XL",
+        actions: [
+          {
+            label: "Show project",
+            value: "show-project",
+            variant: "secondary",
+          },
+        ],
       },
     },
     ...snapshot.panels.map((panel, index) => ({
@@ -305,13 +418,31 @@ export function buildProjectDashboardRender(project: Workspace, snapshot: Projec
         y: 40 + Math.floor(index / 3) * 270,
       },
       data: {
+        id: panel.id,
         title: panel.title,
         kind: panel.kind,
         provider: panel.provider.kind,
         state: panel.state,
         summary: panel.summary ?? panel.stateReason ?? "",
-        metrics: panel.metrics.slice(0, 6),
+        component: "ProjectCanvasCard",
+        size: dashboardPanelSize(panel.kind),
+        metrics: panel.metrics.slice(0, 6).map((metric) => ({
+          ...metric,
+          tone: metricTone(metric.status),
+        })),
         items: panel.items.slice(0, 5),
+        actions: [
+          { label: "Open", value: `open:${panel.id}`, variant: "secondary" },
+          ...(panel.kind === "files" || panel.kind === "documents"
+            ? [
+                {
+                  label: "Preview",
+                  value: `preview:${panel.id}`,
+                  variant: "primary",
+                },
+              ]
+            : []),
+        ],
         warnings: panel.warnings,
       },
     })),
@@ -342,8 +473,39 @@ export function buildProjectDashboardRender(project: Workspace, snapshot: Projec
   return validateProjectsRenderSpec(payload.render) as ProjectsJsonRenderSpec;
 }
 
-export async function buildProjectDashboard(target: string | undefined, options: BuildProjectDashboardSnapshotOptions = {}) {
-  const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
+function dashboardPanelSize(
+  kind: ProjectPanel["kind"],
+): "M" | "XL" | "XXL" | "4XL" {
+  if (kind === "files" || kind === "documents" || kind === "custom")
+    return "XXL";
+  if (
+    kind === "tasks" ||
+    kind === "knowledge" ||
+    kind === "mailery" ||
+    kind === "conversations" ||
+    kind === "mementos"
+  )
+    return "XL";
+  if (kind === "overview") return "XL";
+  return "M";
+}
+
+function metricTone(
+  status: ProjectPanel["metrics"][number]["status"],
+): "neutral" | "good" | "warning" | "danger" | "info" {
+  if (status === "good") return "good";
+  if (status === "warning") return "warning";
+  if (status === "critical") return "danger";
+  return "neutral";
+}
+
+export async function buildProjectDashboard(
+  target: string | undefined,
+  options: BuildProjectDashboardSnapshotOptions = {},
+) {
+  const resolution = resolveRegisteredProjectTargetOrThrow(target, {
+    db: options.db,
+  });
   const snapshot = await buildProjectDashboardSnapshot(target, options);
   const render = buildProjectDashboardRender(resolution.project, snapshot);
   return {
@@ -362,7 +524,9 @@ async function collectProviderPanel(args: {
   timeoutMs: number;
   runner: ProjectDashboardProviderRunner;
 }): Promise<ProjectPanel> {
-  const commandArgs = args.provider.args.map((item) => interpolateProviderArg(item, args.project));
+  const commandArgs = args.provider.args.map((item) =>
+    interpolateProviderArg(item, args.project),
+  );
   try {
     const result = await args.runner({
       provider: args.provider,
@@ -373,19 +537,39 @@ async function collectProviderPanel(args: {
       timeoutMs: args.timeoutMs,
     });
     if (!result.ok) {
-      return providerStatePanel(args.provider, args.project, args.generatedAt, result.unavailable ? "unavailable" : "error", summarizeProviderError(result));
+      return providerStatePanel(
+        args.provider,
+        args.project,
+        args.generatedAt,
+        result.unavailable ? "unavailable" : "error",
+        summarizeProviderError(result),
+      );
     }
     const parsed = ProjectPanelSchema.parse(JSON.parse(result.stdout));
     if (parsed.projectId !== args.project.slug) {
-      return providerStatePanel(args.provider, args.project, args.generatedAt, "error", `Provider returned projectId ${parsed.projectId}, expected ${args.project.slug}`);
+      return providerStatePanel(
+        args.provider,
+        args.project,
+        args.generatedAt,
+        "error",
+        `Provider returned projectId ${parsed.projectId}, expected ${args.project.slug}`,
+      );
     }
     return parsed;
   } catch (err) {
-    return providerStatePanel(args.provider, args.project, args.generatedAt, "error", err instanceof Error ? err.message : String(err));
+    return providerStatePanel(
+      args.provider,
+      args.project,
+      args.generatedAt,
+      "error",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
-export async function defaultProjectDashboardProviderRunner(request: ProviderRunRequest): Promise<ProviderRunResult> {
+export async function defaultProjectDashboardProviderRunner(
+  request: ProviderRunRequest,
+): Promise<ProviderRunResult> {
   let timedOut = false;
   try {
     const proc = Bun.spawn([request.command, ...request.args], {
@@ -458,9 +642,19 @@ function overviewPanel(project: Workspace, generatedAt: string): ProjectPanel {
     generatedAt,
     freshness: "fresh",
     metrics: [
-      { id: "status", label: "Status", value: project.status, status: project.status === "active" ? "good" : "unknown" },
+      {
+        id: "status",
+        label: "Status",
+        value: project.status,
+        status: project.status === "active" ? "good" : "unknown",
+      },
       { id: "kind", label: "Kind", value: project.kind, status: "unknown" },
-      { id: "path", label: "Path", value: project.primary_path ? "set" : "missing", status: project.primary_path ? "good" : "warning" },
+      {
+        id: "path",
+        label: "Path",
+        value: project.primary_path ? "set" : "missing",
+        status: project.primary_path ? "good" : "warning",
+      },
     ],
     items: [
       {
@@ -468,11 +662,30 @@ function overviewPanel(project: Workspace, generatedAt: string): ProjectPanel {
         title: project.name,
         summary: project.primary_path ?? "No primary path",
         status: project.status,
-        priority: project.metadata && typeof project.metadata["priority"] === "string" ? priorityFromString(project.metadata["priority"]) : "unknown",
-        resourceRefs: [{ kind: "project", id: project.slug, name: project.name, uri: `project://${project.slug}`, tags: ["projects-dashboard"] }],
+        priority:
+          project.metadata && typeof project.metadata["priority"] === "string"
+            ? priorityFromString(project.metadata["priority"])
+            : "unknown",
+        resourceRefs: [
+          {
+            kind: "project",
+            id: project.slug,
+            name: project.name,
+            uri: `project://${project.slug}`,
+            tags: ["projects-dashboard"],
+          },
+        ],
       },
     ],
-    resourceRefs: [{ kind: "project", id: project.slug, name: project.name, uri: `project://${project.slug}`, tags: ["projects-dashboard"] }],
+    resourceRefs: [
+      {
+        kind: "project",
+        id: project.slug,
+        name: project.name,
+        uri: `project://${project.slug}`,
+        tags: ["projects-dashboard"],
+      },
+    ],
   });
 }
 
@@ -490,11 +703,14 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
     },
     kind: "actions",
     title: "Safe Actions",
-    summary: "Read-only validation, explicit artifact writes, and token-gated dashboard serving.",
+    summary:
+      "Read-only validation, explicit artifact writes, and token-gated dashboard serving.",
     state: "ready",
     generatedAt,
     freshness: "fresh",
-    metrics: [{ id: "available_actions", label: "Actions", value: 3, status: "good" }],
+    metrics: [
+      { id: "available_actions", label: "Actions", value: 3, status: "good" },
+    ],
     items: [
       {
         id: "refresh-snapshot",
@@ -502,7 +718,14 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
         summary: `projects dashboard snapshot ${project.slug} --write --json`,
         status: "write/server-issued",
         priority: "low",
-        resourceRefs: [{ kind: "action", id: "projects.dashboard.snapshot", name: "Refresh snapshot", tags: ["write", "dashboard-artifact", "server-issued"] }],
+        resourceRefs: [
+          {
+            kind: "action",
+            id: "projects.dashboard.snapshot",
+            name: "Refresh snapshot",
+            tags: ["write", "dashboard-artifact", "server-issued"],
+          },
+        ],
       },
       {
         id: "validate-dashboard",
@@ -510,7 +733,14 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
         summary: `projects dashboard validate ${project.slug} --json`,
         status: "read-only",
         priority: "low",
-        resourceRefs: [{ kind: "action", id: "projects.dashboard.validate", name: "Validate dashboard", tags: ["read-only"] }],
+        resourceRefs: [
+          {
+            kind: "action",
+            id: "projects.dashboard.validate",
+            name: "Validate dashboard",
+            tags: ["read-only"],
+          },
+        ],
       },
       {
         id: "serve-dashboard",
@@ -518,13 +748,35 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
         summary: `PROJECTS_DASHBOARD_TOKEN=<token> projects dashboard serve ${project.slug} --host 0.0.0.0`,
         status: "server-issued",
         priority: "low",
-        resourceRefs: [{ kind: "action", id: "projects.dashboard.serve", name: "Serve dashboard", tags: ["server-issued", "network"] }],
+        resourceRefs: [
+          {
+            kind: "action",
+            id: "projects.dashboard.serve",
+            name: "Serve dashboard",
+            tags: ["server-issued", "network"],
+          },
+        ],
       },
     ],
     actions: [
-      { kind: "action", id: "projects.dashboard.snapshot", name: "Refresh snapshot", tags: ["write", "dashboard-artifact", "server-issued"] },
-      { kind: "action", id: "projects.dashboard.validate", name: "Validate dashboard", tags: ["read-only"] },
-      { kind: "action", id: "projects.dashboard.serve", name: "Serve dashboard", tags: ["server-issued", "network"] },
+      {
+        kind: "action",
+        id: "projects.dashboard.snapshot",
+        name: "Refresh snapshot",
+        tags: ["write", "dashboard-artifact", "server-issued"],
+      },
+      {
+        kind: "action",
+        id: "projects.dashboard.validate",
+        name: "Validate dashboard",
+        tags: ["read-only"],
+      },
+      {
+        kind: "action",
+        id: "projects.dashboard.serve",
+        name: "Serve dashboard",
+        tags: ["server-issued", "network"],
+      },
     ],
   });
 }
@@ -556,7 +808,15 @@ function providerStatePanel(
   });
 }
 
-function priorityFromString(value: string): "low" | "medium" | "high" | "critical" | "unknown" {
-  if (value === "low" || value === "medium" || value === "high" || value === "critical") return value;
+function priorityFromString(
+  value: string,
+): "low" | "medium" | "high" | "critical" | "unknown" {
+  if (
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "critical"
+  )
+    return value;
   return "unknown";
 }

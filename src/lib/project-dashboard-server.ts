@@ -8,7 +8,10 @@ import {
   projectDashboardPaths,
   type BuildProjectDashboardSnapshotOptions,
 } from "./project-dashboard.js";
-import { buildProjectCanvasPayload, type ProjectsJsonRenderSpec } from "./project-render.js";
+import {
+  buildProjectCanvasPayload,
+  type ProjectsJsonRenderSpec,
+} from "./project-render.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
 import {
   getProjectCanvas,
@@ -72,21 +75,31 @@ type DashboardRoute =
   | { kind: "api"; canvasRef: string; api: string }
   | { kind: "not-found" };
 
-export async function serveProjectDashboard(options: ProjectDashboardServerOptions): Promise<ProjectDashboardServer> {
+export async function serveProjectDashboard(
+  options: ProjectDashboardServerOptions,
+): Promise<ProjectDashboardServer> {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 3344;
-  const explicitToken = options.token ?? process.env["PROJECTS_DASHBOARD_TOKEN"];
+  const explicitToken =
+    options.token ?? process.env["PROJECTS_DASHBOARD_TOKEN"];
   const loopback = isLoopbackDashboardHost(host);
   const trustNetwork = Boolean(options.trustNetwork);
   if (!loopback && !trustNetwork && !explicitToken) {
-    throw new Error("Serving a dashboard on a non-loopback host requires --token, PROJECTS_DASHBOARD_TOKEN, or --trust-network.");
+    throw new Error(
+      "Serving a dashboard on a non-loopback host requires --token, PROJECTS_DASHBOARD_TOKEN, or --trust-network.",
+    );
   }
   const token = explicitToken ?? randomBytes(24).toString("base64url");
   const selfIssueCookie = loopback || trustNetwork;
   const target = options.target ?? ".";
-  const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
+  const resolution = resolveRegisteredProjectTargetOrThrow(target, {
+    db: options.db,
+  });
   let dashboard = await buildProjectDashboard(target, options);
-  const canonicalDashboardPath = dashboardCanvasPath(resolution.project.slug, "dashboard");
+  const canonicalDashboardPath = dashboardCanvasPath(
+    resolution.project.slug,
+    "dashboard",
+  );
 
   const server = Bun.serve({
     hostname: host,
@@ -102,56 +115,103 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
         return Response.redirect(new URL(route.location, url).toString(), 302);
       }
       if (route.kind === "page" && url.pathname !== route.canonicalPath) {
-        return Response.redirect(new URL(route.canonicalPath, url).toString(), 302);
+        return Response.redirect(
+          new URL(route.canonicalPath, url).toString(),
+          302,
+        );
       }
       if (route.kind === "page") {
-        return new Response(projectDashboardHtml({
-          projectSlug: resolution.project.slug,
-          canvasRef: route.canvasRef,
-          canonicalPath: route.canonicalPath,
-        }), {
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            ...(selfIssueCookie ? { "set-cookie": dashboardCookie(token) } : {}),
+        return new Response(
+          projectDashboardHtml({
+            projectSlug: resolution.project.slug,
+            canvasRef: route.canvasRef,
+            canonicalPath: route.canonicalPath,
+          }),
+          {
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              ...(selfIssueCookie
+                ? { "set-cookie": dashboardCookie(token) }
+                : {}),
+            },
           },
-        });
+        );
       }
-      if (route.kind !== "api") return new Response("not found", { status: 404 });
+      if (route.kind !== "api")
+        return new Response("not found", { status: 404 });
 
       if (route.api === "session" && request.method === "POST") {
         const submitted = await readSubmittedToken(request);
         if (!submitted || !tokensMatch(submitted, token)) {
-          return Response.json({ ok: false, error: "invalid dashboard token" }, { status: 401 });
+          return Response.json(
+            { ok: false, error: "invalid dashboard token" },
+            { status: 401 },
+          );
         }
-        return Response.json({ ok: true }, { headers: { "set-cookie": dashboardCookie(token) } });
+        return Response.json(
+          { ok: true },
+          { headers: { "set-cookie": dashboardCookie(token) } },
+        );
       }
       if (!hasDashboardCookie(request, token)) {
-        return Response.json({ ok: false, error: "dashboard token required" }, { status: 401 });
+        return Response.json(
+          { ok: false, error: "dashboard token required" },
+          { status: 401 },
+        );
       }
       if (route.api === "snapshot") {
-        if (url.searchParams.get("refresh") === "1") dashboard = await buildProjectDashboard(target, options);
+        if (url.searchParams.get("refresh") === "1")
+          dashboard = await buildProjectDashboard(target, options);
         return Response.json(dashboard.snapshot);
       }
       if (route.api === "render") {
-        const context = buildDashboardCanvasContext(resolution.project, route.canvasRef, dashboard.snapshot);
-        if (!context) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        const context = buildDashboardCanvasContext(
+          resolution.project,
+          route.canvasRef,
+          dashboard.snapshot,
+        );
+        if (!context)
+          return Response.json(
+            { ok: false, error: `canvas not found: ${route.canvasRef}` },
+            { status: 404 },
+          );
         return Response.json(context.render);
       }
       if (route.api === "layout" && request.method === "PATCH") {
-        const updated = await saveDashboardCanvasLayout(resolution.project, route.canvasRef, request);
-        if (!updated) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        const updated = await saveDashboardCanvasLayout(
+          resolution.project,
+          route.canvasRef,
+          request,
+        );
+        if (!updated)
+          return Response.json(
+            { ok: false, error: `canvas not found: ${route.canvasRef}` },
+            { status: 404 },
+          );
         return Response.json(updated);
       }
       if (route.api === "canvases") {
         return Response.json({
           project: projectPayload(resolution.project),
-          canvases: listDashboardCanvasSummaries(resolution.project, route.canvasRef),
+          canvases: listDashboardCanvasSummaries(
+            resolution.project,
+            route.canvasRef,
+          ),
         });
       }
       if (route.api === "bootstrap") {
-        if (url.searchParams.get("refresh") === "1") dashboard = await buildProjectDashboard(target, options);
-        const context = buildDashboardCanvasContext(resolution.project, route.canvasRef, dashboard.snapshot);
-        if (!context) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        if (url.searchParams.get("refresh") === "1")
+          dashboard = await buildProjectDashboard(target, options);
+        const context = buildDashboardCanvasContext(
+          resolution.project,
+          route.canvasRef,
+          dashboard.snapshot,
+        );
+        if (!context)
+          return Response.json(
+            { ok: false, error: `canvas not found: ${route.canvasRef}` },
+            { status: 404 },
+          );
         return Response.json({
           project: projectPayload(resolution.project),
           canvas: context.canvas,
@@ -185,15 +245,37 @@ function projectPayload(project: Workspace): Record<string, unknown> {
 }
 
 function dashboardRoute(pathname: string, projectSlug: string): DashboardRoute {
-  const segments = pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
-  if (segments.length === 0) return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
-  if (segments.length === 1 && segments[0] === "dashboard") return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
-  if (segments[0] === "api") return { kind: "api", canvasRef: "dashboard", api: segments[1] ?? "" };
+  const segments = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => decodeURIComponent(segment));
+  if (segments.length === 0)
+    return {
+      kind: "redirect",
+      location: dashboardCanvasPath(projectSlug, "dashboard"),
+    };
+  if (segments.length === 1 && segments[0] === "dashboard")
+    return {
+      kind: "redirect",
+      location: dashboardCanvasPath(projectSlug, "dashboard"),
+    };
+  if (segments[0] === "api")
+    return { kind: "api", canvasRef: "dashboard", api: segments[1] ?? "" };
   if (segments[0] !== projectSlug) return { kind: "not-found" };
-  if (segments.length === 1) return { kind: "redirect", location: dashboardCanvasPath(projectSlug, "dashboard") };
+  if (segments.length === 1)
+    return {
+      kind: "redirect",
+      location: dashboardCanvasPath(projectSlug, "dashboard"),
+    };
   const canvasRef = segments[1] || "dashboard";
-  if (segments.length === 2) return { kind: "page", canvasRef, canonicalPath: dashboardCanvasPath(projectSlug, canvasRef) };
-  if (segments.length === 4 && segments[2] === "api") return { kind: "api", canvasRef, api: segments[3] };
+  if (segments.length === 2)
+    return {
+      kind: "page",
+      canvasRef,
+      canonicalPath: dashboardCanvasPath(projectSlug, canvasRef),
+    };
+  if (segments.length === 4 && segments[2] === "api")
+    return { kind: "api", canvasRef, api: segments[3] };
   return { kind: "not-found" };
 }
 
@@ -234,22 +316,53 @@ function isDashboardCanvasRef(canvasRef: string): boolean {
   return canvasRef === "" || canvasRef === "dashboard";
 }
 
-function findProjectCanvas(project: Workspace, canvasRef: string): ProjectCanvas | null {
+function findProjectCanvas(
+  project: Workspace,
+  canvasRef: string,
+): ProjectCanvas | null {
   const exact = getProjectCanvas(project, canvasRef);
   if (exact) return exact;
-  return listProjectCanvases(project).find((canvas) => routeIdForCanvas(canvas) === canvasRef || shortCanvasId(canvas.id) === canvasRef) ?? null;
+  return (
+    listProjectCanvases(project).find(
+      (canvas) =>
+        routeIdForCanvas(canvas) === canvasRef ||
+        shortCanvasId(canvas.id) === canvasRef,
+    ) ?? null
+  );
 }
 
-function listDashboardCanvasSummaries(project: Workspace, activeRef: string): DashboardCanvasSummary[] {
-  const dashboard = virtualDashboardCanvasSummary(project, "dashboard", isDashboardCanvasRef(activeRef));
+function listDashboardCanvasSummaries(
+  project: Workspace,
+  activeRef: string,
+): DashboardCanvasSummary[] {
+  const dashboard = virtualDashboardCanvasSummary(
+    project,
+    "dashboard",
+    isDashboardCanvasRef(activeRef),
+  );
   const stored = listProjectCanvases(project)
     .filter((canvas) => canvas.status === "active")
-    .map((canvas) => storedCanvasSummary(project, canvas, activeRef === routeIdForCanvas(canvas) || activeRef === canvas.id || activeRef === shortCanvasId(canvas.id)));
+    .map((canvas) =>
+      storedCanvasSummary(
+        project,
+        canvas,
+        activeRef === routeIdForCanvas(canvas) ||
+          activeRef === canvas.id ||
+          activeRef === shortCanvasId(canvas.id),
+      ),
+    );
   return [dashboard, ...stored];
 }
 
-function virtualDashboardCanvasSummary(project: Workspace, routeId: string, active: boolean, render?: ProjectsJsonRenderSpec): DashboardCanvasSummary {
-  const root = render?.elements?.[String(render.root)]?.props as { nodes?: unknown[]; edges?: unknown[] } | undefined;
+function virtualDashboardCanvasSummary(
+  project: Workspace,
+  routeId: string,
+  active: boolean,
+  render?: ProjectsJsonRenderSpec,
+): DashboardCanvasSummary {
+  const root = render?.elements?.[String(render.root)]?.props as
+    | { nodes?: unknown[]; edges?: unknown[] }
+    | undefined;
   return {
     id: `dashboard:${project.slug}`,
     slug: "dashboard",
@@ -265,7 +378,11 @@ function virtualDashboardCanvasSummary(project: Workspace, routeId: string, acti
   };
 }
 
-function storedCanvasSummary(project: Workspace, canvas: ProjectCanvas, active: boolean): DashboardCanvasSummary {
+function storedCanvasSummary(
+  project: Workspace,
+  canvas: ProjectCanvas,
+  active: boolean,
+): DashboardCanvasSummary {
   const routeId = routeIdForCanvas(canvas);
   return {
     id: canvas.id,
@@ -290,11 +407,20 @@ function shortCanvasId(id: string): string {
   return id.startsWith("pcv_") ? id.slice(4, 12) : id.slice(0, 8);
 }
 
-function applyDashboardLayout(project: Workspace, canvasRef: string, render: ProjectsJsonRenderSpec, canvas?: ProjectCanvas): void {
+function applyDashboardLayout(
+  project: Workspace,
+  canvasRef: string,
+  render: ProjectsJsonRenderSpec,
+  canvas?: ProjectCanvas,
+): void {
   const root = canvasRootProps(render);
   if (!root) return;
   const layout = loadDashboardLayout(project, canvasRef);
-  const showConnections = layout?.showConnections ?? Boolean((canvas?.data?.["ui"] as JsonObject | undefined)?.["show_connections"]);
+  const showConnections =
+    layout?.showConnections ??
+    Boolean(
+      (canvas?.data?.["ui"] as JsonObject | undefined)?.["show_connections"],
+    );
   const originalEdges = Array.isArray(root.edges) ? root.edges : [];
   root.data = {
     ...(isJsonObject(root.data) ? root.data : {}),
@@ -302,7 +428,8 @@ function applyDashboardLayout(project: Workspace, canvasRef: string, render: Pro
     layout: {
       saved: Boolean(layout),
       showConnections,
-      viewport: layout?.viewport ?? (isJsonObject(root.viewport) ? root.viewport : {}),
+      viewport:
+        layout?.viewport ?? (isJsonObject(root.viewport) ? root.viewport : {}),
       updatedAt: layout?.updatedAt ?? null,
     },
   };
@@ -314,7 +441,9 @@ function applyDashboardLayout(project: Workspace, canvasRef: string, render: Pro
     non_overlapping_nodes: true,
   };
   if (layout?.viewport) root.viewport = layout.viewport;
-  root.nodes = normalizeCanvasNodes(applySavedNodePositions(root.nodes, layout));
+  root.nodes = normalizeCanvasNodes(
+    applySavedNodePositions(root.nodes, layout),
+  );
   root.edges = showConnections ? originalEdges : [];
 }
 
@@ -324,10 +453,15 @@ function canvasRootProps(render: ProjectsJsonRenderSpec): JsonObject | null {
   return isJsonObject(props) ? props : null;
 }
 
-function applySavedNodePositions(nodes: unknown, layout: DashboardLayoutState | null): JsonObject[] {
+function applySavedNodePositions(
+  nodes: unknown,
+  layout: DashboardLayoutState | null,
+): JsonObject[] {
   const source = Array.isArray(nodes) ? nodes.filter(isJsonObject) : [];
   if (!layout) return source;
-  const positions = new Map(layout.nodes.map((node) => [node.id, node.position]));
+  const positions = new Map(
+    layout.nodes.map((node) => [node.id, node.position]),
+  );
   return source.map((node) => {
     const id = typeof node["id"] === "string" ? node["id"] : "";
     const position = positions.get(id);
@@ -336,7 +470,13 @@ function applySavedNodePositions(nodes: unknown, layout: DashboardLayoutState | 
 }
 
 function normalizeCanvasNodes(nodes: JsonObject[]): JsonObject[] {
-  const placed: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
+  const placed: Array<{
+    id: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }> = [];
   return nodes.map((node, index) => {
     const size = estimatedNodeSize(node);
     const rawPosition = isJsonObject(node["position"]) ? node["position"] : {};
@@ -345,7 +485,9 @@ function normalizeCanvasNodes(nodes: JsonObject[]): JsonObject[] {
     let y = numeric(rawPosition["y"], Math.floor(index / 4) * 240);
     let guard = 0;
     while (guard < 80) {
-      const colliding = placed.find((other) => boxesOverlap({ x, y, width: size.width, height: size.height }, other));
+      const colliding = placed.find((other) =>
+        boxesOverlap({ x, y, width: size.width, height: size.height }, other),
+      );
       if (!colliding) break;
       y = colliding.y + colliding.height + 44;
       guard += 1;
@@ -355,35 +497,57 @@ function normalizeCanvasNodes(nodes: JsonObject[]): JsonObject[] {
   });
 }
 
-function estimatedNodeSize(node: JsonObject): { width: number; height: number } {
+function estimatedNodeSize(node: JsonObject): {
+  width: number;
+  height: number;
+} {
   const type = typeof node["type"] === "string" ? node["type"] : "";
   const data = isJsonObject(node["data"]) ? node["data"] : {};
+  const size = typeof data["size"] === "string" ? data["size"] : "";
   const metrics = Array.isArray(data["metrics"]) ? data["metrics"].length : 0;
   const items = Array.isArray(data["items"]) ? data["items"].length : 0;
-  const width = type === "projectOverview" ? 340 : type === "projectPanel" ? 320 : 300;
-  const height = type === "projectPanel"
-    ? 112 + Math.ceil(Math.min(metrics, 6) / 2) * 43 + Math.min(items, 5) * 24
-    : type === "projectOverview"
-      ? 122
-      : 112;
+  if (size === "4XL") return { width: 960, height: 520 };
+  if (size === "XXL") return { width: 760, height: 420 };
+  if (size === "XL") return { width: 560, height: 320 };
+  const width =
+    type === "projectOverview" ? 340 : type === "projectPanel" ? 320 : 300;
+  const height =
+    type === "projectPanel"
+      ? 112 + Math.ceil(Math.min(metrics, 6) / 2) * 43 + Math.min(items, 5) * 24
+      : type === "projectOverview"
+        ? 122
+        : 112;
   return { width, height };
 }
 
-function boxesOverlap(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }): boolean {
+function boxesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
   const gap = 28;
-  return a.x < b.x + b.width + gap
-    && a.x + a.width + gap > b.x
-    && a.y < b.y + b.height + gap
-    && a.y + a.height + gap > b.y;
+  return (
+    a.x < b.x + b.width + gap &&
+    a.x + a.width + gap > b.x &&
+    a.y < b.y + b.height + gap &&
+    a.y + a.height + gap > b.y
+  );
 }
 
 function numeric(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-async function saveDashboardCanvasLayout(project: Workspace, canvasRef: string, request: Request): Promise<{ ok: true; canvas: DashboardCanvasSummary; layout: DashboardLayoutState } | null> {
+async function saveDashboardCanvasLayout(
+  project: Workspace,
+  canvasRef: string,
+  request: Request,
+): Promise<{
+  ok: true;
+  canvas: DashboardCanvasSummary;
+  layout: DashboardLayoutState;
+} | null> {
   const body = await readLayoutRequest(request);
-  const normalizedNodes = normalizeCanvasNodes(body.nodes.map((node) => ({ id: node.id, position: node.position })));
+  const normalizedNodes = normalizeCanvasNodes(body.nodes);
   const layout: DashboardLayoutState = {
     schema: "hasna.projects_dashboard_layout.v1",
     projectId: project.slug,
@@ -394,23 +558,34 @@ async function saveDashboardCanvasLayout(project: Workspace, canvasRef: string, 
     nodes: normalizedNodes.map((node) => ({
       id: String(node["id"]),
       position: isJsonObject(node["position"])
-        ? { x: numeric(node["position"]["x"], 0), y: numeric(node["position"]["y"], 0) }
+        ? {
+            x: numeric(node["position"]["x"], 0),
+            y: numeric(node["position"]["y"], 0),
+          }
         : { x: 0, y: 0 },
     })),
   };
 
   if (isDashboardCanvasRef(canvasRef)) {
     writeDashboardLayout(project, "dashboard", layout);
-    return { ok: true, canvas: virtualDashboardCanvasSummary(project, "dashboard", true), layout };
+    return {
+      ok: true,
+      canvas: virtualDashboardCanvasSummary(project, "dashboard", true),
+      layout,
+    };
   }
 
   const canvas = findProjectCanvas(project, canvasRef);
   if (!canvas) return null;
-  const positionById = new Map(layout.nodes.map((node) => [node.id, node.position]));
-  const nodes = normalizeCanvasNodes(canvas.nodes.map((node) => {
-    const position = positionById.get(node.id) ?? node.position;
-    return { ...node, position } as unknown as JsonObject;
-  })) as unknown as ProjectCanvasNode[];
+  const positionById = new Map(
+    layout.nodes.map((node) => [node.id, node.position]),
+  );
+  const nodes = normalizeCanvasNodes(
+    canvas.nodes.map((node) => {
+      const position = positionById.get(node.id) ?? node.position;
+      return { ...node, position } as unknown as JsonObject;
+    }),
+  ) as unknown as ProjectCanvasNode[];
   const data = {
     ...canvas.data,
     ui: {
@@ -418,23 +593,55 @@ async function saveDashboardCanvasLayout(project: Workspace, canvasRef: string, 
       show_connections: body.showConnections,
     },
   };
-  const updated = updateProjectCanvasLayout(project, canvas.id, { nodes, viewport: body.viewport, data });
+  const updated = updateProjectCanvasLayout(project, canvas.id, {
+    nodes,
+    viewport: body.viewport,
+    data,
+  });
   writeDashboardLayout(project, routeIdForCanvas(updated), layout);
-  return { ok: true, canvas: storedCanvasSummary(project, updated, true), layout };
+  return {
+    ok: true,
+    canvas: storedCanvasSummary(project, updated, true),
+    layout,
+  };
 }
 
-async function readLayoutRequest(request: Request): Promise<{ nodes: Array<{ id: string; position: { x: number; y: number } }>; viewport: JsonObject; showConnections: boolean }> {
-  const parsed = await request.json() as { nodes?: unknown; viewport?: unknown; showConnections?: unknown };
+async function readLayoutRequest(request: Request): Promise<{
+  nodes: JsonObject[];
+  viewport: JsonObject;
+  showConnections: boolean;
+}> {
+  const parsed = (await request.json()) as {
+    nodes?: unknown;
+    viewport?: unknown;
+    showConnections?: unknown;
+  };
   const nodes = Array.isArray(parsed.nodes)
     ? parsed.nodes.flatMap((item) => {
-        if (!isJsonObject(item) || typeof item["id"] !== "string" || !isJsonObject(item["position"])) return [];
-        return [{
-          id: item["id"],
-          position: {
-            x: numeric(item["position"]["x"], 0),
-            y: numeric(item["position"]["y"], 0),
+        if (
+          !isJsonObject(item) ||
+          typeof item["id"] !== "string" ||
+          !isJsonObject(item["position"])
+        )
+          return [];
+        return [
+          {
+            id: item["id"],
+            type: typeof item["type"] === "string" ? item["type"] : undefined,
+            position: {
+              x: numeric(item["position"]["x"], 0),
+              y: numeric(item["position"]["y"], 0),
+            },
+            data: isJsonObject(item["data"])
+              ? {
+                  size:
+                    typeof item["data"]["size"] === "string"
+                      ? item["data"]["size"]
+                      : undefined,
+                }
+              : {},
           },
-        }];
+        ];
       })
     : [];
   return {
@@ -444,22 +651,41 @@ async function readLayoutRequest(request: Request): Promise<{ nodes: Array<{ id:
   };
 }
 
-function loadDashboardLayout(project: Workspace, canvasRef: string): DashboardLayoutState | null {
+function loadDashboardLayout(
+  project: Workspace,
+  canvasRef: string,
+): DashboardLayoutState | null {
   const path = dashboardLayoutPath(project, canvasRef, false);
   if (!path || !existsSync(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DashboardLayoutState>;
-    if (parsed.schema !== "hasna.projects_dashboard_layout.v1" || !Array.isArray(parsed.nodes)) return null;
+    const parsed = JSON.parse(
+      readFileSync(path, "utf-8"),
+    ) as Partial<DashboardLayoutState>;
+    if (
+      parsed.schema !== "hasna.projects_dashboard_layout.v1" ||
+      !Array.isArray(parsed.nodes)
+    )
+      return null;
     return {
       schema: "hasna.projects_dashboard_layout.v1",
-      projectId: typeof parsed.projectId === "string" ? parsed.projectId : project.slug,
-      canvasRef: typeof parsed.canvasRef === "string" ? parsed.canvasRef : canvasRef,
+      projectId:
+        typeof parsed.projectId === "string" ? parsed.projectId : project.slug,
+      canvasRef:
+        typeof parsed.canvasRef === "string" ? parsed.canvasRef : canvasRef,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
       showConnections: parsed.showConnections === true,
       viewport: isJsonObject(parsed.viewport) ? parsed.viewport : {},
       nodes: parsed.nodes.flatMap((node) => {
         if (!node || typeof node.id !== "string") return [];
-        return [{ id: node.id, position: { x: numeric(node.position?.x, 0), y: numeric(node.position?.y, 0) } }];
+        return [
+          {
+            id: node.id,
+            position: {
+              x: numeric(node.position?.x, 0),
+              y: numeric(node.position?.y, 0),
+            },
+          },
+        ];
       }),
     };
   } catch {
@@ -467,14 +693,25 @@ function loadDashboardLayout(project: Workspace, canvasRef: string): DashboardLa
   }
 }
 
-function writeDashboardLayout(project: Workspace, canvasRef: string, layout: DashboardLayoutState): void {
+function writeDashboardLayout(
+  project: Workspace,
+  canvasRef: string,
+  layout: DashboardLayoutState,
+): void {
   const path = dashboardLayoutPath(project, canvasRef, true);
-  if (!path) throw new Error(`Unable to resolve dashboard layout path for ${canvasRef}`);
+  if (!path)
+    throw new Error(`Unable to resolve dashboard layout path for ${canvasRef}`);
   writeFileSync(path, `${JSON.stringify(layout, null, 2)}\n`);
 }
 
-function dashboardLayoutPath(project: Workspace, canvasRef: string, create: boolean): string | null {
-  const paths = create ? ensureProjectDashboardStructure(project) : projectDashboardPaths(project);
+function dashboardLayoutPath(
+  project: Workspace,
+  canvasRef: string,
+  create: boolean,
+): string | null {
+  const paths = create
+    ? ensureProjectDashboardStructure(project)
+    : projectDashboardPaths(project);
   const dir = join(paths.renderDir, "layouts");
   if (create) mkdirSync(dir, { recursive: true });
   return join(dir, `${safeLayoutName(canvasRef)}.layout.json`);
@@ -494,18 +731,26 @@ function dashboardCookie(token: string): string {
 
 function hasDashboardCookie(request: Request, token: string): boolean {
   const cookie = request.headers.get("cookie") ?? "";
-  return cookie.split(";").map((part) => part.trim()).some((part) => part === `projects_dashboard=${encodeURIComponent(token)}`);
+  return cookie
+    .split(";")
+    .map((part) => part.trim())
+    .some((part) => part === `projects_dashboard=${encodeURIComponent(token)}`);
 }
 
 export function isLoopbackDashboardHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+  return (
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "::1" ||
+    host === "[::1]"
+  );
 }
 
 async function readSubmittedToken(request: Request): Promise<string | null> {
   const contentType = request.headers.get("content-type") ?? "";
   try {
     if (contentType.includes("application/json")) {
-      const parsed = await request.json() as { token?: unknown };
+      const parsed = (await request.json()) as { token?: unknown };
       return typeof parsed.token === "string" ? parsed.token : null;
     }
     const form = await request.formData();
@@ -522,11 +767,17 @@ function tokensMatch(submitted: string, expected: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: string; canonicalPath?: string }): string {
+export function projectDashboardHtml(args: {
+  projectSlug: string;
+  canvasRef?: string;
+  canonicalPath?: string;
+}): string {
   const bootstrap = JSON.stringify({
     projectSlug: args.projectSlug,
     canvasRef: args.canvasRef ?? "dashboard",
-    canonicalPath: args.canonicalPath ?? dashboardCanvasPath(args.projectSlug, args.canvasRef ?? "dashboard"),
+    canonicalPath:
+      args.canonicalPath ??
+      dashboardCanvasPath(args.projectSlug, args.canvasRef ?? "dashboard"),
   });
   return `<!doctype html>
 <html lang="en">
@@ -638,12 +889,59 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
       .metric span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
       .items { border-top: 1px solid #edf0f5; padding: 8px 12px 12px; display: grid; gap: 6px; }
       .item { font-size: 12px; color: var(--ink); line-height: 1.35; overflow-wrap: anywhere; }
+      .side-item {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 9px 10px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .side-item:hover { background: #f7f8fb; }
       .overview-node { width: 340px; border-color: #cbd8ff; }
       .generic-node { width: 300px; }
       .overview-path { color: var(--muted); font-size: 11px; padding: 0 12px 12px; overflow-wrap: anywhere; }
       .empty-state { padding: 16px; color: var(--muted); }
+      .modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: rgba(21, 32, 43, .42);
+      }
+      .modal {
+        width: min(920px, calc(100vw - 32px));
+        max-height: min(760px, calc(100vh - 48px));
+        overflow: hidden;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+        box-shadow: 0 24px 80px rgba(21, 32, 43, .24);
+      }
+      .modal-head {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      .modal-head h2 { margin: 0; font-size: 16px; line-height: 1.25; }
+      .modal-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.4; }
+      .modal-body { max-height: 620px; overflow: auto; padding: 16px 18px; }
+      .preview-frame { width: 100%; height: min(560px, 58vh); border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+      .preview-media { display: block; max-width: 100%; max-height: min(560px, 58vh); margin: 0 auto; }
+      .preview-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .meta-grid { display: grid; gap: 8px; }
+      .meta-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 10px; font-size: 13px; }
+      .meta-row span:first-child { color: var(--muted); }
       .react-flow__node { cursor: grab; }
       .react-flow__node.dragging { cursor: grabbing; }
+      .react-flow__attribution { display: none; }
       @media (max-width: 900px) {
         .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(420px, 1fr) 260px; }
         .side { border-left: 0; border-top: 1px solid var(--line); }
@@ -672,12 +970,64 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
 
       const h = React.createElement;
       const tone = (value) => String(value || "unknown").replace(/[^a-z0-9_-]/gi, "").toLowerCase();
+      const text = (value, fallback = "") => typeof value === "string" ? value : fallback;
+      const safePreviewSrc = (value) => {
+        const src = text(value).trim();
+        if (!src) return "";
+        if (src.startsWith("/") && !src.startsWith("//")) return src;
+        if (src.startsWith("blob:")) return src;
+        return "";
+      };
+      const boundedText = (value) => {
+        const input = text(value);
+        return input.length > 20000 ? input.slice(0, 20000) + "\\n\\n[Preview truncated]" : input;
+      };
+      const nodeSizeStyle = (size) => {
+        if (size === "4XL") return { width: 960, minHeight: 520 };
+        if (size === "XXL") return { width: 760, minHeight: 420 };
+        if (size === "XL") return { width: 560, minHeight: 320 };
+        return {};
+      };
+      const previewKind = (preview) => {
+        const viewer = text(preview?.viewer || preview?.metadata?.viewer, "auto");
+        const mime = text(preview?.mime || preview?.metadata?.mime).toLowerCase();
+        const src = text(preview?.src || preview?.metadata?.src).toLowerCase();
+        if (viewer && viewer !== "auto") return viewer;
+        if (mime.includes("pdf") || src.endsWith(".pdf")) return "pdf";
+        if (mime.startsWith("image/")) return "image";
+        if (mime.startsWith("video/")) return "video";
+        if (mime.startsWith("audio/")) return "audio";
+        if (mime.includes("markdown") || src.endsWith(".md")) return "markdown";
+        if (mime.startsWith("text/")) return "text";
+        return "metadata";
+      };
+      const previewFromItem = (item) => {
+        const metadata = item?.metadata || {};
+        const refs = Array.isArray(item?.resourceRefs) ? item.resourceRefs : [];
+        const evidence = Array.isArray(item?.evidenceRefs) ? item.evidenceRefs : [];
+        const firstRef = refs[0] || {};
+        return {
+          title: item?.title || firstRef.name || item?.id || "Preview",
+          summary: item?.summary || evidence[0]?.summary || "",
+          status: item?.status || item?.priority || "",
+          kind: firstRef.kind || evidence[0]?.kind || "metadata",
+          id: item?.id || firstRef.id || "",
+          refs,
+          evidence,
+          metadata,
+          viewer: metadata.viewer || "auto",
+          src: safePreviewSrc(metadata.src || metadata.previewUrl || ""),
+          mime: metadata.mime || "",
+          previewText: metadata.previewText || item?.summary || evidence[0]?.summary || "",
+        };
+      };
 
       function ProjectNode({ data }) {
         const metrics = data.metrics || [];
         const items = data.items || [];
-        return h("div", { className: "node" }, [
-          h(Handle, { key: "target", type: "target", position: Position.Left }),
+        const handles = data.showConnections === true;
+        return h("div", { className: "node", style: nodeSizeStyle(data.size) }, [
+          handles ? h(Handle, { key: "target", type: "target", position: Position.Left }) : null,
           h("div", { key: "head", className: "node-header" }, [
             h("h3", { key: "title", className: "node-title" }, data.title),
             h("span", { key: "state", className: "badge " + tone(data.state) }, data.state || data.provider),
@@ -692,33 +1042,35 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
           items.length ? h("div", { key: "items", className: "items" }, items.map((item) =>
             h("div", { key: item.id, className: "item" }, item.title)
           )) : null,
-          h(Handle, { key: "source", type: "source", position: Position.Right }),
+          handles ? h(Handle, { key: "source", type: "source", position: Position.Right }) : null,
         ]);
       }
 
       function OverviewNode({ data }) {
-        return h("div", { className: "node overview-node" }, [
+        const handles = data.showConnections === true;
+        return h("div", { className: "node overview-node", style: nodeSizeStyle(data.size) }, [
           h("div", { key: "head", className: "node-header" }, [
             h("h3", { key: "title", className: "node-title" }, data.title),
             h("span", { key: "state", className: "badge good" }, data.status),
           ]),
           h("p", { key: "summary", className: "node-summary" }, data.subtitle),
           h("div", { key: "path", className: "overview-path" }, data.path || "No primary path"),
-          h(Handle, { key: "source", type: "source", position: Position.Right }),
+          handles ? h(Handle, { key: "source", type: "source", position: Position.Right }) : null,
         ]);
       }
 
       function GenericNode({ id, data, type }) {
         const title = data.title || data.name || data.label || id;
         const summary = data.description || data.summary || data.kind || type || "";
-        return h("div", { className: "node generic-node" }, [
-          h(Handle, { key: "target", type: "target", position: Position.Left }),
+        const handles = data.showConnections === true;
+        return h("div", { className: "node generic-node", style: nodeSizeStyle(data.size) }, [
+          handles ? h(Handle, { key: "target", type: "target", position: Position.Left }) : null,
           h("div", { key: "head", className: "node-header" }, [
             h("h3", { key: "title", className: "node-title" }, String(title)),
             h("span", { key: "state", className: "badge" }, String(data.status || type || "node")),
           ]),
           h("p", { key: "summary", className: "node-summary" }, String(summary)),
-          h(Handle, { key: "source", type: "source", position: Position.Right }),
+          handles ? h(Handle, { key: "source", type: "source", position: Position.Right }) : null,
         ]);
       }
 
@@ -745,6 +1097,47 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         };
       }
 
+      function PreviewModal({ preview, onClose }) {
+        if (!preview) return null;
+        const kind = previewKind(preview);
+        const src = safePreviewSrc(preview.src);
+        const rows = [
+          ["Type", preview.kind || kind],
+          ["Status", preview.status || "unknown"],
+          ["ID", preview.id || ""],
+          ["References", String((preview.refs || []).length)],
+          ["Evidence", String((preview.evidence || []).length)],
+        ];
+        const body = kind === "image" && src
+          ? h("img", { className: "preview-media", src, alt: preview.title })
+          : kind === "video" && src
+            ? h("video", { className: "preview-media", src, controls: true })
+            : kind === "audio" && src
+              ? h("audio", { className: "preview-media", src, controls: true })
+              : kind === "pdf" && src
+                ? h("iframe", { className: "preview-frame", src, title: preview.title, sandbox: "" })
+                : (kind === "text" || kind === "markdown") && preview.previewText
+                  ? h("pre", { className: "preview-text" }, boundedText(preview.previewText))
+                  : h("div", { className: "meta-grid" }, rows.filter((row) => row[1]).map((row) =>
+                      h("div", { key: row[0], className: "meta-row" }, [
+                        h("span", { key: "label" }, row[0]),
+                        h("span", { key: "value" }, row[1]),
+                      ])
+                    ));
+        return h("div", { className: "modal-backdrop", role: "dialog", "aria-modal": "true", onClick: onClose }, [
+          h("div", { key: "modal", className: "modal", onClick: (event) => event.stopPropagation() }, [
+            h("div", { key: "head", className: "modal-head" }, [
+              h("div", { key: "title" }, [
+                h("h2", { key: "h" }, preview.title),
+                preview.summary ? h("p", { key: "p" }, preview.summary) : null,
+              ]),
+              h("button", { key: "close", className: "icon-button", title: "Close", onClick: onClose }, "X"),
+            ]),
+            h("div", { key: "body", className: "modal-body" }, body),
+          ]),
+        ]);
+      }
+
       function mergeSavedPositions(nodes, layout) {
         const positions = new Map((layout?.nodes || []).map((item) => [item.id, item.position]));
         return (nodes || []).map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id) } : node);
@@ -762,6 +1155,7 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         const [flowNodes, setFlowNodes] = useState([]);
         const [showConnections, setShowConnections] = useState(false);
         const [selected, setSelected] = useState(null);
+        const [preview, setPreview] = useState(null);
         const [error, setError] = useState("");
         const [needsToken, setNeedsToken] = useState(false);
         const [token, setToken] = useState("");
@@ -810,6 +1204,10 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         const canvas = renderCanvas(render);
         const availableEdges = canvas.data?.availableEdges || canvas.edges || [];
         const edges = showConnections ? availableEdges : [];
+        const renderedNodes = useMemo(() => flowNodes.map((node) => ({
+          ...node,
+          data: { ...(node.data || {}), showConnections },
+        })), [flowNodes, showConnections]);
         const saveLayout = useCallback(async (nextNodes, nextShowConnections = showConnections, nextViewport = flowViewport) => {
           if (!canvasMeta) return;
           setSaveState("Saving");
@@ -820,7 +1218,12 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
             body: JSON.stringify({
               showConnections: nextShowConnections,
               viewport: validViewport(nextViewport) ? nextViewport : {},
-              nodes: (nextNodes || []).map((node) => ({ id: node.id, position: node.position })),
+              nodes: (nextNodes || []).map((node) => ({
+                id: node.id,
+                type: node.type,
+                position: node.position,
+                data: { size: node.data?.size || null },
+              })),
             }),
           });
           if (!res.ok) throw new Error("Layout save failed " + res.status);
@@ -909,12 +1312,14 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
               error ? h("div", { className: "empty-state" }, error) :
               h(ReactFlow, {
                 key: canvasMeta?.routeId || "loading",
-                nodes: flowNodes,
+                nodes: renderedNodes,
                 edges,
                 nodeTypes,
                 defaultViewport: flowViewport || undefined,
                 fitView: !flowViewport,
                 nodesDraggable: true,
+                nodesConnectable: showConnections,
+                proOptions: { hideAttribution: true },
                 onNodeClick,
                 onNodesChange,
                 onNodeDragStop,
@@ -930,9 +1335,17 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
               h("p", { key: "summary" }, selected.summary || selected.stateReason || selected.state),
               h("div", { key: "badge", className: "badge " + tone(selected.state) }, selected.provider?.kind || selected.kind),
               ...(selected.warnings || []).map((warning, index) => h("p", { key: "warning-" + index }, warning)),
-              ...(selected.items || []).slice(0, 8).map((item) => h("p", { key: item.id }, item.title + (item.status ? " - " + item.status : ""))),
+              ...(selected.items || []).slice(0, 8).map((item) =>
+                h("button", {
+                  key: item.id,
+                  className: "side-item",
+                  title: "Open item preview",
+                  onClick: () => setPreview(previewFromItem(item)),
+                }, item.title + (item.status ? " - " + item.status : ""))
+              ),
             ] : h("div", { className: "empty-state" }, "Select a dashboard node")),
           ]),
+          h(PreviewModal, { key: "preview", preview, onClose: () => setPreview(null) }),
         ]);
       }
 
@@ -943,11 +1356,15 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  }[char] ?? char));
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char] ?? char,
+  );
 }

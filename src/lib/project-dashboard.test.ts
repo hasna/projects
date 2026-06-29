@@ -13,7 +13,10 @@ import {
   resolveDashboardImports,
   type ProjectDashboardProvider,
 } from "./project-dashboard.js";
-import { validateProjectsRenderSpec } from "./project-render.js";
+import {
+  projectsJsonRenderCatalog,
+  validateProjectsRenderSpec,
+} from "./project-render.js";
 
 function makeDb(): Database {
   const db = new Database(":memory:");
@@ -33,21 +36,52 @@ const provider: ProjectDashboardProvider = {
 
 describe("project dashboard", () => {
   test("uses the published Mailery project-panel provider command", () => {
-    const mailery = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find((item) => item.id === "mailery");
+    const mailery = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "mailery",
+    );
 
     expect(mailery?.command).toBe("mailery");
-    expect(mailery?.args).toEqual(["project-panel", "--project", "{project}", "--limit", "20", "--json", "--contract"]);
+    expect(mailery?.args).toEqual([
+      "project-panel",
+      "--project",
+      "{project}",
+      "--limit",
+      "20",
+      "--json",
+      "--contract",
+    ]);
+  });
+
+  test("uses the custom datasets project-panel provider command", () => {
+    const datasets = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "datasets",
+    );
+
+    expect(datasets?.command).toBe("datasets");
+    expect(datasets?.kind).toBe("custom");
+    expect(datasets?.panelKind).toBe("custom");
+    expect(datasets?.args).toEqual([
+      "project-panel",
+      "--project",
+      "{project}",
+      "--json",
+      "--contract",
+    ]);
+    expect(datasets?.warning).toContain("@hasna/datasets");
   });
 
   test("builds a contract-valid snapshot from provider panels", async () => {
     const db = makeDb();
-    createWorkspace({
-      id: "wks_dashboard",
-      name: "Dashboard Project",
-      slug: "dashboard-project",
-      kind: "project",
-      primary_path: "/tmp/dashboard-project",
-    }, db);
+    createWorkspace(
+      {
+        id: "wks_dashboard",
+        name: "Dashboard Project",
+        slug: "dashboard-project",
+        kind: "project",
+        primary_path: "/tmp/dashboard-project",
+      },
+      db,
+    );
     const snapshot = await buildProjectDashboardSnapshot("dashboard-project", {
       providers: [provider],
       generatedAt: "2026-06-29T00:00:00.000Z",
@@ -74,20 +108,96 @@ describe("project dashboard", () => {
     });
 
     expect(ProjectSnapshotSchema.parse(snapshot)).toEqual(snapshot);
-    expect(snapshot.panels.map((panel) => panel.kind)).toEqual(expect.arrayContaining(["overview", "tasks", "actions"]));
-    expect(snapshot.panels.find((panel) => panel.kind === "tasks")?.state).toBe("ready");
+    expect(snapshot.panels.map((panel) => panel.kind)).toEqual(
+      expect.arrayContaining(["overview", "tasks", "actions"]),
+    );
+    expect(snapshot.panels.find((panel) => panel.kind === "tasks")?.state).toBe(
+      "ready",
+    );
+    db.close();
+  });
+
+  test("collects the custom datasets provider panel", async () => {
+    const db = makeDb();
+    createWorkspace(
+      {
+        id: "wks_datasets_dashboard",
+        name: "Datasets Dashboard",
+        slug: "datasets-dashboard",
+        kind: "project",
+        primary_path: "/tmp/datasets-dashboard",
+      },
+      db,
+    );
+    const datasetsProvider = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "datasets",
+    )!;
+
+    const snapshot = await buildProjectDashboardSnapshot("datasets-dashboard", {
+      providers: [datasetsProvider],
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      cwd: "/tmp/datasets-dashboard",
+      db,
+      runner: async ({ command, args }) => {
+        expect(command).toBe("datasets");
+        expect(args).toEqual([
+          "project-panel",
+          "--project",
+          "datasets-dashboard",
+          "--json",
+          "--contract",
+        ]);
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            schema: SCHEMA_IDS.projectPanel,
+            id: "datasets_panel_datasets-dashboard",
+            createdAt: "2026-06-29T00:00:00.000Z",
+            projectId: "datasets-dashboard",
+            provider: {
+              kind: "custom",
+              id: "datasets_datasets-dashboard",
+              name: "Datasets",
+              sourcePackage: "@hasna/datasets",
+            },
+            kind: "custom",
+            title: "Datasets",
+            state: "ready",
+            summary: "1 dataset with 2 rows.",
+            generatedAt: "2026-06-29T00:00:00.000Z",
+            metrics: [{ id: "datasets", label: "Datasets", value: 1 }],
+            items: [{ id: "dset_1", title: "Bank shortlist" }],
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+
+    expect(ProjectSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(snapshot.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("@hasna/datasets")]),
+    );
+    expect(
+      snapshot.panels.find(
+        (panel) => panel.id === "datasets_panel_datasets-dashboard",
+      )?.provider.sourcePackage,
+    ).toBe("@hasna/datasets");
     db.close();
   });
 
   test("does not label dashboard writes as read-only actions", async () => {
     const db = makeDb();
-    createWorkspace({
-      id: "wks_action_dashboard",
-      name: "Action Dashboard",
-      slug: "action-dashboard",
-      kind: "project",
-      primary_path: "/tmp/action-dashboard",
-    }, db);
+    createWorkspace(
+      {
+        id: "wks_action_dashboard",
+        name: "Action Dashboard",
+        slug: "action-dashboard",
+        kind: "project",
+        primary_path: "/tmp/action-dashboard",
+      },
+      db,
+    );
 
     const snapshot = await buildProjectDashboardSnapshot("action-dashboard", {
       providers: [],
@@ -95,14 +205,22 @@ describe("project dashboard", () => {
       db,
     });
     const actions = snapshot.panels.find((panel) => panel.kind === "actions");
-    const refreshItem = actions?.items.find((item) => item.id === "refresh-snapshot");
-    const refreshAction = actions?.actions.find((action) => action.id === "projects.dashboard.snapshot");
+    const refreshItem = actions?.items.find(
+      (item) => item.id === "refresh-snapshot",
+    );
+    const refreshAction = actions?.actions.find(
+      (action) => action.id === "projects.dashboard.snapshot",
+    );
 
     expect(refreshItem?.summary).toContain("--write");
     expect(refreshItem?.status).toBe("write/server-issued");
-    expect(refreshItem?.resourceRefs[0]?.tags).toEqual(expect.arrayContaining(["write", "server-issued"]));
+    expect(refreshItem?.resourceRefs[0]?.tags).toEqual(
+      expect.arrayContaining(["write", "server-issued"]),
+    );
     expect(refreshItem?.resourceRefs[0]?.tags).not.toContain("read-only");
-    expect(refreshAction?.tags).toEqual(expect.arrayContaining(["write", "server-issued"]));
+    expect(refreshAction?.tags).toEqual(
+      expect.arrayContaining(["write", "server-issued"]),
+    );
     expect(refreshAction?.tags).not.toContain("read-only");
     db.close();
   });
@@ -111,13 +229,16 @@ describe("project dashboard", () => {
     const db = makeDb();
     const root = mkdtempSync(join(tmpdir(), "projects-dashboard-readonly-"));
     const projectPath = join(root, "readonly-project");
-    createWorkspace({
-      id: "wks_readonly_dashboard",
-      name: "Readonly Dashboard",
-      slug: "readonly-dashboard",
-      kind: "project",
-      primary_path: projectPath,
-    }, db);
+    createWorkspace(
+      {
+        id: "wks_readonly_dashboard",
+        name: "Readonly Dashboard",
+        slug: "readonly-dashboard",
+        kind: "project",
+        primary_path: projectPath,
+      },
+      db,
+    );
 
     try {
       await buildProjectDashboardSnapshot("readonly-dashboard", {
@@ -134,12 +255,15 @@ describe("project dashboard", () => {
 
   test("renders a React Flow Canvas spec from a snapshot", async () => {
     const db = makeDb();
-    const project = createWorkspace({
-      name: "Render Dashboard",
-      slug: "render-dashboard",
-      kind: "project",
-      primary_path: "/tmp/render-dashboard",
-    }, db);
+    const project = createWorkspace(
+      {
+        name: "Render Dashboard",
+        slug: "render-dashboard",
+        kind: "project",
+        primary_path: "/tmp/render-dashboard",
+      },
+      db,
+    );
     const snapshot = ProjectSnapshotSchema.parse({
       schema: SCHEMA_IDS.projectSnapshot,
       id: "snapshot",
@@ -147,29 +271,62 @@ describe("project dashboard", () => {
       projectId: "render-dashboard",
       generatedAt: "2026-06-29T00:00:00.000Z",
       status: "succeeded",
-      manifestRef: { kind: "project", id: "render-dashboard", uri: "project://render-dashboard", tags: [] },
-      panels: [{
-        schema: SCHEMA_IDS.projectPanel,
-        id: "overview:render-dashboard",
-        createdAt: "2026-06-29T00:00:00.000Z",
-        projectId: "render-dashboard",
-        provider: { kind: "render", id: "open-projects" },
-        kind: "overview",
-        title: "Overview",
-        state: "ready",
-        generatedAt: "2026-06-29T00:00:00.000Z",
-        metrics: [{ id: "status", label: "Status", value: "active" }],
-      }],
+      manifestRef: {
+        kind: "project",
+        id: "render-dashboard",
+        uri: "project://render-dashboard",
+        tags: [],
+      },
+      panels: [
+        {
+          schema: SCHEMA_IDS.projectPanel,
+          id: "overview:render-dashboard",
+          createdAt: "2026-06-29T00:00:00.000Z",
+          projectId: "render-dashboard",
+          provider: { kind: "render", id: "open-projects" },
+          kind: "overview",
+          title: "Overview",
+          state: "ready",
+          generatedAt: "2026-06-29T00:00:00.000Z",
+          metrics: [{ id: "status", label: "Status", value: "active" }],
+        },
+      ],
     });
     const spec = buildProjectDashboardRender(project, snapshot);
     const validated = validateProjectsRenderSpec(spec);
     expect(validated.elements.root?.type).toBe("Canvas");
-    expect((validated.elements.root?.props.nodes as unknown[]).length).toBeGreaterThan(1);
+    const nodes = validated.elements.root?.props.nodes as Array<{
+      id: string;
+      data?: { component?: string; size?: string };
+    }>;
+    const projectCanvasCard = projectsJsonRenderCatalog.data.components
+      .ProjectCanvasCard.props as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(nodes.length).toBeGreaterThan(1);
+    expect(nodes.find((node) => node.id === "overview")?.data).toMatchObject({
+      id: "overview",
+      component: "ProjectCanvasCard",
+      size: "XL",
+    });
+    expect(
+      nodes.find((node) => node.id === "overview:render-dashboard")?.data,
+    ).toMatchObject({ component: "ProjectCanvasCard", size: "XL" });
+    for (const node of nodes) {
+      expect(projectCanvasCard.safeParse(node.data).success).toBe(true);
+    }
+    expect(validated.elements.source_panel?.type).toBe("SourcePanel");
+    expect(validated.elements.file_preview_dialog?.type).toBe(
+      "FilePreviewDialog",
+    );
     db.close();
   });
 
   test("rejects dashboard imports that escape the render directory", () => {
-    expect(() => resolveDashboardImports("/tmp/project/.hasna/project/dashboard", [{ id: "bad", path: "../secret.json" }]))
-      .toThrow("escapes render directory");
+    expect(() =>
+      resolveDashboardImports("/tmp/project/.hasna/project/dashboard", [
+        { id: "bad", path: "../secret.json" },
+      ]),
+    ).toThrow("escapes render directory");
   });
 });
