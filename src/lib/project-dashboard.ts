@@ -385,6 +385,10 @@ export function buildProjectDashboardRender(
   project: Workspace,
   snapshot: ProjectSnapshot,
 ): ProjectsJsonRenderSpec {
+  const panelStartX = 680;
+  const panelStartY = 40;
+  const panelColumnGap = 1120;
+  const panelRowGap = 640;
   const nodes = [
     {
       id: "overview",
@@ -397,7 +401,7 @@ export function buildProjectDashboardRender(
         status: project.status,
         slug: project.slug,
         kind: project.kind,
-        path: project.primary_path ?? "",
+        path: project.primary_path ? "set" : "",
         warnings: snapshot.warnings,
         component: "ProjectCanvasCard",
         size: "XL",
@@ -414,8 +418,8 @@ export function buildProjectDashboardRender(
       id: panel.id,
       type: "projectPanel",
       position: {
-        x: 440 + (index % 3) * 380,
-        y: 40 + Math.floor(index / 3) * 270,
+        x: panelStartX + (index % 3) * panelColumnGap,
+        y: panelStartY + Math.floor(index / 3) * panelRowGap,
       },
       data: {
         id: panel.id,
@@ -463,8 +467,12 @@ export function buildProjectDashboardRender(
     layout_engine: "react-flow",
     viewport: { x: 0, y: 0, zoom: 0.82 },
     nodes,
-    edges,
-    data: { snapshot },
+    edges: [],
+    data: {
+      snapshot,
+      availableEdges: edges,
+      ui: { show_connections: false },
+    },
     metadata: { generatedAt: snapshot.generatedAt },
     created_at: snapshot.createdAt,
     updated_at: snapshot.generatedAt,
@@ -524,6 +532,14 @@ async function collectProviderPanel(args: {
   timeoutMs: number;
   runner: ProjectDashboardProviderRunner;
 }): Promise<ProjectPanel> {
+  if (args.provider.id === "mailery") {
+    return projectScopedProviderRequiredPanel(
+      args.provider,
+      args.project,
+      args.generatedAt,
+      "Project-email mapping is not configured, so workspace-wide Mailery metadata is intentionally omitted.",
+    );
+  }
   const commandArgs = args.provider.args.map((item) =>
     interpolateProviderArg(item, args.project),
   );
@@ -545,7 +561,9 @@ async function collectProviderPanel(args: {
         summarizeProviderError(result),
       );
     }
-    const parsed = ProjectPanelSchema.parse(JSON.parse(result.stdout));
+    const parsed = sanitizeProviderPanel(
+      ProjectPanelSchema.parse(JSON.parse(result.stdout)),
+    );
     if (parsed.projectId !== args.project.slug) {
       return providerStatePanel(
         args.provider,
@@ -565,6 +583,41 @@ async function collectProviderPanel(args: {
       err instanceof Error ? err.message : String(err),
     );
   }
+}
+
+function sanitizeProviderPanel(panel: ProjectPanel): ProjectPanel {
+  return ProjectPanelSchema.parse(sanitizeDashboardValue(panel));
+}
+
+function sanitizeDashboardValue(value: unknown): unknown {
+  if (typeof value === "string") return sanitizeDashboardString(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeDashboardValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        sanitizeDashboardValue(item),
+      ]),
+    );
+  }
+  return value;
+}
+
+function sanitizeDashboardString(value: string): string {
+  if (isLocalAbsolutePath(value)) return "[redacted local path]";
+  return value.replace(
+    /\/home\/hasna\/[^\s"'<>),\]]+/g,
+    "[redacted local path]",
+  );
+}
+
+function isLocalAbsolutePath(value: string): boolean {
+  return (
+    value.startsWith("/home/hasna/") ||
+    value.startsWith("/Users/") ||
+    value.startsWith("/tmp/") ||
+    value.startsWith("/var/folders/")
+  );
 }
 
 export async function defaultProjectDashboardProviderRunner(
@@ -660,7 +713,7 @@ function overviewPanel(project: Workspace, generatedAt: string): ProjectPanel {
       {
         id: "project",
         title: project.name,
-        summary: project.primary_path ?? "No primary path",
+        summary: project.primary_path ? "Primary path set" : "No primary path",
         status: project.status,
         priority:
           project.metadata && typeof project.metadata["priority"] === "string"
@@ -805,6 +858,66 @@ function providerStatePanel(
     generatedAt,
     freshness: "unknown",
     warnings: provider.warning ? [provider.warning] : [],
+  });
+}
+
+function projectScopedProviderRequiredPanel(
+  provider: ProjectDashboardProvider,
+  project: Workspace,
+  generatedAt: string,
+  reason: string,
+): ProjectPanel {
+  return ProjectPanelSchema.parse({
+    schema: SCHEMA_IDS.projectPanel,
+    id: `${provider.id}_panel_${project.slug}`,
+    createdAt: generatedAt,
+    projectId: project.slug,
+    provider: {
+      kind: provider.kind,
+      id: `${provider.id}_${project.slug}`,
+      name: provider.title,
+      sourcePackage: "@hasna/projects",
+      externalId: project.slug,
+    },
+    kind: provider.panelKind,
+    title: provider.title,
+    summary: reason,
+    state: "empty",
+    stateReason: reason,
+    generatedAt,
+    freshness: "unknown",
+    metrics: [
+      {
+        id: "project_scoped_items",
+        label: "Project-scoped items",
+        value: 0,
+        status: "unknown",
+      },
+    ],
+    items: [],
+    warnings: [
+      provider.warning ?? "",
+      "Workspace-wide provider data is omitted from dashboard artifacts until an explicit project mapping exists.",
+    ].filter(Boolean),
+    resourceRefs: [
+      {
+        kind: "project",
+        id: project.slug,
+        name: project.name,
+        uri: `project://${project.slug}`,
+        externalId: project.slug,
+        sourcePackage: "@hasna/projects",
+        tags: ["project-scoped-required"],
+      },
+    ],
+    renderFragment: {
+      renderer: "json_render",
+      title: provider.title,
+      spec: {
+        component: `project.${provider.id}.summary`,
+        state: "project_mapping_required",
+      },
+    },
   });
 }
 

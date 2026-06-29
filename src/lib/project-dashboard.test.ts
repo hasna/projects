@@ -52,6 +52,52 @@ describe("project dashboard", () => {
     ]);
   });
 
+  test("omits workspace-wide Mailery data until project email mapping exists", async () => {
+    const db = makeDb();
+    createWorkspace(
+      {
+        id: "wks_mailery",
+        name: "Mailery Privacy",
+        slug: "mailery-privacy",
+        kind: "project",
+        primary_path: "/tmp/mailery-privacy",
+      },
+      db,
+    );
+    const mailery = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "mailery",
+    )!;
+    let invoked = false;
+    const snapshot = await buildProjectDashboardSnapshot("mailery-privacy", {
+      providers: [mailery],
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      cwd: "/tmp/mailery-privacy",
+      db,
+      runner: async () => {
+        invoked = true;
+        return {
+          ok: true,
+          stdout: "{}",
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+
+    const panel = snapshot.panels.find((item) => item.kind === "mailery");
+    expect(invoked).toBe(false);
+    expect(panel).toMatchObject({
+      state: "empty",
+      summary:
+        "Project-email mapping is not configured, so workspace-wide Mailery metadata is intentionally omitted.",
+      items: [],
+    });
+    expect(JSON.stringify(panel)).not.toContain("from_address");
+    expect(JSON.stringify(panel)).not.toContain("subject");
+    expect(JSON.stringify(panel)).not.toContain("message_id");
+    db.close();
+  });
+
   test("uses the custom datasets project-panel provider command", () => {
     const datasets = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
       (item) => item.id === "datasets",
@@ -322,6 +368,80 @@ describe("project dashboard", () => {
     db.close();
   });
 
+  test("lays out generated dashboard cards without overlap", async () => {
+    const db = makeDb();
+    const project = createWorkspace(
+      {
+        name: "Large Dashboard",
+        slug: "large-dashboard",
+        kind: "project",
+        primary_path: "/tmp/large-dashboard",
+      },
+      db,
+    );
+    const panelKinds = [
+      "overview",
+      "tasks",
+      "files",
+      "mailery",
+      "conversations",
+      "knowledge",
+      "mementos",
+      "reports",
+      "custom",
+      "actions",
+    ] as const;
+    const snapshot = ProjectSnapshotSchema.parse({
+      schema: SCHEMA_IDS.projectSnapshot,
+      id: "snapshot",
+      createdAt: "2026-06-29T00:00:00.000Z",
+      projectId: "large-dashboard",
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      status: "succeeded",
+      manifestRef: {
+        kind: "project",
+        id: "large-dashboard",
+        uri: "project://large-dashboard",
+        tags: [],
+      },
+      panels: panelKinds.map((kind, index) => ({
+        schema: SCHEMA_IDS.projectPanel,
+        id: `panel-${index}`,
+        createdAt: "2026-06-29T00:00:00.000Z",
+        projectId: "large-dashboard",
+        provider: {
+          kind:
+            kind === "overview"
+              ? "render"
+              : kind === "tasks"
+                ? "todos"
+                : kind === "custom"
+                  ? "custom"
+                  : kind,
+          id: `provider-${index}`,
+        },
+        kind,
+        title: `Panel ${index}`,
+        state: "ready",
+        generatedAt: "2026-06-29T00:00:00.000Z",
+        metrics: [{ id: "status", label: "Status", value: "ready" }],
+        items: [{ id: `item-${index}`, title: "Item" }],
+      })),
+    });
+
+    const spec = validateProjectsRenderSpec(
+      buildProjectDashboardRender(project, snapshot),
+    );
+    const nodes = spec.elements.root?.props.nodes as Array<{
+      id: string;
+      position: { x: number; y: number };
+      data?: { size?: "M" | "XL" | "XXL" | "4XL" };
+    }>;
+
+    expect(findOverlappingNodePair(nodes)).toBeNull();
+    db.close();
+  });
+
   test("rejects dashboard imports that escape the render directory", () => {
     expect(() =>
       resolveDashboardImports("/tmp/project/.hasna/project/dashboard", [
@@ -330,3 +450,48 @@ describe("project dashboard", () => {
     ).toThrow("escapes render directory");
   });
 });
+
+function findOverlappingNodePair(
+  nodes: Array<{
+    id: string;
+    position: { x: number; y: number };
+    data?: { size?: "M" | "XL" | "XXL" | "4XL" };
+  }>,
+): string | null {
+  for (let a = 0; a < nodes.length; a += 1) {
+    for (let b = a + 1; b < nodes.length; b += 1) {
+      if (boxesOverlap(nodeBox(nodes[a]!), nodeBox(nodes[b]!))) {
+        return `${nodes[a]!.id}:${nodes[b]!.id}`;
+      }
+    }
+  }
+  return null;
+}
+
+function nodeBox(node: {
+  id: string;
+  position: { x: number; y: number };
+  data?: { size?: "M" | "XL" | "XXL" | "4XL" };
+}): { x: number; y: number; width: number; height: number } {
+  const size = node.data?.size;
+  if (size === "4XL")
+    return { ...node.position, width: 960, height: 520 };
+  if (size === "XXL")
+    return { ...node.position, width: 760, height: 420 };
+  if (size === "XL")
+    return { ...node.position, width: 560, height: 320 };
+  return { ...node.position, width: 320, height: 220 };
+}
+
+function boxesOverlap(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): boolean {
+  const gap = 28;
+  return (
+    a.x < b.x + b.width + gap &&
+    a.x + a.width + gap > b.x &&
+    a.y < b.y + b.height + gap &&
+    a.y + a.height + gap > b.y
+  );
+}

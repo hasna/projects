@@ -136,9 +136,20 @@ describe("Projects JSON Render specs", () => {
       styling: "tailwind",
       components: "shadcn",
       component_package: "@json-render/shadcn",
+      component_package_min_version: "0.19.1",
       canvas: "react-flow",
       optional_connections: true,
       persistent_node_positions: true,
+    });
+    expect(spec.elements.root?.props.defaultShowConnections).toBe(false);
+    expect(spec.elements.root?.props.edges).toHaveLength(0);
+    const rootData = spec.elements.root?.props.data as {
+      availableEdges?: unknown[];
+      ui?: Record<string, unknown>;
+    };
+    expect(rootData.availableEdges).toHaveLength(canvas.edges.length);
+    expect(rootData.ui).toMatchObject({
+      show_connections: false,
     });
     expect(spec.elements.root?.props.capabilities).toMatchObject({
       infinite_canvas: true,

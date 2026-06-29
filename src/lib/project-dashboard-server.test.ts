@@ -40,8 +40,11 @@ describe("project dashboard server html", () => {
     expect(html).toContain("PreviewModal");
     expect(html).toContain("safePreviewSrc");
     expect(html).toContain("side-item");
+    expect(html).toContain("source-panel");
+    expect(html).toContain("Project Sources");
     expect(html).toContain("onMoveEnd");
     expect(html).toContain("canvasRef");
+    expect(html).not.toContain("MiniMap");
     expect(html.toLowerCase()).not.toContain("chat");
   });
 
@@ -84,10 +87,10 @@ describe("project dashboard server html", () => {
       const denied = await fetch(
         `http://127.0.0.1:${served.port}/api/snapshot`,
       );
-      expect(denied.status).toBe(401);
+      expect(denied.status).toBe(404);
 
       const session = await fetch(
-        `http://127.0.0.1:${served.port}/api/session`,
+        `http://127.0.0.1:${served.port}/secure-dashboard/dashboard/api/session`,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -239,6 +242,14 @@ describe("project dashboard server html", () => {
         non_overlapping_nodes: true,
       });
       expect(rootProps?.nodes?.[1]?.position.y).toBeGreaterThan(120);
+
+      const rootApiAlias = await fetch(
+        `http://127.0.0.1:${served.port}/api/bootstrap`,
+        {
+          headers: { cookie },
+        },
+      );
+      expect(rootApiAlias.status).toBe(404);
 
       const layoutPatch = await fetch(
         `http://127.0.0.1:${served.port}/canvas-dashboard/research/api/layout`,

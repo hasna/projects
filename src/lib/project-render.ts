@@ -184,6 +184,7 @@ export const projectsJsonRenderCatalog = defineCatalog(
             viewport: z.record(z.string(), z.unknown()),
             nodes: z.array(z.record(z.string(), z.unknown())),
             edges: z.array(z.record(z.string(), z.unknown())),
+            defaultShowConnections: z.boolean().optional(),
             data: z.record(z.string(), z.unknown()),
             capabilities: z.record(z.string(), z.unknown()),
             ui_contract: z.record(z.string(), z.unknown()),
@@ -1246,6 +1247,14 @@ export function buildProjectCanvasPayload(args: {
 }): JsonObject {
   const sources = sourcePanelProps(args);
   const filePreview = filePreviewDialogProps(args.canvas);
+  const canvasData = asJsonObject(args.canvas.data) ?? {};
+  const uiData = asJsonObject(canvasData["ui"]) ?? {};
+  const showConnections = uiData["show_connections"] === true;
+  const availableEdges = Array.isArray(canvasData["availableEdges"])
+    ? canvasData["availableEdges"]
+        .map((edge) => asJsonObject(edge))
+        .filter((edge): edge is JsonObject => Boolean(edge))
+    : args.canvas.edges;
   const elements: Record<string, ProjectsRenderElement> = {
     root: renderElement(
       "Canvas",
@@ -1257,7 +1266,7 @@ export function buildProjectCanvasPayload(args: {
           name: args.project.name,
           kind: args.project.kind,
           status: args.project.status,
-          primary_path: args.project.primary_path,
+          primary_path: args.project.primary_path ? "set" : null,
         },
         canvas: {
           id: args.canvas.id,
@@ -1270,9 +1279,15 @@ export function buildProjectCanvasPayload(args: {
         engine: args.canvas.layout_engine,
         viewport: args.canvas.viewport,
         nodes: args.canvas.nodes,
-        edges: args.canvas.edges,
+        edges: showConnections ? args.canvas.edges : [],
+        defaultShowConnections: false,
         data: {
-          ...args.canvas.data,
+          ...canvasData,
+          availableEdges,
+          ui: {
+            ...uiData,
+            show_connections: showConnections,
+          },
           open_render: {
             node_component: "ProjectCanvasCard",
             source_panel_element: "source_panel",

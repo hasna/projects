@@ -259,8 +259,6 @@ function dashboardRoute(pathname: string, projectSlug: string): DashboardRoute {
       kind: "redirect",
       location: dashboardCanvasPath(projectSlug, "dashboard"),
     };
-  if (segments[0] === "api")
-    return { kind: "api", canvasRef: "dashboard", api: segments[1] ?? "" };
   if (segments[0] !== projectSlug) return { kind: "not-found" };
   if (segments.length === 1)
     return {
@@ -421,9 +419,14 @@ function applyDashboardLayout(
     Boolean(
       (canvas?.data?.["ui"] as JsonObject | undefined)?.["show_connections"],
     );
-  const originalEdges = Array.isArray(root.edges) ? root.edges : [];
+  const rootData = isJsonObject(root.data) ? root.data : {};
+  const originalEdges = Array.isArray(root.edges) && root.edges.length > 0
+    ? root.edges
+    : Array.isArray(rootData["availableEdges"])
+      ? rootData["availableEdges"].filter(isJsonObject)
+      : [];
   root.data = {
-    ...(isJsonObject(root.data) ? root.data : {}),
+    ...rootData,
     availableEdges: originalEdges,
     layout: {
       saved: Boolean(layout),
@@ -433,6 +436,7 @@ function applyDashboardLayout(
       updatedAt: layout?.updatedAt ?? null,
     },
   };
+  root.defaultShowConnections = false;
   root.ui_contract = {
     ...(isJsonObject(root.ui_contract) ? root.ui_contract : {}),
     connections_optional: true,
@@ -506,9 +510,9 @@ function estimatedNodeSize(node: JsonObject): {
   const size = typeof data["size"] === "string" ? data["size"] : "";
   const metrics = Array.isArray(data["metrics"]) ? data["metrics"].length : 0;
   const items = Array.isArray(data["items"]) ? data["items"].length : 0;
-  if (size === "4XL") return { width: 960, height: 520 };
-  if (size === "XXL") return { width: 760, height: 420 };
-  if (size === "XL") return { width: 560, height: 320 };
+  if (size === "4XL") return { width: 1180, height: 700 };
+  if (size === "XXL") return { width: 980, height: 620 };
+  if (size === "XL") return { width: 880, height: 480 };
   const width =
     type === "projectOverview" ? 340 : type === "projectPanel" ? 320 : 300;
   const height =
@@ -868,6 +872,30 @@ export function projectDashboardHtml(args: {
       }
       .side h2 { margin: 0 0 4px; font-size: 15px; }
       .side p { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+      .source-panel {
+        display: grid;
+        gap: 8px;
+        padding-bottom: 16px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .source-list { display: grid; gap: 6px; }
+      .source-item {
+        width: 100%;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 9px 10px;
+        text-align: left;
+        cursor: pointer;
+        display: grid;
+        gap: 3px;
+      }
+      .source-item:hover { background: #f7f8fb; }
+      .source-item span { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+      .source-item small { color: var(--muted); font-size: 11px; line-height: 1.3; overflow-wrap: anywhere; }
+      .selection-panel { display: grid; gap: 8px; }
       .node {
         width: 320px;
         border: 1px solid var(--line);
@@ -965,7 +993,7 @@ export function projectDashboardHtml(args: {
     <script type="module">
       import React, { useCallback, useEffect, useMemo, useState } from "react";
       import { createRoot } from "react-dom/client";
-      import { ReactFlow, Background, Controls, MiniMap, Handle, Position, applyNodeChanges } from "@xyflow/react";
+      import { ReactFlow, Background, Controls, Handle, Position, applyNodeChanges } from "@xyflow/react";
       window.__PROJECTS_DASHBOARD__ = ${bootstrap};
 
       const h = React.createElement;
@@ -983,9 +1011,9 @@ export function projectDashboardHtml(args: {
         return input.length > 20000 ? input.slice(0, 20000) + "\\n\\n[Preview truncated]" : input;
       };
       const nodeSizeStyle = (size) => {
-        if (size === "4XL") return { width: 960, minHeight: 520 };
-        if (size === "XXL") return { width: 760, minHeight: 420 };
-        if (size === "XL") return { width: 560, minHeight: 320 };
+        if (size === "4XL") return { width: 960, minHeight: 560 };
+        if (size === "XXL") return { width: 820, minHeight: 500 };
+        if (size === "XL") return { width: 680, minHeight: 400 };
         return {};
       };
       const previewKind = (preview) => {
@@ -1081,6 +1109,27 @@ export function projectDashboardHtml(args: {
       function renderCanvas(render) {
         const rootId = render?.root || "root";
         return render?.elements?.[rootId]?.props || {};
+      }
+
+      function renderSourcePanel(render, onSelectSource) {
+        const sourceProps = render?.elements?.source_panel?.props;
+        const sources = Array.isArray(sourceProps?.sources) ? sourceProps.sources : [];
+        if (!sources.length) return null;
+        return h("section", { className: "source-panel" }, [
+          h("h2", { key: "title" }, sourceProps.title || "Project Sources"),
+          sourceProps.emptyText && !sources.length ? h("p", { key: "empty" }, sourceProps.emptyText) : null,
+          h("div", { key: "sources", className: "source-list" }, sources.slice(0, 14).map((source) =>
+            h("button", {
+              key: source.id,
+              className: "source-item",
+              title: source.description || source.label,
+              onClick: () => onSelectSource(source.id),
+            }, [
+              h("span", { key: "label" }, source.label || source.id),
+              h("small", { key: "meta" }, [source.kind, source.status, Number.isFinite(source.count) ? source.count + " items" : null].filter(Boolean).join(" · ")),
+            ])
+          )),
+        ]);
       }
 
       function selectedFromNode(snapshot, node) {
@@ -1275,6 +1324,15 @@ export function projectDashboardHtml(args: {
         const onNodeClick = useCallback((_, node) => {
           setSelected(selectedFromNode(snapshot, node));
         }, [snapshot]);
+        const onSelectSource = useCallback((sourceId) => {
+          const panel = snapshot?.panels?.find((item) => item.id === sourceId);
+          if (panel) {
+            setSelected(panel);
+            return;
+          }
+          const node = flowNodes.find((item) => item.id === sourceId);
+          if (node) setSelected(selectedFromNode(snapshot, node));
+        }, [flowNodes, snapshot]);
         return h("div", { className: "shell" }, [
           h("header", { key: "top", className: "topbar" }, [
             h("div", { key: "brand", className: "brand" }, [
@@ -1327,23 +1385,25 @@ export function projectDashboardHtml(args: {
               }, [
                 h(Background, { key: "bg", gap: 18, size: 1 }),
                 h(Controls, { key: "controls" }),
-                h(MiniMap, { key: "map", pannable: true, zoomable: true }),
               ])
             ),
-            h("aside", { key: "side", className: "side" }, selected ? [
-              h("h2", { key: "title" }, selected.title),
-              h("p", { key: "summary" }, selected.summary || selected.stateReason || selected.state),
-              h("div", { key: "badge", className: "badge " + tone(selected.state) }, selected.provider?.kind || selected.kind),
-              ...(selected.warnings || []).map((warning, index) => h("p", { key: "warning-" + index }, warning)),
-              ...(selected.items || []).slice(0, 8).map((item) =>
-                h("button", {
-                  key: item.id,
-                  className: "side-item",
-                  title: "Open item preview",
-                  onClick: () => setPreview(previewFromItem(item)),
-                }, item.title + (item.status ? " - " + item.status : ""))
-              ),
-            ] : h("div", { className: "empty-state" }, "Select a dashboard node")),
+            h("aside", { key: "side", className: "side" }, [
+              renderSourcePanel(render, onSelectSource),
+              h("section", { key: "selected", className: "selection-panel" }, selected ? [
+                h("h2", { key: "title" }, selected.title),
+                h("p", { key: "summary" }, selected.summary || selected.stateReason || selected.state),
+                h("div", { key: "badge", className: "badge " + tone(selected.state) }, selected.provider?.kind || selected.kind),
+                ...(selected.warnings || []).map((warning, index) => h("p", { key: "warning-" + index }, warning)),
+                ...(selected.items || []).slice(0, 8).map((item) =>
+                  h("button", {
+                    key: item.id,
+                    className: "side-item",
+                    title: "Open item preview",
+                    onClick: () => setPreview(previewFromItem(item)),
+                  }, item.title + (item.status ? " - " + item.status : ""))
+                ),
+              ] : h("div", { className: "empty-state" }, "Select a dashboard node")),
+            ]),
           ]),
           h(PreviewModal, { key: "preview", preview, onClose: () => setPreview(null) }),
         ]);
