@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
-import { createProjectCanvas } from "../db/project-store.js";
+import { createProjectCanvas, getProjectCanvas } from "../db/project-store.js";
 import { isLoopbackDashboardHost, projectDashboardHtml, serveProjectDashboard } from "./project-dashboard-server.js";
 
 function makeDb(): Database {
@@ -22,6 +22,10 @@ describe("project dashboard server html", () => {
     expect(html).toContain("react/jsx-runtime");
     expect(html).toContain("bootstrap");
     expect(html).toContain("session");
+    expect(html).toContain("apiPath(\"layout\")");
+    expect(html).toContain("applyNodeChanges");
+    expect(html).toContain("Connections");
+    expect(html).toContain("onMoveEnd");
     expect(html).toContain("canvasRef");
     expect(html.toLowerCase()).not.toContain("chat");
   });
@@ -95,8 +99,14 @@ describe("project dashboard server html", () => {
           position: { x: 20, y: 30 },
           data: { title: "Research", description: "Stored canvas node" },
         },
+        {
+          id: "research-files",
+          type: "project.files",
+          position: { x: 24, y: 34 },
+          data: { title: "Files", description: "Overlapping source position" },
+        },
       ],
-      edges: [],
+      edges: [{ id: "research-to-files", source: "research-summary", target: "research-files" }],
     });
     const served = await serveProjectDashboard({
       db,
@@ -128,12 +138,67 @@ describe("project dashboard server html", () => {
       const payload = await bootstrap.json() as {
         canvas: { routeId: string; kind: string };
         canvases: Array<{ routeId: string }>;
-        render: { root: string; elements: Record<string, { props?: { nodes?: unknown[] } }> };
+        render: {
+          root: string;
+          elements: Record<string, { props?: {
+            nodes?: Array<{ id: string; position: { x: number; y: number } }>;
+            edges?: unknown[];
+            viewport?: unknown;
+            data?: { availableEdges?: unknown[]; layout?: { showConnections?: boolean } };
+            ui_contract?: Record<string, unknown>;
+          } }>;
+        };
       };
       expect(payload.canvas).toMatchObject({ routeId: "research", kind: "project-canvas" });
       expect(payload.canvases.map((canvas) => canvas.routeId)).toContain("dashboard");
       expect(payload.canvases.map((canvas) => canvas.routeId)).toContain("research");
-      expect(payload.render.elements[payload.render.root]?.props?.nodes?.length).toBe(1);
+      const rootProps = payload.render.elements[payload.render.root]?.props;
+      expect(rootProps?.nodes?.length).toBe(2);
+      expect(rootProps?.edges?.length).toBe(0);
+      expect(rootProps?.data?.availableEdges?.length).toBe(1);
+      expect(rootProps?.data?.layout?.showConnections).toBe(false);
+      expect(rootProps?.ui_contract).toMatchObject({
+        connections_optional: true,
+        persistent_node_positions: true,
+        non_overlapping_nodes: true,
+      });
+      expect(rootProps?.nodes?.[1]?.position.y).toBeGreaterThan(120);
+
+      const layoutPatch = await fetch(`http://127.0.0.1:${served.port}/canvas-dashboard/research/api/layout`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          showConnections: true,
+          viewport: { x: 7, y: 8, zoom: 1.25 },
+          nodes: [
+            { id: "research-summary", position: { x: 100, y: 100 } },
+            { id: "research-files", position: { x: 100, y: 100 } },
+          ],
+        }),
+      });
+      expect(layoutPatch.status).toBe(200);
+      const layoutPayload = await layoutPatch.json() as {
+        layout: {
+          showConnections: boolean;
+          viewport: { x: number; y: number; zoom: number };
+          nodes: Array<{ id: string; position: { x: number; y: number } }>;
+        };
+      };
+      expect(layoutPayload.layout.showConnections).toBe(true);
+      expect(layoutPayload.layout.viewport).toEqual({ x: 7, y: 8, zoom: 1.25 });
+      const savedPositions = Object.fromEntries(layoutPayload.layout.nodes.map((node) => [node.id, node.position]));
+      expect(savedPositions["research-summary"]).toEqual({ x: 100, y: 100 });
+      expect(savedPositions["research-files"]?.y).toBeGreaterThan(220);
+
+      const refreshed = await fetch(`http://127.0.0.1:${served.port}/canvas-dashboard/research/api/bootstrap`, {
+        headers: { cookie },
+      });
+      const refreshedPayload = await refreshed.json() as typeof payload;
+      const refreshedProps = refreshedPayload.render.elements[refreshedPayload.render.root]?.props;
+      expect(refreshedProps?.edges?.length).toBe(1);
+      expect(refreshedProps?.viewport).toEqual({ x: 7, y: 8, zoom: 1.25 });
+      expect(refreshedProps?.nodes?.find((node) => node.id === "research-files")?.position.y).toBe(savedPositions["research-files"]?.y);
+      expect(getProjectCanvas(project, "research")?.data.ui).toMatchObject({ show_connections: true });
     } finally {
       served.server.stop(true);
       db.close();

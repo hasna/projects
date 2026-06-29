@@ -77,6 +77,12 @@ export interface CreateProjectCanvasInput {
   metadata?: JsonObject;
 }
 
+export interface UpdateProjectCanvasLayoutInput {
+  nodes?: ProjectCanvasNode[];
+  viewport?: JsonObject;
+  data?: JsonObject;
+}
+
 export interface ProjectDataModel extends JsonObject {
   id: string;
   slug: string;
@@ -519,6 +525,27 @@ export function getProjectCanvas(project: string | Pick<Workspace, "id">, idOrSl
       .query<ProjectCanvasRow, [string, string]>("SELECT * FROM project_canvases WHERE id = ? OR slug = ? LIMIT 1")
       .get(idOrSlug, idOrSlug);
     return row ? rowToCanvas(row) : null;
+  } finally {
+    closeIfOwned(opened.db, opened.owned);
+  }
+}
+
+export function updateProjectCanvasLayout(project: string | Pick<Workspace, "id">, idOrSlug: string, input: UpdateProjectCanvasLayoutInput, db?: Database): ProjectCanvas {
+  const opened = openDbForProject(project, db);
+  try {
+    const existing = getProjectCanvas(project, idOrSlug, opened.db);
+    if (!existing) throw new Error(`Project canvas not found: ${idOrSlug}`);
+    const nodes = input.nodes ?? existing.nodes;
+    const viewport = input.viewport ?? existing.viewport;
+    const data = input.data ?? existing.data;
+    const ts = now();
+    opened.db.run(
+      `UPDATE project_canvases
+       SET nodes_json = ?, viewport_json = ?, data_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [json(nodes), json(viewport), json(data), ts, existing.id],
+    );
+    return getProjectCanvas(project, existing.id, opened.db)!;
   } finally {
     closeIfOwned(opened.db, opened.owned);
   }

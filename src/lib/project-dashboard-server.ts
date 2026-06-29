@@ -1,7 +1,11 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildProjectDashboard,
   buildProjectDashboardRender,
+  ensureProjectDashboardStructure,
+  projectDashboardPaths,
   type BuildProjectDashboardSnapshotOptions,
 } from "./project-dashboard.js";
 import { buildProjectCanvasPayload, type ProjectsJsonRenderSpec } from "./project-render.js";
@@ -10,9 +14,11 @@ import {
   getProjectCanvas,
   listProjectCanvases,
   listProjectDataModels,
+  updateProjectCanvasLayout,
   type ProjectCanvas,
+  type ProjectCanvasNode,
 } from "../db/project-store.js";
-import type { Workspace } from "../types/workspace.js";
+import type { JsonObject, Workspace } from "../types/workspace.js";
 
 export interface ProjectDashboardServerOptions extends BuildProjectDashboardSnapshotOptions {
   target?: string;
@@ -48,6 +54,16 @@ interface DashboardCanvasContext {
   canvas: DashboardCanvasSummary;
   canvases: DashboardCanvasSummary[];
   render: ProjectsJsonRenderSpec;
+}
+
+interface DashboardLayoutState extends JsonObject {
+  schema: "hasna.projects_dashboard_layout.v1";
+  projectId: string;
+  canvasRef: string;
+  updatedAt: string;
+  showConnections: boolean;
+  viewport?: JsonObject;
+  nodes: Array<{ id: string; position: { x: number; y: number } }>;
 }
 
 type DashboardRoute =
@@ -121,6 +137,11 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
         if (!context) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
         return Response.json(context.render);
       }
+      if (route.api === "layout" && request.method === "PATCH") {
+        const updated = await saveDashboardCanvasLayout(resolution.project, route.canvasRef, request);
+        if (!updated) return Response.json({ ok: false, error: `canvas not found: ${route.canvasRef}` }, { status: 404 });
+        return Response.json(updated);
+      }
       if (route.api === "canvases") {
         return Response.json({
           project: projectPayload(resolution.project),
@@ -187,6 +208,7 @@ function buildDashboardCanvasContext(
 ): DashboardCanvasContext | null {
   if (isDashboardCanvasRef(canvasRef)) {
     const render = buildProjectDashboardRender(project, snapshot);
+    applyDashboardLayout(project, "dashboard", render);
     return {
       canvas: virtualDashboardCanvasSummary(project, "dashboard", true, render),
       canvases: listDashboardCanvasSummaries(project, "dashboard"),
@@ -200,6 +222,7 @@ function buildDashboardCanvasContext(
     canvas,
     dataModels: listProjectDataModels(project),
   }).render as ProjectsJsonRenderSpec;
+  applyDashboardLayout(project, routeIdForCanvas(canvas), render, canvas);
   return {
     canvas: storedCanvasSummary(project, canvas, true),
     canvases: listDashboardCanvasSummaries(project, routeIdForCanvas(canvas)),
@@ -265,6 +288,204 @@ function routeIdForCanvas(canvas: ProjectCanvas): string {
 
 function shortCanvasId(id: string): string {
   return id.startsWith("pcv_") ? id.slice(4, 12) : id.slice(0, 8);
+}
+
+function applyDashboardLayout(project: Workspace, canvasRef: string, render: ProjectsJsonRenderSpec, canvas?: ProjectCanvas): void {
+  const root = canvasRootProps(render);
+  if (!root) return;
+  const layout = loadDashboardLayout(project, canvasRef);
+  const showConnections = layout?.showConnections ?? Boolean((canvas?.data?.["ui"] as JsonObject | undefined)?.["show_connections"]);
+  const originalEdges = Array.isArray(root.edges) ? root.edges : [];
+  root.data = {
+    ...(isJsonObject(root.data) ? root.data : {}),
+    availableEdges: originalEdges,
+    layout: {
+      saved: Boolean(layout),
+      showConnections,
+      viewport: layout?.viewport ?? (isJsonObject(root.viewport) ? root.viewport : {}),
+      updatedAt: layout?.updatedAt ?? null,
+    },
+  };
+  root.ui_contract = {
+    ...(isJsonObject(root.ui_contract) ? root.ui_contract : {}),
+    connections_optional: true,
+    connections_default_visible: false,
+    persistent_node_positions: true,
+    non_overlapping_nodes: true,
+  };
+  if (layout?.viewport) root.viewport = layout.viewport;
+  root.nodes = normalizeCanvasNodes(applySavedNodePositions(root.nodes, layout));
+  root.edges = showConnections ? originalEdges : [];
+}
+
+function canvasRootProps(render: ProjectsJsonRenderSpec): JsonObject | null {
+  const root = render.elements?.[String(render.root)];
+  const props = root?.props;
+  return isJsonObject(props) ? props : null;
+}
+
+function applySavedNodePositions(nodes: unknown, layout: DashboardLayoutState | null): JsonObject[] {
+  const source = Array.isArray(nodes) ? nodes.filter(isJsonObject) : [];
+  if (!layout) return source;
+  const positions = new Map(layout.nodes.map((node) => [node.id, node.position]));
+  return source.map((node) => {
+    const id = typeof node["id"] === "string" ? node["id"] : "";
+    const position = positions.get(id);
+    return position ? { ...node, position } : node;
+  });
+}
+
+function normalizeCanvasNodes(nodes: JsonObject[]): JsonObject[] {
+  const placed: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
+  return nodes.map((node, index) => {
+    const size = estimatedNodeSize(node);
+    const rawPosition = isJsonObject(node["position"]) ? node["position"] : {};
+    const id = typeof node["id"] === "string" ? node["id"] : `node-${index}`;
+    let x = numeric(rawPosition["x"], (index % 4) * 380);
+    let y = numeric(rawPosition["y"], Math.floor(index / 4) * 240);
+    let guard = 0;
+    while (guard < 80) {
+      const colliding = placed.find((other) => boxesOverlap({ x, y, width: size.width, height: size.height }, other));
+      if (!colliding) break;
+      y = colliding.y + colliding.height + 44;
+      guard += 1;
+    }
+    placed.push({ id, x, y, width: size.width, height: size.height });
+    return { ...node, position: { x, y } };
+  });
+}
+
+function estimatedNodeSize(node: JsonObject): { width: number; height: number } {
+  const type = typeof node["type"] === "string" ? node["type"] : "";
+  const data = isJsonObject(node["data"]) ? node["data"] : {};
+  const metrics = Array.isArray(data["metrics"]) ? data["metrics"].length : 0;
+  const items = Array.isArray(data["items"]) ? data["items"].length : 0;
+  const width = type === "projectOverview" ? 340 : type === "projectPanel" ? 320 : 300;
+  const height = type === "projectPanel"
+    ? 112 + Math.ceil(Math.min(metrics, 6) / 2) * 43 + Math.min(items, 5) * 24
+    : type === "projectOverview"
+      ? 122
+      : 112;
+  return { width, height };
+}
+
+function boxesOverlap(a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }): boolean {
+  const gap = 28;
+  return a.x < b.x + b.width + gap
+    && a.x + a.width + gap > b.x
+    && a.y < b.y + b.height + gap
+    && a.y + a.height + gap > b.y;
+}
+
+function numeric(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+async function saveDashboardCanvasLayout(project: Workspace, canvasRef: string, request: Request): Promise<{ ok: true; canvas: DashboardCanvasSummary; layout: DashboardLayoutState } | null> {
+  const body = await readLayoutRequest(request);
+  const normalizedNodes = normalizeCanvasNodes(body.nodes.map((node) => ({ id: node.id, position: node.position })));
+  const layout: DashboardLayoutState = {
+    schema: "hasna.projects_dashboard_layout.v1",
+    projectId: project.slug,
+    canvasRef,
+    updatedAt: new Date().toISOString(),
+    showConnections: body.showConnections,
+    viewport: body.viewport,
+    nodes: normalizedNodes.map((node) => ({
+      id: String(node["id"]),
+      position: isJsonObject(node["position"])
+        ? { x: numeric(node["position"]["x"], 0), y: numeric(node["position"]["y"], 0) }
+        : { x: 0, y: 0 },
+    })),
+  };
+
+  if (isDashboardCanvasRef(canvasRef)) {
+    writeDashboardLayout(project, "dashboard", layout);
+    return { ok: true, canvas: virtualDashboardCanvasSummary(project, "dashboard", true), layout };
+  }
+
+  const canvas = findProjectCanvas(project, canvasRef);
+  if (!canvas) return null;
+  const positionById = new Map(layout.nodes.map((node) => [node.id, node.position]));
+  const nodes = normalizeCanvasNodes(canvas.nodes.map((node) => {
+    const position = positionById.get(node.id) ?? node.position;
+    return { ...node, position } as unknown as JsonObject;
+  })) as unknown as ProjectCanvasNode[];
+  const data = {
+    ...canvas.data,
+    ui: {
+      ...(isJsonObject(canvas.data["ui"]) ? canvas.data["ui"] : {}),
+      show_connections: body.showConnections,
+    },
+  };
+  const updated = updateProjectCanvasLayout(project, canvas.id, { nodes, viewport: body.viewport, data });
+  writeDashboardLayout(project, routeIdForCanvas(updated), layout);
+  return { ok: true, canvas: storedCanvasSummary(project, updated, true), layout };
+}
+
+async function readLayoutRequest(request: Request): Promise<{ nodes: Array<{ id: string; position: { x: number; y: number } }>; viewport: JsonObject; showConnections: boolean }> {
+  const parsed = await request.json() as { nodes?: unknown; viewport?: unknown; showConnections?: unknown };
+  const nodes = Array.isArray(parsed.nodes)
+    ? parsed.nodes.flatMap((item) => {
+        if (!isJsonObject(item) || typeof item["id"] !== "string" || !isJsonObject(item["position"])) return [];
+        return [{
+          id: item["id"],
+          position: {
+            x: numeric(item["position"]["x"], 0),
+            y: numeric(item["position"]["y"], 0),
+          },
+        }];
+      })
+    : [];
+  return {
+    nodes,
+    viewport: isJsonObject(parsed.viewport) ? parsed.viewport : {},
+    showConnections: parsed.showConnections === true,
+  };
+}
+
+function loadDashboardLayout(project: Workspace, canvasRef: string): DashboardLayoutState | null {
+  const path = dashboardLayoutPath(project, canvasRef, false);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DashboardLayoutState>;
+    if (parsed.schema !== "hasna.projects_dashboard_layout.v1" || !Array.isArray(parsed.nodes)) return null;
+    return {
+      schema: "hasna.projects_dashboard_layout.v1",
+      projectId: typeof parsed.projectId === "string" ? parsed.projectId : project.slug,
+      canvasRef: typeof parsed.canvasRef === "string" ? parsed.canvasRef : canvasRef,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+      showConnections: parsed.showConnections === true,
+      viewport: isJsonObject(parsed.viewport) ? parsed.viewport : {},
+      nodes: parsed.nodes.flatMap((node) => {
+        if (!node || typeof node.id !== "string") return [];
+        return [{ id: node.id, position: { x: numeric(node.position?.x, 0), y: numeric(node.position?.y, 0) } }];
+      }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeDashboardLayout(project: Workspace, canvasRef: string, layout: DashboardLayoutState): void {
+  const path = dashboardLayoutPath(project, canvasRef, true);
+  if (!path) throw new Error(`Unable to resolve dashboard layout path for ${canvasRef}`);
+  writeFileSync(path, `${JSON.stringify(layout, null, 2)}\n`);
+}
+
+function dashboardLayoutPath(project: Workspace, canvasRef: string, create: boolean): string | null {
+  const paths = create ? ensureProjectDashboardStructure(project) : projectDashboardPaths(project);
+  const dir = join(paths.renderDir, "layouts");
+  if (create) mkdirSync(dir, { recursive: true });
+  return join(dir, `${safeLayoutName(canvasRef)}.layout.json`);
+}
+
+function safeLayoutName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_") || "dashboard";
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function dashboardCookie(token: string): string {
@@ -359,6 +580,21 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         border-radius: 8px;
         padding: 0 10px;
       }
+      .toggle {
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 8px;
+        padding: 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .toggle input { width: 16px; height: 16px; margin: 0; }
+      .save-state { color: var(--muted); font-size: 12px; min-width: 44px; text-align: right; }
       .icon-button {
         width: 36px;
         height: 36px;
@@ -406,7 +642,8 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
       .generic-node { width: 300px; }
       .overview-path { color: var(--muted); font-size: 11px; padding: 0 12px 12px; overflow-wrap: anywhere; }
       .empty-state { padding: 16px; color: var(--muted); }
-      .react-flow__node { cursor: default; }
+      .react-flow__node { cursor: grab; }
+      .react-flow__node.dragging { cursor: grabbing; }
       @media (max-width: 900px) {
         .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(420px, 1fr) 260px; }
         .side { border-left: 0; border-top: 1px solid var(--line); }
@@ -430,7 +667,7 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
     <script type="module">
       import React, { useCallback, useEffect, useMemo, useState } from "react";
       import { createRoot } from "react-dom/client";
-      import { ReactFlow, Background, Controls, MiniMap, Handle, Position } from "@xyflow/react";
+      import { ReactFlow, Background, Controls, MiniMap, Handle, Position, applyNodeChanges } from "@xyflow/react";
       window.__PROJECTS_DASHBOARD__ = ${bootstrap};
 
       const h = React.createElement;
@@ -508,15 +745,28 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         };
       }
 
+      function mergeSavedPositions(nodes, layout) {
+        const positions = new Map((layout?.nodes || []).map((item) => [item.id, item.position]));
+        return (nodes || []).map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id) } : node);
+      }
+
+      function validViewport(value) {
+        return value && Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.zoom);
+      }
+
       function App() {
         const [snapshot, setSnapshot] = useState(null);
         const [render, setRender] = useState(null);
         const [canvasMeta, setCanvasMeta] = useState(null);
         const [canvases, setCanvases] = useState([]);
+        const [flowNodes, setFlowNodes] = useState([]);
+        const [showConnections, setShowConnections] = useState(false);
         const [selected, setSelected] = useState(null);
         const [error, setError] = useState("");
         const [needsToken, setNeedsToken] = useState(false);
         const [token, setToken] = useState("");
+        const [saveState, setSaveState] = useState("");
+        const [flowViewport, setFlowViewport] = useState(null);
         const load = useCallback(async (refresh = false) => {
           setError("");
           setNeedsToken(false);
@@ -532,6 +782,10 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
           setCanvasMeta(next.canvas);
           setCanvases(next.canvases || []);
           const nextCanvas = renderCanvas(next.render);
+          const layout = nextCanvas.data?.layout || {};
+          setFlowNodes(nextCanvas.nodes || []);
+          setShowConnections(layout.showConnections === true);
+          setFlowViewport(validViewport(nextCanvas.viewport) ? nextCanvas.viewport : null);
           const firstNode = (nextCanvas.nodes || [])[0] || { id: "canvas", data: next.canvas || {}, type: "canvas" };
           setSelected(next.canvas?.kind === "dashboard" && next.snapshot?.panels?.[0] ? next.snapshot.panels[0] : selectedFromNode(next.snapshot, firstNode));
         }, []);
@@ -554,15 +808,67 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
         }, [load, token]);
         useEffect(() => { load().catch((err) => setError(err.message)); }, [load]);
         const canvas = renderCanvas(render);
-        const nodes = canvas.nodes || [];
-        const edges = canvas.edges || [];
+        const availableEdges = canvas.data?.availableEdges || canvas.edges || [];
+        const edges = showConnections ? availableEdges : [];
+        const saveLayout = useCallback(async (nextNodes, nextShowConnections = showConnections, nextViewport = flowViewport) => {
+          if (!canvasMeta) return;
+          setSaveState("Saving");
+          const res = await fetch(apiPath("layout"), {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({
+              showConnections: nextShowConnections,
+              viewport: validViewport(nextViewport) ? nextViewport : {},
+              nodes: (nextNodes || []).map((node) => ({ id: node.id, position: node.position })),
+            }),
+          });
+          if (!res.ok) throw new Error("Layout save failed " + res.status);
+          const saved = await res.json();
+          setSaveState("Saved");
+          setTimeout(() => setSaveState(""), 1600);
+          return saved.layout;
+        }, [canvasMeta, flowViewport, showConnections]);
+        const onNodesChange = useCallback((changes) => {
+          setFlowNodes((current) => applyNodeChanges(changes, current));
+        }, []);
+        const onNodeDragStop = useCallback((_, node) => {
+          setFlowNodes((current) => {
+            const next = current.map((item) => item.id === node.id ? { ...item, position: node.position } : item);
+            saveLayout(next).then((layout) => {
+              setFlowNodes((latest) => mergeSavedPositions(latest, layout));
+            }).catch((err) => {
+              setSaveState("Error");
+              setError(err.message);
+            });
+            return next;
+          });
+        }, [saveLayout]);
+        const onConnectionsChange = useCallback((event) => {
+          const next = event.target.checked;
+          setShowConnections(next);
+          saveLayout(flowNodes, next).then((layout) => {
+            setFlowNodes((latest) => mergeSavedPositions(latest, layout));
+          }).catch((err) => {
+            setSaveState("Error");
+            setError(err.message);
+          });
+        }, [flowNodes, saveLayout]);
+        const onMoveEnd = useCallback((_, nextViewport) => {
+          if (!validViewport(nextViewport)) return;
+          setFlowViewport(nextViewport);
+          saveLayout(flowNodes, showConnections, nextViewport).catch((err) => {
+            setSaveState("Error");
+            setError(err.message);
+          });
+        }, [flowNodes, saveLayout, showConnections]);
         const nodeTypes = useMemo(() => {
           const types = { projectPanel: ProjectNode, projectOverview: OverviewNode };
-          for (const node of nodes) {
+          for (const node of flowNodes) {
             if (node?.type && !types[node.type]) types[node.type] = GenericNode;
           }
           return types;
-        }, [nodes]);
+        }, [flowNodes]);
         const onNodeClick = useCallback((_, node) => {
           setSelected(selectedFromNode(snapshot, node));
         }, [snapshot]);
@@ -583,6 +889,11 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
                   if (next?.href) window.location.href = next.href;
                 },
               }, canvases.map((item) => h("option", { key: item.routeId, value: item.routeId }, item.name))) : null,
+              h("label", { key: "connections", className: "toggle", title: "Show connection lines" }, [
+                h("input", { key: "input", type: "checkbox", checked: showConnections, onChange: onConnectionsChange }),
+                h("span", { key: "text" }, "Connections"),
+              ]),
+              h("span", { key: "save", className: "save-state" }, saveState),
               h("button", { key: "refresh", className: "icon-button", title: "Refresh", onClick: () => load(true).catch((err) => setError(err.message)) }, "R"),
             ]),
           ]),
@@ -596,7 +907,19 @@ export function projectDashboardHtml(args: { projectSlug: string; canvasRef?: st
                 h("button", { key: "submit", className: "icon-button", title: "Unlock", style: { marginTop: "12px", width: "auto", padding: "0 12px" } }, "Unlock"),
               ]) :
               error ? h("div", { className: "empty-state" }, error) :
-              h(ReactFlow, { nodes, edges, nodeTypes, fitView: true, onNodeClick }, [
+              h(ReactFlow, {
+                key: canvasMeta?.routeId || "loading",
+                nodes: flowNodes,
+                edges,
+                nodeTypes,
+                defaultViewport: flowViewport || undefined,
+                fitView: !flowViewport,
+                nodesDraggable: true,
+                onNodeClick,
+                onNodesChange,
+                onNodeDragStop,
+                onMoveEnd,
+              }, [
                 h(Background, { key: "bg", gap: 18, size: 1 }),
                 h(Controls, { key: "controls" }),
                 h(MiniMap, { key: "map", pannable: true, zoomable: true }),
