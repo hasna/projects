@@ -73,6 +73,10 @@ projects status my-app --profile dev --json
 projects store inspect my-app --json
 projects canvases list my-app --ensure-default --render-spec
 projects canvases create my-app --name "Research Board" --nodes-json '[{"id":"note","position":{"x":0,"y":0},"data":{"title":"Note"}}]'
+projects dashboard snapshot my-app --write --json
+projects dashboard render my-app --json
+projects dashboard validate my-app --json
+projects dashboard serve my-app --host 0.0.0.0 --port 3344
 projects loops link my-app daily-check --name "Daily Check" --role maintenance
 projects loops list my-app --json
 projects import /path/to/existing --json
@@ -210,6 +214,15 @@ stores project-specific canvases, custom JSON data models/records, and OpenLoops
 links. `projects canvases * --render-spec` emits a JSON Render contract for a
 TypeScript React surface using Tailwind, shadcn components, and React Flow as an
 infinite canvas; a project may have multiple canvases.
+
+`projects dashboard *` is the Projects-owned viewer surface for agent-managed
+project folders. It standardizes `.hasna/project/` inside the project path,
+collects provider panels from `todos`, `files`, `mailery`, `conversations`,
+`knowledge`, `mementos`, and `reports`, adds a read-only actions panel, validates
+the result as `hasna.project_snapshot.v1`, and renders it as a React Flow Canvas.
+`projects dashboard serve <project>` serves `/dashboard` plus JSON APIs with an
+HTTP-only same-origin cookie; dashboard JSON never carries raw private document
+bodies or arbitrary shell commands.
 
 OpenLoops integration uses the `@hasna/loops` SDK as an optional peer. Runtime
 commands that need live loop state load `@hasna/loops/sdk` dynamically, so Open

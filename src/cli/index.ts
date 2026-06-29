@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { registerWorkspaceCommands } from "./commands/workspaces.js";
 import { registerCompletionCommand } from "./commands/completion.js";
 import { registerStorageCommands } from "./commands/storage.js";
+import { registerDashboardCommands } from "./commands/dashboard.js";
 import { runWorkspaceAgentPrompt } from "../lib/workspace-agent.js";
 
 function getPackageVersion(): string {
@@ -235,6 +236,7 @@ Prompt mode options:
 
 registerWorkspaceCommands(program);
 registerStorageCommands(program);
+registerDashboardCommands(program);
 registerCompletionCommand(program);
 registerEventsCommands(program, { source: "projects", eventsCommandName: "hasna-events" });
 

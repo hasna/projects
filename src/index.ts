@@ -213,6 +213,32 @@ export {
   resolveRegisteredProjectTargetOrThrow,
 } from "./lib/project-resolver.js";
 export {
+  DEFAULT_PROJECT_DASHBOARD_PROVIDERS,
+  PROJECT_DASHBOARD_DIR,
+  PROJECT_DASHBOARD_RENDER_DIR,
+  PROJECT_DASHBOARD_SNAPSHOTS_DIR,
+  buildProjectDashboard,
+  buildProjectDashboardRender,
+  buildProjectDashboardSnapshot,
+  defaultProjectDashboardProviderRunner,
+  ensureProjectDashboardStructure,
+  loadProjectDashboardRenderManifest,
+  projectDashboardPaths,
+  resolveDashboardImports,
+  writeProjectDashboardSnapshot,
+} from "./lib/project-dashboard.js";
+export type {
+  BuildProjectDashboardSnapshotOptions,
+  ProjectDashboardPaths,
+  ProjectDashboardProvider,
+  ProjectDashboardProviderRunner,
+  ProjectDashboardRenderManifest,
+  ProviderRunRequest,
+  ProviderRunResult,
+} from "./lib/project-dashboard.js";
+export { projectDashboardHtml, serveProjectDashboard } from "./lib/project-dashboard-server.js";
+export type { ProjectDashboardServer, ProjectDashboardServerOptions } from "./lib/project-dashboard-server.js";
+export {
   PROJECTS_HOME_ENV,
   getProjectsHome,
   isProjectWorkspaceStorePath,
