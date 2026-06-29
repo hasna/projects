@@ -21,6 +21,45 @@ function print(value: unknown, options: { json?: boolean }): void {
   else console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
 }
 
+function errorPayload(error: unknown): { ok: false; error: { name: string; message: string } } {
+  return {
+    ok: false,
+    error: {
+      name: error instanceof Error ? error.name : "Error",
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
+function findJsonOptions(args: unknown[]): { json?: boolean } | undefined {
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    const value = args[index];
+    if (!value || typeof value !== "object") continue;
+    if ("json" in value) return value as { json?: boolean };
+    if ("opts" in value && typeof (value as { opts?: unknown }).opts === "function") {
+      const opts = (value as { opts: () => unknown }).opts();
+      if (opts && typeof opts === "object" && "json" in opts) return opts as { json?: boolean };
+    }
+  }
+  return undefined;
+}
+
+function withJsonErrors<T extends unknown[]>(handler: (...args: T) => Promise<void>): (...args: T) => Promise<void> {
+  return async (...args: T): Promise<void> => {
+    try {
+      await handler(...args);
+    } catch (error) {
+      const options = findJsonOptions(args);
+      if (options && wantsJson(options)) {
+        print(errorPayload(error), options);
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+  };
+}
+
 function splitProviders(values: string[] | undefined): string[] | undefined {
   const providers = values?.flatMap((value) => value.split(",").map((item) => item.trim()).filter(Boolean));
   return providers?.length ? [...new Set(providers)] : undefined;
@@ -115,19 +154,19 @@ export function registerDashboardCommands(program: Command): void {
     .option("--timeout-ms <n>", "Provider timeout in milliseconds")
     .option("--write", "Write latest snapshot under .hasna/project/dashboard/snapshots")
     .option("-j, --json", "Print JSON", false)
-    .action(snapshotAction);
+    .action(withJsonErrors(snapshotAction));
   dashboard
     .command("render <target>")
     .description("Emit a React Flow Canvas render spec for a project dashboard")
     .option("--snapshot <file>", "Use an existing ProjectSnapshot JSON file")
     .option("--write", "Ensure and update the project dashboard render manifest")
     .option("-j, --json", "Print JSON", false)
-    .action(renderAction);
+    .action(withJsonErrors(renderAction));
   dashboard
     .command("validate <target-or-file>")
     .description("Validate a dashboard project or ProjectSnapshot JSON file")
     .option("-j, --json", "Print JSON", false)
-    .action(validateAction);
+    .action(withJsonErrors(validateAction));
   dashboard
     .command("serve <target>")
     .description("Serve the local React Flow project dashboard")
@@ -137,5 +176,5 @@ export function registerDashboardCommands(program: Command): void {
     .option("--token <token>", "Dashboard access token for non-loopback serving")
     .option("--trust-network", "Self-issue the dashboard cookie on non-loopback hosts; rely on network ACLs", false)
     .option("-j, --json", "Print server info as JSON", false)
-    .action(serveAction);
+    .action(withJsonErrors(serveAction));
 }

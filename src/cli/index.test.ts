@@ -56,6 +56,25 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("dashboard validate emits structured JSON errors for malformed input", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-dashboard-invalid-"));
+    const invalidFile = join(root, "invalid.json");
+    try {
+      writeFileSync(invalidFile, "{");
+      const result = runProjects(["dashboard", "validate", invalidFile, "--json"]);
+      const stdout = text(result.stdout);
+      const stderr = text(result.stderr);
+      const payload = JSON.parse(stdout) as { ok: boolean; error?: { name: string; message: string } };
+
+      expect(result.exitCode).toBe(1);
+      expect(stderr).toBe("");
+      expect(payload.ok).toBe(false);
+      expect(payload.error?.message).toContain("JSON");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("completion emits project commands", () => {
     const result = runProjects(["completion"]);
     const stdout = text(result.stdout);

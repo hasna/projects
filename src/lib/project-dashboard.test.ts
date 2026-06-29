@@ -7,6 +7,7 @@ import { ProjectSnapshotSchema, SCHEMA_IDS } from "@hasna/contracts/schemas";
 import { createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
 import {
+  DEFAULT_PROJECT_DASHBOARD_PROVIDERS,
   buildProjectDashboardRender,
   buildProjectDashboardSnapshot,
   resolveDashboardImports,
@@ -31,6 +32,13 @@ const provider: ProjectDashboardProvider = {
 };
 
 describe("project dashboard", () => {
+  test("uses the published Mailery project-panel provider command", () => {
+    const mailery = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find((item) => item.id === "mailery");
+
+    expect(mailery?.command).toBe("mailery");
+    expect(mailery?.args).toEqual(["project-panel", "--project", "{project}", "--limit", "20", "--json", "--contract"]);
+  });
+
   test("builds a contract-valid snapshot from provider panels", async () => {
     const db = makeDb();
     createWorkspace({
@@ -68,6 +76,34 @@ describe("project dashboard", () => {
     expect(ProjectSnapshotSchema.parse(snapshot)).toEqual(snapshot);
     expect(snapshot.panels.map((panel) => panel.kind)).toEqual(expect.arrayContaining(["overview", "tasks", "actions"]));
     expect(snapshot.panels.find((panel) => panel.kind === "tasks")?.state).toBe("ready");
+    db.close();
+  });
+
+  test("does not label dashboard writes as read-only actions", async () => {
+    const db = makeDb();
+    createWorkspace({
+      id: "wks_action_dashboard",
+      name: "Action Dashboard",
+      slug: "action-dashboard",
+      kind: "project",
+      primary_path: "/tmp/action-dashboard",
+    }, db);
+
+    const snapshot = await buildProjectDashboardSnapshot("action-dashboard", {
+      providers: [],
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      db,
+    });
+    const actions = snapshot.panels.find((panel) => panel.kind === "actions");
+    const refreshItem = actions?.items.find((item) => item.id === "refresh-snapshot");
+    const refreshAction = actions?.actions.find((action) => action.id === "projects.dashboard.snapshot");
+
+    expect(refreshItem?.summary).toContain("--write");
+    expect(refreshItem?.status).toBe("write/server-issued");
+    expect(refreshItem?.resourceRefs[0]?.tags).toEqual(expect.arrayContaining(["write", "server-issued"]));
+    expect(refreshItem?.resourceRefs[0]?.tags).not.toContain("read-only");
+    expect(refreshAction?.tags).toEqual(expect.arrayContaining(["write", "server-issued"]));
+    expect(refreshAction?.tags).not.toContain("read-only");
     db.close();
   });
 
