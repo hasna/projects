@@ -147,7 +147,16 @@ async function serveAction(target: string, options: { host?: string; port?: stri
   };
   await print(payload, options);
   if (!wantsJson(options)) await print(`Dashboard listening at ${served.url}`, options);
-  await new Promise(() => undefined);
+  await new Promise<void>((resolve) => {
+    const keepAlive = setInterval(() => undefined, 60_000);
+    const stop = () => {
+      clearInterval(keepAlive);
+      served.server.stop();
+      resolve();
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
 }
 
 export function registerDashboardCommands(program: Command): void {

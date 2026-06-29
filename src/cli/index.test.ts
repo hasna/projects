@@ -19,6 +19,22 @@ function runProjects(args: string[], env: Record<string, string> = {}, cwd = pro
   });
 }
 
+async function readStreamChunk(stream: ReadableStream<Uint8Array> | null, timeoutMs = 3_000): Promise<string> {
+  if (!stream) return "";
+  const reader = stream.getReader();
+  const timeout = setTimeout(() => undefined, timeoutMs);
+  try {
+    const result = await Promise.race([
+      reader.read(),
+      new Promise<{ done: boolean; value?: Uint8Array }>((resolve) => setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs)),
+    ]);
+    return result.value ? Buffer.from(result.value).toString("utf-8") : "";
+  } finally {
+    clearTimeout(timeout);
+    reader.releaseLock();
+  }
+}
+
 function text(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("utf-8");
 }
@@ -123,6 +139,33 @@ describe("project-first CLI surface", () => {
       expect(render.exitCode).toBe(0);
       expect(Buffer.byteLength(renderStdout)).toBeGreaterThan(65_536);
       expect(JSON.parse(renderStdout).root).toBe("root");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("dashboard serve keeps the CLI process alive until terminated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-dashboard-serve-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const projectPath = join(root, "served-dashboard");
+    const port = 41_000 + Math.floor(Math.random() * 1_000);
+    try {
+      expect(runProjects(["create", "--name", "Served Dashboard", "--slug", "served-dashboard", "--path", projectPath, "--mkdir", "--json"], env).exitCode).toBe(0);
+      const proc = Bun.spawn({
+        cmd: ["bun", "run", CLI_PATH, "dashboard", "serve", "served-dashboard", "--host", "127.0.0.1", "--port", String(port), "--json"],
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, ...env },
+      });
+      try {
+        const stdout = await readStreamChunk(proc.stdout);
+        expect(stdout).toContain("\"ok\": true");
+        await Bun.sleep(500);
+        expect(proc.exitCode).toBeNull();
+      } finally {
+        proc.kill("SIGTERM");
+        await proc.exited;
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
