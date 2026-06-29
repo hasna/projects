@@ -509,6 +509,42 @@ describe("project-first CLI surface", () => {
     expect(rows.find((row) => row.slug === "compact-29")?.metadata.notes).toHaveLength(500);
   }, 10000);
 
+  test("top-level list JSON output is not truncated above 64 KiB", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-large-list-json-"));
+    const dbPath = join(root, "projects.db");
+    const env = { HASNA_PROJECTS_DB_PATH: dbPath };
+    const db = new Database(dbPath);
+    let dbClosed = false;
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+
+    try {
+      for (let i = 0; i < 120; i += 1) {
+        const suffix = String(i).padStart(3, "0");
+        createWorkspace({
+          name: `Large List ${suffix}`,
+          slug: `large-list-${suffix}`,
+          kind: "project",
+          primary_path: join(root, `large-list-${suffix}`),
+          metadata: { notes: `large-json-output-${suffix}-${"x".repeat(1_000)}` },
+        }, db);
+      }
+      db.close();
+      dbClosed = true;
+
+      const result = runProjects(["list", "--limit", "120", "--json"], env);
+      const stdout = text(result.stdout);
+      expect(result.exitCode).toBe(0);
+      expect(Buffer.byteLength(stdout)).toBeGreaterThan(65_536);
+      const rows = JSON.parse(stdout) as Array<{ slug: string; metadata: Record<string, string> }>;
+      expect(rows).toHaveLength(120);
+      expect(rows.find((row) => row.slug === "large-list-119")?.metadata.notes).toContain("large-json-output-119");
+    } finally {
+      if (!dbClosed) db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10000);
+
   test("top-level create, list, show, and update expose project management fields", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-management-"));
     const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };

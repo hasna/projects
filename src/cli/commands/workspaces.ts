@@ -169,12 +169,12 @@ function splitLabelFilters(...values: Array<string | undefined>): string[] {
 
 function printObject(value: unknown, opts?: { json?: boolean }): void {
   if (wantsJson(opts)) {
-    console.log(JSON.stringify(value, null, 2));
+    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
   }
 }
 
 function printRenderSpec(value: unknown): void {
-  console.log(JSON.stringify(value, null, 2));
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "render" | "schema_version" | "kind"> {
