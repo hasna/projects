@@ -11,17 +11,27 @@ function normalizeParams(params: unknown[]): unknown[] {
   return flat.map((value) => value === undefined ? null : value);
 }
 
-function sslConfigFor(connectionString: string): { rejectUnauthorized: boolean } | undefined {
-  return connectionString.includes("sslmode=require") || connectionString.includes("ssl=true")
-    ? { rejectUnauthorized: false }
-    : undefined;
+export function shouldUsePgSsl(connectionString: string): boolean {
+  let params: URLSearchParams;
+  try {
+    params = new URL(connectionString).searchParams;
+  } catch {
+    const queryStart = connectionString.indexOf("?");
+    params = new URLSearchParams(queryStart >= 0 ? connectionString.slice(queryStart + 1) : "");
+  }
+
+  const ssl = params.get("ssl")?.toLowerCase();
+  if (ssl && ["1", "true", "yes", "on", "require"].includes(ssl)) return true;
+
+  const sslMode = params.get("sslmode")?.toLowerCase();
+  return sslMode === "require" || sslMode === "verify-ca" || sslMode === "verify-full";
 }
 
 export class PgAdapterAsync {
   private readonly pool: Pool;
 
   constructor(connectionString: string) {
-    this.pool = new pg.Pool({ connectionString, ssl: sslConfigFor(connectionString) });
+    this.pool = new pg.Pool({ connectionString, ssl: shouldUsePgSsl(connectionString) || undefined });
   }
 
   async run(sql: string, ...params: unknown[]): Promise<{ changes: number }> {
