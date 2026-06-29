@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   buildProjectDashboard,
   buildProjectDashboardRender,
@@ -11,6 +11,7 @@ export interface ProjectDashboardServerOptions extends BuildProjectDashboardSnap
   host?: string;
   port?: number;
   token?: string;
+  trustNetwork?: boolean;
 }
 
 export interface ProjectDashboardServer {
@@ -24,7 +25,14 @@ export interface ProjectDashboardServer {
 export async function serveProjectDashboard(options: ProjectDashboardServerOptions): Promise<ProjectDashboardServer> {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 3344;
-  const token = options.token ?? randomBytes(24).toString("base64url");
+  const explicitToken = options.token ?? process.env["PROJECTS_DASHBOARD_TOKEN"];
+  const loopback = isLoopbackDashboardHost(host);
+  const trustNetwork = Boolean(options.trustNetwork);
+  if (!loopback && !trustNetwork && !explicitToken) {
+    throw new Error("Serving a dashboard on a non-loopback host requires --token, PROJECTS_DASHBOARD_TOKEN, or --trust-network.");
+  }
+  const token = explicitToken ?? randomBytes(24).toString("base64url");
+  const selfIssueCookie = loopback || trustNetwork;
   const target = options.target ?? ".";
   const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
   let dashboard = await buildProjectDashboard(target, options);
@@ -44,9 +52,16 @@ export async function serveProjectDashboard(options: ProjectDashboardServerOptio
         return new Response(projectDashboardHtml({ projectSlug: resolution.project.slug }), {
           headers: {
             "content-type": "text/html; charset=utf-8",
-            "set-cookie": dashboardCookie(token),
+            ...(selfIssueCookie ? { "set-cookie": dashboardCookie(token) } : {}),
           },
         });
+      }
+      if (url.pathname === "/api/session" && request.method === "POST") {
+        const submitted = await readSubmittedToken(request);
+        if (!submitted || !tokensMatch(submitted, token)) {
+          return Response.json({ ok: false, error: "invalid dashboard token" }, { status: 401 });
+        }
+        return Response.json({ ok: true }, { headers: { "set-cookie": dashboardCookie(token) } });
       }
       if (!hasDashboardCookie(request, token)) {
         return Response.json({ ok: false, error: "dashboard token required" }, { status: 401 });
@@ -92,6 +107,31 @@ function dashboardCookie(token: string): string {
 function hasDashboardCookie(request: Request, token: string): boolean {
   const cookie = request.headers.get("cookie") ?? "";
   return cookie.split(";").map((part) => part.trim()).some((part) => part === `projects_dashboard=${encodeURIComponent(token)}`);
+}
+
+export function isLoopbackDashboardHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+async function readSubmittedToken(request: Request): Promise<string | null> {
+  const contentType = request.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const parsed = await request.json() as { token?: unknown };
+      return typeof parsed.token === "string" ? parsed.token : null;
+    }
+    const form = await request.formData();
+    const token = form.get("token");
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokensMatch(submitted: string, expected: string): boolean {
+  const left = Buffer.from(submitted);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export function projectDashboardHtml(args: { projectSlug: string }): string {
@@ -253,15 +293,20 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
         const [render, setRender] = useState(null);
         const [selected, setSelected] = useState(null);
         const [error, setError] = useState("");
+        const [needsToken, setNeedsToken] = useState(false);
+        const [token, setToken] = useState("");
         const load = useCallback(async (refresh = false) => {
           setError("");
+          setNeedsToken(false);
           const suffix = refresh ? "?refresh=1" : "";
           const [nextSnapshot, nextRender] = await Promise.all([
             fetch("/api/snapshot" + suffix, { credentials: "same-origin" }).then((res) => {
+              if (res.status === 401) setNeedsToken(true);
               if (!res.ok) throw new Error("Snapshot request failed " + res.status);
               return res.json();
             }),
             fetch("/api/render", { credentials: "same-origin" }).then((res) => {
+              if (res.status === 401) setNeedsToken(true);
               if (!res.ok) throw new Error("Render request failed " + res.status);
               return res.json();
             }),
@@ -270,6 +315,23 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
           setRender(nextRender);
           setSelected(nextSnapshot.panels?.[0] || null);
         }, []);
+        const unlock = useCallback(async (event) => {
+          event.preventDefault();
+          setError("");
+          const res = await fetch("/api/session", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ token }),
+          });
+          if (!res.ok) {
+            setError("Dashboard access token was rejected");
+            setNeedsToken(true);
+            return;
+          }
+          setToken("");
+          await load(true);
+        }, [load, token]);
         useEffect(() => { load().catch((err) => setError(err.message)); }, [load]);
         const canvas = render?.elements?.root?.props || {};
         const nodes = canvas.nodes || [];
@@ -291,6 +353,13 @@ export function projectDashboardHtml(args: { projectSlug: string }): string {
           ]),
           h("main", { key: "main", className: "workspace" }, [
             h("section", { key: "flow", className: "flow" },
+              needsToken ? h("form", { className: "empty-state", onSubmit: unlock }, [
+                h("label", { key: "label", style: { display: "grid", gap: "8px", maxWidth: "360px" } }, [
+                  h("span", { key: "text" }, "Dashboard access token"),
+                  h("input", { key: "input", type: "password", value: token, onChange: (event) => setToken(event.target.value), autoFocus: true }),
+                ]),
+                h("button", { key: "submit", className: "icon-button", title: "Unlock", style: { marginTop: "12px", width: "auto", padding: "0 12px" } }, "Unlock"),
+              ]) :
               error ? h("div", { className: "empty-state" }, error) :
               h(ReactFlow, { nodes, edges, nodeTypes, fitView: true, onNodeClick }, [
                 h(Background, { key: "bg", gap: 18, size: 1 }),

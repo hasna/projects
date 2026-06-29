@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ProjectSnapshotSchema, SCHEMA_IDS } from "@hasna/contracts/schemas";
 import { createWorkspace } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
@@ -66,6 +69,31 @@ describe("project dashboard", () => {
     expect(snapshot.panels.map((panel) => panel.kind)).toEqual(expect.arrayContaining(["overview", "tasks", "actions"]));
     expect(snapshot.panels.find((panel) => panel.kind === "tasks")?.state).toBe("ready");
     db.close();
+  });
+
+  test("snapshot collection is read-only unless initialization is requested", async () => {
+    const db = makeDb();
+    const root = mkdtempSync(join(tmpdir(), "projects-dashboard-readonly-"));
+    const projectPath = join(root, "readonly-project");
+    createWorkspace({
+      id: "wks_readonly_dashboard",
+      name: "Readonly Dashboard",
+      slug: "readonly-dashboard",
+      kind: "project",
+      primary_path: projectPath,
+    }, db);
+
+    try {
+      await buildProjectDashboardSnapshot("readonly-dashboard", {
+        providers: [],
+        generatedAt: "2026-06-29T00:00:00.000Z",
+        db,
+      });
+      expect(existsSync(join(projectPath, ".hasna/project"))).toBe(false);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("renders a React Flow Canvas spec from a snapshot", async () => {

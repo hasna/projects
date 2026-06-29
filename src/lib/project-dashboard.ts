@@ -62,6 +62,7 @@ export interface BuildProjectDashboardSnapshotOptions {
   timeoutMs?: number;
   generatedAt?: string;
   cwd?: string;
+  initialize?: boolean;
 }
 
 export interface ProjectDashboardPaths {
@@ -219,7 +220,7 @@ export async function buildProjectDashboardSnapshot(
   const resolution = resolveRegisteredProjectTargetOrThrow(target, { db: options.db });
   const project = resolution.project;
   const generatedAt = options.generatedAt ?? new Date().toISOString();
-  const paths = ensureProjectDashboardStructure(project, generatedAt);
+  const paths = options.initialize ? ensureProjectDashboardStructure(project, generatedAt) : projectDashboardPaths(project);
   const cwd = options.cwd ?? project.primary_path ?? paths.projectPath;
   const requestedKinds = new Set(options.providerKinds ?? []);
   const providers = (options.providers ?? DEFAULT_PROJECT_DASHBOARD_PROVIDERS)
@@ -489,7 +490,7 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
     },
     kind: "actions",
     title: "Safe Actions",
-    summary: "Read-only dashboard commands and server-issued refresh capabilities.",
+    summary: "Read-only dashboard commands and token-gated dashboard serving.",
     state: "ready",
     generatedAt,
     freshness: "fresh",
@@ -514,7 +515,7 @@ function actionsPanel(project: Workspace, generatedAt: string): ProjectPanel {
       {
         id: "serve-dashboard",
         title: "Serve dashboard",
-        summary: `projects dashboard serve ${project.slug} --host 0.0.0.0`,
+        summary: `PROJECTS_DASHBOARD_TOKEN=<token> projects dashboard serve ${project.slug} --host 0.0.0.0`,
         status: "server-issued",
         priority: "low",
         resourceRefs: [{ kind: "action", id: "projects.dashboard.serve", name: "Serve dashboard", tags: ["read-only"] }],

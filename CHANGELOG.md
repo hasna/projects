@@ -8,6 +8,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 No unreleased changes yet.
 
+## [0.1.69] - 2026-06-29
+
+### Fixed
+
+- Hardened project dashboard serving: non-loopback hosts now require an
+  explicit dashboard access token or explicit `--trust-network`, and token mode
+  uses a browser unlock endpoint instead of self-issuing cookies to any visitor.
+- Kept dashboard snapshot, render, and validate commands read-only unless
+  `--write` is passed.
+- Removed generic top-level dashboard aliases so prompt-agent routing is not
+  hijacked by natural-language prompts starting with words such as `render` or
+  `validate`.
+
 ## [0.1.67] - 2026-06-28
 
 ### Added

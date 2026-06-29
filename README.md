@@ -76,7 +76,7 @@ projects canvases create my-app --name "Research Board" --nodes-json '[{"id":"no
 projects dashboard snapshot my-app --write --json
 projects dashboard render my-app --json
 projects dashboard validate my-app --json
-projects dashboard serve my-app --host 0.0.0.0 --port 3344
+PROJECTS_DASHBOARD_TOKEN="<token>" projects dashboard serve my-app --host 0.0.0.0 --port 3344
 projects loops link my-app daily-check --name "Daily Check" --role maintenance
 projects loops list my-app --json
 projects import /path/to/existing --json
@@ -220,9 +220,13 @@ project folders. It standardizes `.hasna/project/` inside the project path,
 collects provider panels from `todos`, `files`, `mailery`, `conversations`,
 `knowledge`, `mementos`, and `reports`, adds a read-only actions panel, validates
 the result as `hasna.project_snapshot.v1`, and renders it as a React Flow Canvas.
+Snapshot, render, and validate are read-only unless `--write` is passed.
 `projects dashboard serve <project>` serves `/dashboard` plus JSON APIs with an
-HTTP-only same-origin cookie; dashboard JSON never carries raw private document
-bodies or arbitrary shell commands.
+HTTP-only same-origin cookie; binding to a non-loopback host requires
+`--token`, `PROJECTS_DASHBOARD_TOKEN`, or an explicit `--trust-network` choice.
+Do not put dashboard access tokens in URLs, render specs, reports, or task
+evidence. Dashboard JSON never carries raw private document bodies or arbitrary
+shell commands.
 
 OpenLoops integration uses the `@hasna/loops` SDK as an optional peer. Runtime
 commands that need live loop state load `@hasna/loops/sdk` dynamically, so Open
