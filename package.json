@@ -1,6 +1,6 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "High-level project management CLI, MCP server, SDK, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",

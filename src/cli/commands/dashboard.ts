@@ -16,9 +16,14 @@ function wantsJson(options: { json?: boolean }): boolean {
   return Boolean(options.json || process.env["PROJECTS_JSON"]);
 }
 
-function print(value: unknown, options: { json?: boolean }): void {
-  if (wantsJson(options)) console.log(JSON.stringify(value, null, 2));
-  else console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+async function print(value: unknown, options: { json?: boolean }): Promise<void> {
+  const output = wantsJson(options) ? JSON.stringify(value, null, 2) : typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  await new Promise<void>((resolve, reject) => {
+    process.stdout.write(`${output}\n`, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
 }
 
 function errorPayload(error: unknown): { ok: false; error: { name: string; message: string } } {
@@ -51,7 +56,7 @@ function withJsonErrors<T extends unknown[]>(handler: (...args: T) => Promise<vo
     } catch (error) {
       const options = findJsonOptions(args);
       if (options && wantsJson(options)) {
-        print(errorPayload(error), options);
+        await print(errorPayload(error), options);
         process.exitCode = 1;
         return;
       }
@@ -76,7 +81,7 @@ async function snapshotAction(target: string, options: { provider?: string[]; ti
   });
   let paths;
   if (options.write) paths = writeProjectDashboardSnapshot(resolution.project, snapshot);
-  print(options.write ? { snapshot, paths } : snapshot, options);
+  await print(options.write ? { snapshot, paths } : snapshot, options);
 }
 
 async function renderAction(target: string, options: { snapshot?: string; write?: boolean; json?: boolean }) {
@@ -94,10 +99,10 @@ async function renderAction(target: string, options: { snapshot?: string; write?
       imports: [],
       updatedAt: snapshot.generatedAt,
     }, null, 2)}\n`);
-    print({ render, path: paths.renderManifestPath }, options);
+    await print({ render, path: paths.renderManifestPath }, options);
     return;
   }
-  print(render, options);
+  await print(render, options);
 }
 
 async function validateAction(targetOrFile: string, options: { json?: boolean }) {
@@ -117,7 +122,7 @@ async function validateAction(targetOrFile: string, options: { json?: boolean })
       renderRoot: dashboard.render.root,
     };
   }
-  print(result, options);
+  await print(result, options);
 }
 
 async function serveAction(target: string, options: { host?: string; port?: string; provider?: string[]; token?: string; trustNetwork?: boolean; json?: boolean }) {
@@ -140,8 +145,8 @@ async function serveAction(target: string, options: { host?: string; port?: stri
     project: resolveRegisteredProjectTargetOrThrow(target).project.slug,
     auth: options.trustNetwork ? "trusted-network-cookie" : "http-only-cookie-token",
   };
-  print(payload, options);
-  if (!wantsJson(options)) console.log(`Dashboard listening at ${served.url}`);
+  await print(payload, options);
+  if (!wantsJson(options)) await print(`Dashboard listening at ${served.url}`, options);
   await new Promise(() => undefined);
 }
 

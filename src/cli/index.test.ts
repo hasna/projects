@@ -75,6 +75,59 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("dashboard JSON output is not truncated when captured through a pipe", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-dashboard-large-json-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const projectPath = join(root, "large-dashboard");
+    const snapshotFile = join(root, "large.snapshot.json");
+    const generatedAt = "2026-06-29T00:00:00.000Z";
+    const largeItems = Array.from({ length: 900 }, (_, index) => ({
+      id: `item-${index}`,
+      title: `Dashboard item ${index}`,
+      summary: `Large dashboard payload segment ${index} ${"x".repeat(120)}`,
+    }));
+
+    try {
+      expect(runProjects(["create", "--name", "Large Dashboard", "--slug", "large-dashboard", "--path", projectPath, "--mkdir", "--json"], env).exitCode).toBe(0);
+      writeFileSync(snapshotFile, `${JSON.stringify({
+        schema: "hasna.project_snapshot.v1",
+        id: "snapshot-large-dashboard",
+        createdAt: generatedAt,
+        projectId: "large-dashboard",
+        generatedAt,
+        status: "succeeded",
+        manifestRef: { kind: "project", id: "large-dashboard", uri: "project://large-dashboard", tags: [] },
+        panels: [{
+          schema: "hasna.project_panel.v1",
+          id: "panel-large-dashboard",
+          createdAt: generatedAt,
+          projectId: "large-dashboard",
+          provider: { kind: "todos", id: "test-provider" },
+          kind: "tasks",
+          title: "Large Tasks",
+          state: "ready",
+          generatedAt,
+          freshness: "fresh",
+          items: largeItems,
+        }],
+      }, null, 2)}\n`);
+
+      const validate = runProjects(["dashboard", "validate", snapshotFile, "--json"], env);
+      const validateStdout = text(validate.stdout);
+      expect(validate.exitCode).toBe(0);
+      expect(Buffer.byteLength(validateStdout)).toBeGreaterThan(65_536);
+      expect(JSON.parse(validateStdout).snapshot.panels[0].items).toHaveLength(900);
+
+      const render = runProjects(["dashboard", "render", "large-dashboard", "--snapshot", snapshotFile, "--json"], env);
+      const renderStdout = text(render.stdout);
+      expect(render.exitCode).toBe(0);
+      expect(Buffer.byteLength(renderStdout)).toBeGreaterThan(65_536);
+      expect(JSON.parse(renderStdout).root).toBe("root");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("completion emits project commands", () => {
     const result = runProjects(["completion"]);
     const stdout = text(result.stdout);
