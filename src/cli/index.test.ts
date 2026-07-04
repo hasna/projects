@@ -67,6 +67,7 @@ describe("project-first CLI surface", () => {
       expect(stdout).toContain("tmux-profiles");
       expect(stdout).toContain("hasna-events");
       expect(stdout).toContain("webhooks");
+      expect(stdout).toContain("reports");
     } finally {
       rmSync(eventsDir, { recursive: true, force: true });
     }
@@ -171,12 +172,64 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("reports serve defaults to network bind and keeps existing project registry semantics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-reports-serve-"));
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      HASNA_PROJECTS_HOME: join(root, "projects-home"),
+    };
+    const projectPath = join(root, "fleet-reports");
+    const reportsDir = join(projectPath, "reports", "2026-07-04");
+    const port = 42_000 + Math.floor(Math.random() * 1_000);
+    try {
+      expect(runProjects(["create", "--name", "Fleet Reports", "--slug", "fleet-reports", "--path", projectPath, "--mkdir", "--json"], env).exitCode).toBe(0);
+      mkdirSync(reportsDir, { recursive: true });
+      writeFileSync(join(reportsDir, "daily.md"), "# Fleet daily\n");
+
+      const proc = Bun.spawn({
+        cmd: ["bun", "run", CLI_PATH, "reports", "serve", "--port", String(port), "--json"],
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, ...env },
+      });
+      try {
+        const stdout = await readStreamChunk(proc.stdout);
+        const payload = JSON.parse(stdout) as {
+          ok: boolean;
+          mode: string;
+          host: string;
+          port: number;
+          url: string;
+        };
+        expect(payload).toMatchObject({
+          ok: true,
+          mode: "reports",
+          host: "0.0.0.0",
+          port,
+          url: `http://127.0.0.1:${port}/`,
+        });
+        await Bun.sleep(500);
+        expect(proc.exitCode).toBeNull();
+
+        const rootPage = await fetch(`http://127.0.0.1:${port}/`);
+        expect(rootPage.status).toBe(200);
+        expect(await rootPage.text()).toContain("Fleet Reports");
+      } finally {
+        proc.kill("SIGTERM");
+        await proc.exited;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("completion emits project commands", () => {
     const result = runProjects(["completion"]);
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
     expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations");
+    expect(stdout).toContain("storage reports completion");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
     expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
@@ -194,6 +247,7 @@ describe("project-first CLI surface", () => {
     expect(zshStdout).toContain("'canvases:Manage per-project React Flow canvases'");
     expect(zshStdout).toContain("'loops:Link projects to OpenLoops SDK loops'");
     expect(zshStdout).toContain("'labels:Manage project labels'");
+    expect(zshStdout).toContain("'reports:Serve registered project report files'");
   });
 
   test("oss matrix CLI emits capped JSON without optional external refs", () => {

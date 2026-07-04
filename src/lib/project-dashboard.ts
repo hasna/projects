@@ -586,7 +586,35 @@ async function collectProviderPanel(args: {
 }
 
 function sanitizeProviderPanel(panel: ProjectPanel): ProjectPanel {
-  return ProjectPanelSchema.parse(sanitizeDashboardValue(panel));
+  const sanitized = ProjectPanelSchema.parse(sanitizeDashboardValue(panel));
+  if (sanitized.provider.kind === "reports" || sanitized.kind === "reports") {
+    return sanitizeReportsProviderPanel(sanitized);
+  }
+  return sanitized;
+}
+
+function sanitizeReportsProviderPanel(panel: ProjectPanel): ProjectPanel {
+  return ProjectPanelSchema.parse({
+    ...panel,
+    summary: panel.summary
+      ? "Report bodies are excluded from dashboard artifacts; use projects reports serve to view reports."
+      : undefined,
+    items: panel.items.map((item) => ({
+      id: item.id,
+      title: item.title,
+      status: item.status,
+      priority: item.priority,
+      timestamp: item.timestamp,
+      resourceRefs: item.resourceRefs,
+      evidenceRefs: [],
+    })),
+    evidenceRefs: [],
+    renderFragment: undefined,
+    warnings: [
+      ...panel.warnings,
+      "Report bodies are excluded from ProjectSnapshot and React Flow dashboard artifacts.",
+    ],
+  });
 }
 
 function sanitizeDashboardValue(value: unknown): unknown {
