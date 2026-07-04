@@ -6,7 +6,7 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage reports completion"
   local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
   local canvas_commands="create list show"
@@ -18,6 +18,7 @@ _projects_completion() {
   local recipe_commands="add list built-ins seed-defaults"
   local agent_commands="add list assign"
   local tmux_profile_commands="add window-add list show apply"
+  local report_commands="serve"
 
   case "$prev" in
     projects)
@@ -66,6 +67,10 @@ _projects_completion() {
       ;;
     tmux-profiles)
       COMPREPLY=( $(compgen -W "$tmux_profile_commands" -- "$cur") )
+      return 0
+      ;;
+    reports)
+      COMPREPLY=( $(compgen -W "$report_commands" -- "$cur") )
       return 0
       ;;
     start|status|cleanup-create|show|update|tag|untag|add|remove|rm|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|context|next|why|handoff|list|record|inspect|ensure|migrate)
@@ -143,6 +148,7 @@ _project() {
     'agents:Manage project agents'
     'tmux-profiles:Manage project tmux profiles'
     'storage:Storage sync commands'
+    'reports:Serve registered project report files'
     'completion:Print shell completion script'
   )
 

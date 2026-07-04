@@ -232,6 +232,102 @@ describe("project dashboard", () => {
     db.close();
   });
 
+  test("excludes report bodies from dashboard snapshots and render artifacts", async () => {
+    const db = makeDb();
+    createWorkspace(
+      {
+        id: "wks_reports_dashboard",
+        name: "Reports Dashboard",
+        slug: "reports-dashboard",
+        kind: "project",
+        primary_path: "/tmp/reports-dashboard",
+      },
+      db,
+    );
+    const reportsProvider = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "reports",
+    )!;
+    const privateBody = "PRIVATE_REPORT_BODY_SENTINEL";
+    const snapshot = await buildProjectDashboardSnapshot("reports-dashboard", {
+      providers: [reportsProvider],
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      cwd: "/tmp/reports-dashboard",
+      db,
+      runner: async () => ({
+        ok: true,
+        stdout: JSON.stringify({
+          schema: SCHEMA_IDS.projectPanel,
+          id: "reports_panel_reports-dashboard",
+          createdAt: "2026-06-29T00:00:00.000Z",
+          projectId: "reports-dashboard",
+          provider: { kind: "reports", id: "reports" },
+          kind: "reports",
+          title: "Reports",
+          summary: privateBody,
+          state: "ready",
+          generatedAt: "2026-06-29T00:00:00.000Z",
+          items: [
+            {
+              id: "report-1",
+              title: "Daily Report",
+              summary: privateBody,
+              metadata: { markdown: privateBody, html: privateBody },
+              evidenceRefs: [{ id: "report-body", kind: "report", summary: privateBody }],
+            },
+          ],
+          renderFragment: {
+            renderer: "markdown",
+            title: "Raw report",
+            spec: { body: privateBody },
+          },
+        }),
+        stderr: "",
+        exitCode: 0,
+      }),
+    });
+
+    expect(ProjectSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    const reportsPanel = snapshot.panels.find((panel) => panel.kind === "reports");
+    expect(reportsPanel?.summary).toContain("Report bodies are excluded");
+    expect(reportsPanel?.items[0]).toMatchObject({
+      id: "report-1",
+      title: "Daily Report",
+    });
+    expect(reportsPanel?.items[0]?.summary).toBeUndefined();
+    expect(reportsPanel?.items[0]?.metadata).toBeUndefined();
+    expect(reportsPanel?.items[0]?.evidenceRefs).toEqual([]);
+    expect(reportsPanel?.renderFragment).toBeUndefined();
+    expect(JSON.stringify(snapshot)).not.toContain(privateBody);
+
+    const render = buildProjectDashboardRender(
+      createWorkspace(
+        {
+          id: "wks_reports_dashboard_render",
+          name: "Reports Dashboard Render",
+          slug: "reports-dashboard-render",
+          kind: "project",
+          primary_path: "/tmp/reports-dashboard-render",
+        },
+        db,
+      ),
+      {
+        ...snapshot,
+        projectId: "reports-dashboard-render",
+        manifestRef: {
+          ...snapshot.manifestRef,
+          id: "reports-dashboard-render",
+          uri: "project://reports-dashboard-render",
+        },
+        panels: snapshot.panels.map((panel) => ({
+          ...panel,
+          projectId: "reports-dashboard-render",
+        })),
+      },
+    );
+    expect(JSON.stringify(render)).not.toContain(privateBody);
+    db.close();
+  });
+
   test("does not label dashboard writes as read-only actions", async () => {
     const db = makeDb();
     createWorkspace(
