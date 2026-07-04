@@ -8,6 +8,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 No unreleased changes yet.
 
+## [0.1.78] - 2026-07-04
+
+### Added
+
+- Added `projects reports serve` to browse registered project report files over
+  HTTP, rendering Markdown reports with light/dark typography and serving HTML
+  reports as-is.
+
 ## [0.1.69] - 2026-06-29
 
 ### Fixed
