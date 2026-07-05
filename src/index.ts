@@ -44,6 +44,7 @@ export * from "./db/remote-storage.js";
 export * from "./db/pg-migrations.js";
 export {
   PROJECT_STORE_SCHEMA_VERSION,
+  PROJECT_STORE_TABLES,
   createProjectCanvas,
   createProjectDataModel,
   createProjectDataRecord,
@@ -87,6 +88,7 @@ export type {
   ProjectStorePaths as ProjectAppStorePaths,
   ProjectStoreProject as ProjectAppStoreProject,
   ProjectStoreSummary as ProjectAppStoreSummary,
+  ProjectStoreTable as ProjectAppStoreTable,
 } from "./db/project-store.js";
 export {
   createRoot,

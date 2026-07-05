@@ -29,6 +29,13 @@ Project-specific app data lives under each project's canonical runtime data path
 - `project_data_records`: project-specific custom records
 - `project_loop_links`: links to `@hasna/loops` loop ids or names
 
+This store is local SQLite today. `projects storage status --json` exposes the
+cloud-readiness boundary: Postgres can be configured for explicit global
+registry sync, but canvas/data/loop-link runtime persistence stays in
+`project.db` until an approved migration/backfill adds a remote app-store
+adapter. Local asset and canvas directories stay local files until an approved
+S3 adapter/backfill exists.
+
 ## Frontend Contract
 
 The intended frontend stack is:

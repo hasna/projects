@@ -11,6 +11,7 @@ export {
   STORAGE_MODE_ENV,
   STORAGE_TABLES,
   getCanonicalProjectsRdsConfig,
+  getProjectsStorageReadiness,
   getStorageDatabaseEnv,
   getStorageDatabaseEnvName,
   getStorageDatabaseUrl,
@@ -25,6 +26,20 @@ export {
   storagePush,
   storageSync,
 } from "./db/storage-sync.js";
-export type { CanonicalProjectsRdsConfig, StorageEnv, StorageMode, StorageStatus, SyncMeta, SyncResult } from "./db/storage-sync.js";
+export type {
+  CanonicalProjectsRdsConfig,
+  ProjectsStorageReadiness,
+  StorageBackend,
+  StorageBackendContract,
+  StorageEnv,
+  StorageMigrationReadiness,
+  StorageMode,
+  StorageStatus,
+  StorageSurface,
+  StorageSurfaceReadiness,
+  StorageSurfaceState,
+  SyncMeta,
+  SyncResult,
+} from "./db/storage-sync.js";
 export { PgAdapterAsync } from "./db/remote-storage.js";
 export { PG_MIGRATIONS } from "./db/pg-migrations.js";

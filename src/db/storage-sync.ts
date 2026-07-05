@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { getDatabase } from "./database.js";
+import { getDatabase, getDbPath, PROJECTS_DB_PATH_ENV } from "./database.js";
 import { PG_MIGRATIONS } from "./pg-migrations.js";
+import { PROJECT_STORE_SCHEMA_VERSION, PROJECT_STORE_TABLES } from "./project-store.js";
 import { PgAdapterAsync } from "./remote-storage.js";
 
 export const STORAGE_TABLES = [
@@ -27,6 +28,9 @@ type StorageTable = (typeof STORAGE_TABLES)[number];
 type Row = Record<string, unknown>;
 
 export type StorageMode = "local" | "hybrid" | "remote";
+export type StorageSurface = "global_registry" | "project_app_store" | "project_assets";
+export type StorageBackend = "sqlite" | "postgres" | "local_files" | "s3";
+export type StorageSurfaceState = "local-active" | "remote-sync-ready" | "cloud-planned";
 
 export interface StorageEnv {
   name: string;
@@ -72,6 +76,43 @@ export interface StorageStatus {
   service: "projects";
   tables: typeof STORAGE_TABLES;
   sync: SyncMeta[];
+  readiness: ProjectsStorageReadiness;
+}
+
+export interface StorageBackendContract {
+  backend: StorageBackend;
+  active: boolean;
+  configured: boolean;
+  sourceOfTruth: boolean;
+  description: string;
+  path?: string;
+  env?: readonly string[];
+  tables?: readonly string[];
+  requiredApproval?: boolean;
+  blocker?: string;
+}
+
+export interface StorageMigrationReadiness {
+  requiredForCloudBackedRuntime: boolean;
+  liveMutationAllowed: false;
+  blocker: string | null;
+}
+
+export interface StorageSurfaceReadiness {
+  surface: StorageSurface;
+  state: StorageSurfaceState;
+  local: StorageBackendContract;
+  remote: StorageBackendContract;
+  persistence: readonly string[];
+  migration: StorageMigrationReadiness;
+}
+
+export interface ProjectsStorageReadiness {
+  defaultRuntime: "local";
+  requestedMode: StorageMode;
+  cloudBackedRuntimeReady: boolean;
+  surfaces: StorageSurfaceReadiness[];
+  blockers: string[];
 }
 
 const PRIMARY_KEYS: Record<StorageTable, string[]> = {
@@ -137,6 +178,131 @@ export function getStorageMode(): StorageMode {
   );
   if (mode) return mode;
   return getStorageDatabaseUrl() ? "hybrid" : "local";
+}
+
+export function getProjectsStorageReadiness(): ProjectsStorageReadiness {
+  const activeEnv = getStorageDatabaseEnv();
+  const postgresConfigured = Boolean(activeEnv);
+  const requestedMode = getStorageMode();
+  const projectStoreBlocker = "Per-project project.db cloud backing is not implemented; project_canvases, project_data_models, project_data_records, and project_loop_links remain local SQLite until an approved schema migration and backfill task exists.";
+  const assetBlocker = "S3 asset backing is not implemented; workspaces.s3_bucket and s3_prefix are registry metadata only until an approved S3 adapter and backfill task exists.";
+
+  return {
+    defaultRuntime: "local",
+    requestedMode,
+    cloudBackedRuntimeReady: false,
+    surfaces: [
+      {
+        surface: "global_registry",
+        state: postgresConfigured ? "remote-sync-ready" : "local-active",
+        local: {
+          backend: "sqlite",
+          active: true,
+          configured: true,
+          sourceOfTruth: true,
+          path: getDbPath(),
+          env: [PROJECTS_DB_PATH_ENV],
+          tables: STORAGE_TABLES,
+          description: "Runtime project registry reads and writes use the local SQLite projects.db.",
+        },
+        remote: {
+          backend: "postgres",
+          active: postgresConfigured,
+          configured: postgresConfigured,
+          sourceOfTruth: false,
+          env: STORAGE_DATABASE_ENV,
+          tables: STORAGE_TABLES,
+          description: "Remote PostgreSQL is available only for explicit projects storage push, pull, and sync commands.",
+          requiredApproval: false,
+        },
+        persistence: [
+          "project identity",
+          "locations",
+          "events",
+          "agent runs",
+          "budgets",
+          "locks",
+          "s3_bucket/s3_prefix metadata",
+        ],
+        migration: {
+          requiredForCloudBackedRuntime: false,
+          liveMutationAllowed: false,
+          blocker: null,
+        },
+      },
+      {
+        surface: "project_app_store",
+        state: "cloud-planned",
+        local: {
+          backend: "sqlite",
+          active: true,
+          configured: true,
+          sourceOfTruth: true,
+          path: "$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db",
+          env: ["HASNA_PROJECTS_HOME"],
+          tables: PROJECT_STORE_TABLES,
+          description: `Per-project canvases, data models, data records, and loop links use local SQLite schema v${PROJECT_STORE_SCHEMA_VERSION}.`,
+        },
+        remote: {
+          backend: "postgres",
+          active: false,
+          configured: postgresConfigured,
+          sourceOfTruth: false,
+          env: STORAGE_DATABASE_ENV,
+          tables: PROJECT_STORE_TABLES,
+          description: "Remote PostgreSQL project app-store tables are planned, not active.",
+          requiredApproval: true,
+          blocker: projectStoreBlocker,
+        },
+        persistence: [
+          "project_canvases",
+          "project_data_models",
+          "project_data_records",
+          "project_loop_links",
+        ],
+        migration: {
+          requiredForCloudBackedRuntime: true,
+          liveMutationAllowed: false,
+          blocker: projectStoreBlocker,
+        },
+      },
+      {
+        surface: "project_assets",
+        state: "cloud-planned",
+        local: {
+          backend: "local_files",
+          active: true,
+          configured: true,
+          sourceOfTruth: true,
+          path: "$HASNA_PROJECTS_HOME/data/<workspace_id>/{assets,canvases}",
+          env: ["HASNA_PROJECTS_HOME"],
+          description: "Project asset and canvas file directories are local filesystem paths under the project runtime data directory.",
+        },
+        remote: {
+          backend: "s3",
+          active: false,
+          configured: false,
+          sourceOfTruth: false,
+          description: "Remote S3 assets are planned, not active.",
+          requiredApproval: true,
+          blocker: assetBlocker,
+        },
+        persistence: [
+          "assets/",
+          "canvases/",
+        ],
+        migration: {
+          requiredForCloudBackedRuntime: true,
+          liveMutationAllowed: false,
+          blocker: assetBlocker,
+        },
+      },
+    ],
+    blockers: [
+      projectStoreBlocker,
+      assetBlocker,
+    ],
+  };
 }
 
 export async function getStoragePg(): Promise<PgAdapterAsync> {
@@ -207,6 +373,7 @@ export function getStorageStatus(): StorageStatus {
     service: "projects",
     tables: STORAGE_TABLES,
     sync: getSyncMetaAll(),
+    readiness: getProjectsStorageReadiness(),
   };
 }
 

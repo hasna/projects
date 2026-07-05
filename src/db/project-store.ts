@@ -12,10 +12,19 @@ import type { JsonObject, Workspace } from "../types/workspace.js";
 
 export { PROJECTS_HOME_ENV } from "../lib/project-store-paths.js";
 export const PROJECT_STORE_SCHEMA_VERSION = 1 as const;
+export const PROJECT_STORE_TABLES = [
+  "project_meta",
+  "project_store_migrations",
+  "project_canvases",
+  "project_data_models",
+  "project_data_records",
+  "project_loop_links",
+] as const;
 const LOOPS_SDK_SPECIFIER: string = "@hasna/loops/sdk";
 
 const nanoid = customAlphabet(`0123456789${"abcdefghijklmnopqrstuvwxyz"}`, 12);
 
+export type ProjectStoreTable = (typeof PROJECT_STORE_TABLES)[number];
 export type ProjectStoreProject = Pick<Workspace, "id" | "name" | "slug" | "status" | "kind" | "primary_path">;
 export type ProjectCanvasStatus = "active" | "archived";
 

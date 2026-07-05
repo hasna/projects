@@ -52,6 +52,14 @@ describe("projects storage CLI", () => {
         };
         service: string;
         tables: string[];
+        readiness: {
+          cloudBackedRuntimeReady: boolean;
+          surfaces: Array<{
+            surface: string;
+            local: { backend: string; active: boolean; path?: string; tables?: string[] };
+            remote: { backend: string; active: boolean; requiredApproval?: boolean; blocker?: string };
+          }>;
+        };
       };
       expect(status.configured).toBe(false);
       expect(status.mode).toBe("local");
@@ -65,6 +73,16 @@ describe("projects storage CLI", () => {
       });
       expect(status.service).toBe("projects");
       expect(status.tables).toContain("workspaces");
+      expect(status.readiness.cloudBackedRuntimeReady).toBe(false);
+      const appStore = status.readiness.surfaces.find((surface) => surface.surface === "project_app_store");
+      expect(appStore?.local.backend).toBe("sqlite");
+      expect(appStore?.local.active).toBe(true);
+      expect(appStore?.local.path).toBe("$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db");
+      expect(appStore?.local.tables).toContain("project_canvases");
+      expect(appStore?.remote.backend).toBe("postgres");
+      expect(appStore?.remote.active).toBe(false);
+      expect(appStore?.remote.requiredApproval).toBe(true);
+      expect(appStore?.remote.blocker).toContain("project.db cloud backing is not implemented");
       expect(result.stdout).not.toContain("postgres://");
     } finally {
       rmSync(home, { recursive: true, force: true });

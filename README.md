@@ -215,6 +215,14 @@ links. `projects canvases * --render-spec` emits a JSON Render contract for a
 TypeScript React surface using Tailwind, shadcn components, and React Flow as an
 infinite canvas; a project may have multiple canvases.
 
+Cloud-backed runtime support is explicit in storage status. The local SQLite
+registry and each project's local `project.db` remain the active runtime stores
+by default. A configured `HASNA_PROJECTS_DATABASE_URL` enables explicit global
+registry `projects storage push`, `pull`, and `sync` commands against Postgres;
+it does not move per-project canvases, data records, loop links, or asset files
+out of `$HASNA_PROJECTS_HOME/data/<workspace_id>/`. See
+`docs/cloud-storage-readiness-contract.md` for the migration approval gate.
+
 `projects dashboard *` is the Projects-owned viewer surface for agent-managed
 project folders. It standardizes `.hasna/project/` inside the project path,
 collects provider panels from `todos`, `files`, `mailery`, `conversations`,
@@ -269,6 +277,12 @@ projects storage status --json
 projects storage push
 projects storage pull
 ```
+
+`projects storage status --json` includes a `readiness` object that separates
+the global registry sync target from local-only per-project `project.db` and
+local asset directories. `readiness.cloudBackedRuntimeReady` is false until an
+approval-backed migration adds Postgres tables/backfill for `project.db` data
+and an S3 adapter/backfill for project asset files.
 
 Before cutover, verify `projects storage status --json`, run a read-only smoke
 against the canonical database, and keep legacy sources read-only until the
@@ -395,6 +409,8 @@ Core internal tables:
 Global registry DB path: `~/.hasna/projects/projects.db`
 
 Per-project app data path: `~/.hasna/projects/data/<workspace_id>/project.db`
+
+Cloud readiness contract: `docs/cloud-storage-readiness-contract.md`
 
 Per-project app tables:
 

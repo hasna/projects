@@ -5,6 +5,7 @@ import {
   CANONICAL_PROJECTS_RDS_SECRET_PATH,
   PROJECTS_STORAGE_ENV,
   PROJECTS_STORAGE_FALLBACK_ENV,
+  getProjectsStorageReadiness,
   getCanonicalProjectsRdsConfig,
   getStorageDatabaseEnv,
   getStorageDatabaseUrl,
@@ -99,5 +100,44 @@ describe("projects storage sync config", () => {
     expect(status.service).toBe("projects");
     expect(status.tables).toContain("workspaces");
     expect(status.sync).toEqual([]);
+    expect(status.readiness.defaultRuntime).toBe("local");
+    expect(status.readiness.cloudBackedRuntimeReady).toBe(false);
+  });
+
+  test("readiness keeps global registry sync separate from per-project project.db", () => {
+    process.env["HASNA_PROJECTS_DATABASE_URL"] = "postgres://new.example/projects";
+
+    const readiness = getProjectsStorageReadiness();
+    const registry = readiness.surfaces.find((surface) => surface.surface === "global_registry");
+    const appStore = readiness.surfaces.find((surface) => surface.surface === "project_app_store");
+    const assets = readiness.surfaces.find((surface) => surface.surface === "project_assets");
+
+    expect(readiness.requestedMode).toBe("hybrid");
+    expect(readiness.cloudBackedRuntimeReady).toBe(false);
+    expect(registry?.state).toBe("remote-sync-ready");
+    expect(registry?.local.backend).toBe("sqlite");
+    expect(registry?.local.active).toBe(true);
+    expect(registry?.local.sourceOfTruth).toBe(true);
+    expect(registry?.remote.backend).toBe("postgres");
+    expect(registry?.remote.active).toBe(true);
+    expect(registry?.remote.sourceOfTruth).toBe(false);
+    expect(registry?.remote.tables).toContain("workspaces");
+
+    expect(appStore?.state).toBe("cloud-planned");
+    expect(appStore?.local.backend).toBe("sqlite");
+    expect(appStore?.local.path).toBe("$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db");
+    expect(appStore?.local.tables).toContain("project_canvases");
+    expect(appStore?.local.tables).toContain("project_loop_links");
+    expect(appStore?.remote.backend).toBe("postgres");
+    expect(appStore?.remote.active).toBe(false);
+    expect(appStore?.remote.configured).toBe(true);
+    expect(appStore?.remote.requiredApproval).toBe(true);
+    expect(appStore?.migration.liveMutationAllowed).toBe(false);
+    expect(appStore?.migration.blocker).toContain("approved schema migration and backfill task");
+
+    expect(assets?.local.backend).toBe("local_files");
+    expect(assets?.remote.backend).toBe("s3");
+    expect(assets?.remote.active).toBe(false);
+    expect(assets?.migration.blocker).toContain("S3 asset backing is not implemented");
   });
 });
