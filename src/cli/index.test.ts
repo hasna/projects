@@ -326,6 +326,7 @@ describe("project-first CLI surface", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as { files: string[] };
     expect(pkg.files).toContain(".cursor/hooks.json");
     expect(pkg.files).toContain(".cursor/hooks/goal-continue.sh");
+    expect(pkg.files).toContain("docs");
   });
 
   test("agent-assist CLI commands emit JSON, agent text, and run detail by default", () => {

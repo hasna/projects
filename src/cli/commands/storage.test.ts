@@ -88,4 +88,48 @@ describe("projects storage CLI", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("storage status does not print configured database URL values", () => {
+    const home = mkdtempSync(join(tmpdir(), "open-projects-storage-url-"));
+    const fakeUrl = "postgres://user:secret@example.test/projects";
+    try {
+      const env = {
+        HOME: home,
+        HASNA_PROJECTS_DB_PATH: join(home, "projects.db"),
+        HASNA_PROJECTS_DATABASE_URL: fakeUrl,
+        PROJECTS_DATABASE_URL: "",
+        HASNA_PROJECTS_STORAGE_MODE: "",
+        PROJECTS_STORAGE_MODE: "",
+      };
+      const jsonResult = runCli(["storage", "status", "--json"], env);
+      const textResult = runCli(["storage", "status"], env);
+
+      expect(jsonResult.status).toBe(0);
+      expect(textResult.status).toBe(0);
+      expect(jsonResult.stdout).not.toContain(fakeUrl);
+      expect(jsonResult.stdout).not.toContain("secret@example.test");
+      expect(textResult.stdout).not.toContain(fakeUrl);
+      expect(textResult.stdout).not.toContain("secret@example.test");
+
+      const status = JSON.parse(jsonResult.stdout) as {
+        configured: boolean;
+        activeEnv: string | null;
+        readiness: {
+          surfaces: Array<{
+            surface: string;
+            remote: { active: boolean; configured: boolean };
+          }>;
+        };
+      };
+      expect(status.configured).toBe(true);
+      expect(status.activeEnv).toBe("HASNA_PROJECTS_DATABASE_URL");
+      const registry = status.readiness.surfaces.find((surface) => surface.surface === "global_registry");
+      const appStore = status.readiness.surfaces.find((surface) => surface.surface === "project_app_store");
+      expect(registry?.remote.active).toBe(true);
+      expect(appStore?.remote.active).toBe(false);
+      expect(appStore?.remote.configured).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
