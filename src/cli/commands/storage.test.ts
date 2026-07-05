@@ -127,7 +127,7 @@ describe("projects storage CLI", () => {
       const appStore = status.readiness.surfaces.find((surface) => surface.surface === "project_app_store");
       expect(registry?.remote.active).toBe(true);
       expect(appStore?.remote.active).toBe(false);
-      expect(appStore?.remote.configured).toBe(true);
+      expect(appStore?.remote.configured).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

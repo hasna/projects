@@ -64,7 +64,7 @@ export function registerStorageCommands(program: Command): void {
 
   cmd
     .command("push")
-    .description("Push local workspace data to storage PostgreSQL")
+    .description("Push local project registry data to storage PostgreSQL")
     .option("--tables <tables>", "Comma-separated table names (default: all)")
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
@@ -83,7 +83,7 @@ export function registerStorageCommands(program: Command): void {
 
   cmd
     .command("pull")
-    .description("Pull workspace data from storage PostgreSQL to local SQLite")
+    .description("Pull project registry data from storage PostgreSQL to local SQLite")
     .option("--tables <tables>", "Comma-separated table names (default: all)")
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {

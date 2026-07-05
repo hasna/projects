@@ -130,7 +130,7 @@ describe("projects storage sync config", () => {
     expect(appStore?.local.tables).toContain("project_loop_links");
     expect(appStore?.remote.backend).toBe("postgres");
     expect(appStore?.remote.active).toBe(false);
-    expect(appStore?.remote.configured).toBe(true);
+    expect(appStore?.remote.configured).toBe(false);
     expect(appStore?.remote.requiredApproval).toBe(true);
     expect(appStore?.migration.liveMutationAllowed).toBe(false);
     expect(appStore?.migration.blocker).toContain("approved schema migration and backfill task");

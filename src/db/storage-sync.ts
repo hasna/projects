@@ -246,7 +246,7 @@ export function getProjectsStorageReadiness(): ProjectsStorageReadiness {
         remote: {
           backend: "postgres",
           active: false,
-          configured: postgresConfigured,
+          configured: false,
           sourceOfTruth: false,
           env: STORAGE_DATABASE_ENV,
           tables: PROJECT_STORE_TABLES,
