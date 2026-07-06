@@ -96,7 +96,11 @@ export function repairProjectPermissions(options: ProjectPermissionRepairOptions
     }
 
     const kind = stat.isDirectory() ? "directory" : stat.isFile() ? "file" : "other";
-    const targetMode = kind === "directory" ? DIRECTORY_MODE : kind === "file" ? FILE_MODE : null;
+    const targetMode = kind === "directory"
+      ? DIRECTORY_MODE
+      : kind === "file"
+        ? targetFileMode(stat.mode, reason)
+        : null;
     const beforeMode = modeString(stat.mode);
     const needsRepair = targetMode !== null && (stat.mode & 0o777) !== targetMode;
     let status: ProjectPermissionRepairAction["status"] = needsRepair ? (apply ? "changed" : "planned") : "ok";
@@ -188,6 +192,17 @@ function safeListBackupFiles(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+function targetFileMode(mode: number, reason: ProjectPermissionRepairReason): number {
+  if (
+    reason === "workspace-store"
+    || reason === "project-report-artifact"
+    || reason === "project-dashboard-artifact"
+  ) {
+    if ((mode & 0o111) !== 0) return 0o700;
+  }
+  return FILE_MODE;
 }
 
 function errorAction(
