@@ -26,6 +26,7 @@ describe("project permission repair", () => {
     const backupPath = join(home, "projects.db.20260706.bak");
     const dataDb = join(home, "data", "wks_permrepair", "project.db");
     const workspaceFile = join(home, "workspaces", "wks_permrepair", "notes.txt");
+    const workspaceScript = join(home, "workspaces", "wks_permrepair", "run.sh");
     const projectPath = join(root, "registered-project");
     const reportFile = join(projectPath, "reports", "2026-07-06", "report.md");
     const dashboardFile = join(projectPath, ".hasna", "project", "dashboard", "render.json");
@@ -55,6 +56,8 @@ describe("project permission repair", () => {
         writeFileSync(file, "test");
         chmodSync(file, 0o644);
       }
+      writeFileSync(workspaceScript, "#!/usr/bin/env bash\nexit 0\n");
+      chmodSync(workspaceScript, 0o755);
 
       createWorkspace({
         id: "wks_permrepair",
@@ -80,6 +83,7 @@ describe("project permission repair", () => {
       expect(mode(backupPath)).toBe(0o600);
       expect(mode(dataDb)).toBe(0o600);
       expect(mode(workspaceFile)).toBe(0o600);
+      expect(mode(workspaceScript)).toBe(0o700);
       expect(mode(reportFile)).toBe(0o600);
       expect(mode(dashboardFile)).toBe(0o600);
       expect(mode(join(projectPath, "reports"))).toBe(0o700);
