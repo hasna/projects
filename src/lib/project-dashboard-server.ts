@@ -12,6 +12,7 @@ import {
   buildProjectCanvasPayload,
   type ProjectsJsonRenderSpec,
 } from "./project-render.js";
+import { redactProjectValue } from "./redaction.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
 import {
   getProjectCanvas,
@@ -162,7 +163,7 @@ export async function serveProjectDashboard(
       if (route.api === "snapshot") {
         if (url.searchParams.get("refresh") === "1")
           dashboard = await buildProjectDashboard(target, options);
-        return Response.json(dashboard.snapshot);
+        return Response.json(redactProjectValue(dashboard.snapshot));
       }
       if (route.api === "render") {
         const context = buildDashboardCanvasContext(
@@ -175,7 +176,7 @@ export async function serveProjectDashboard(
             { ok: false, error: `canvas not found: ${route.canvasRef}` },
             { status: 404 },
           );
-        return Response.json(context.render);
+        return Response.json(redactProjectValue(context.render));
       }
       if (route.api === "layout" && request.method === "PATCH") {
         const updated = await saveDashboardCanvasLayout(
@@ -188,16 +189,16 @@ export async function serveProjectDashboard(
             { ok: false, error: `canvas not found: ${route.canvasRef}` },
             { status: 404 },
           );
-        return Response.json(updated);
+        return Response.json(redactProjectValue(updated));
       }
       if (route.api === "canvases") {
-        return Response.json({
+        return Response.json(redactProjectValue({
           project: projectPayload(resolution.project),
           canvases: listDashboardCanvasSummaries(
             resolution.project,
             route.canvasRef,
           ),
-        });
+        }));
       }
       if (route.api === "bootstrap") {
         if (url.searchParams.get("refresh") === "1")
@@ -212,13 +213,13 @@ export async function serveProjectDashboard(
             { ok: false, error: `canvas not found: ${route.canvasRef}` },
             { status: 404 },
           );
-        return Response.json({
+        return Response.json(redactProjectValue({
           project: projectPayload(resolution.project),
           canvas: context.canvas,
           canvases: context.canvases,
           snapshot: dashboard.snapshot,
           render: context.render,
-        });
+        }));
       }
       return new Response("not found", { status: 404 });
     },

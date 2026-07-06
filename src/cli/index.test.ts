@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { Command } from "commander";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, startAgentRun } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
+import { closeDatabase } from "../db/database.js";
+import { registerWorkspaceCommands } from "./commands/workspaces.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
 
@@ -17,6 +20,55 @@ function runProjects(args: string[], env: Record<string, string> = {}, cwd = pro
     env: { ...process.env, ...env },
     cwd,
   });
+}
+
+async function runWorkspaceCommandInProcess(args: string[], env: Record<string, string> = {}) {
+  const program = new Command();
+  program.name("projects").exitOverride();
+  registerWorkspaceCommands(program);
+
+  const previousEnv = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(env)) {
+    previousEnv.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  const capture = (chunks: string[], chunk: unknown, encodingOrCallback?: BufferEncoding | ((err?: Error) => void), callback?: (err?: Error) => void): boolean => {
+    chunks.push(typeof chunk === "string"
+      ? chunk
+      : Buffer.from(chunk as Uint8Array).toString(typeof encodingOrCallback === "string" ? encodingOrCallback : "utf-8"));
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    done?.();
+    return true;
+  };
+
+  process.stdout.write = ((chunk: unknown, encodingOrCallback?: BufferEncoding | ((err?: Error) => void), callback?: (err?: Error) => void) => (
+    capture(stdoutChunks, chunk, encodingOrCallback, callback)
+  )) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, encodingOrCallback?: BufferEncoding | ((err?: Error) => void), callback?: (err?: Error) => void) => (
+    capture(stderrChunks, chunk, encodingOrCallback, callback)
+  )) as typeof process.stderr.write;
+
+  try {
+    await program.parseAsync(args, { from: "user" });
+    return { exitCode: 0, stdout: Buffer.from(stdoutChunks.join("")), stderr: Buffer.from(stderrChunks.join("")) };
+  } catch (err) {
+    const exitCode = typeof (err as { exitCode?: unknown }).exitCode === "number" ? (err as { exitCode: number }).exitCode : undefined;
+    if (exitCode === undefined) throw err;
+    return { exitCode, stdout: Buffer.from(stdoutChunks.join("")), stderr: Buffer.from(stderrChunks.join("")) };
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    closeDatabase();
+    for (const [key, value] of previousEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 async function readStreamChunk(stream: ReadableStream<Uint8Array> | null, timeoutMs = 3_000): Promise<string> {
@@ -563,7 +615,7 @@ describe("project-first CLI surface", () => {
     expect(rows.find((row) => row.slug === "compact-29")?.metadata.notes).toHaveLength(500);
   }, 10000);
 
-  test("top-level list JSON output is not truncated above 64 KiB", () => {
+  test("top-level list JSON output is not truncated above 64 KiB", async () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-large-list-json-"));
     const dbPath = join(root, "projects.db");
     const env = { HASNA_PROJECTS_DB_PATH: dbPath };
@@ -573,20 +625,22 @@ describe("project-first CLI surface", () => {
     runMigrations(db);
 
     try {
-      for (let i = 0; i < 120; i += 1) {
-        const suffix = String(i).padStart(3, "0");
-        createWorkspace({
-          name: `Large List ${suffix}`,
-          slug: `large-list-${suffix}`,
-          kind: "project",
-          primary_path: join(root, `large-list-${suffix}`),
-          metadata: { notes: `large-json-output-${suffix}-${"x".repeat(1_000)}` },
-        }, db);
-      }
+      db.transaction(() => {
+        for (let i = 0; i < 120; i += 1) {
+          const suffix = String(i).padStart(3, "0");
+          createWorkspace({
+            name: `Large List ${suffix}`,
+            slug: `large-list-${suffix}`,
+            kind: "project",
+            primary_path: join(root, `large-list-${suffix}`),
+            metadata: { notes: `large-json-output-${suffix}-${"x".repeat(1_000)}` },
+          }, db);
+        }
+      })();
       db.close();
       dbClosed = true;
 
-      const result = runProjects(["list", "--limit", "120", "--json"], env);
+      const result = await runWorkspaceCommandInProcess(["list", "--limit", "120", "--json"], env);
       const stdout = text(result.stdout);
       expect(result.exitCode).toBe(0);
       expect(Buffer.byteLength(stdout)).toBeGreaterThan(65_536);

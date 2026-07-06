@@ -1,8 +1,12 @@
 import { describe, test, expect } from "bun:test";
+import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runMigrations } from "../db/schema.js";
+import { createWorkspace, recordWorkspaceEvent } from "../db/workspaces.js";
+import { PROJECT_REDACTED_VALUE } from "../lib/redaction.js";
 
 function runMcpCli(args: string[]) {
   return Bun.spawnSync({
@@ -207,5 +211,77 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_loops_list");
     expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
+  });
+
+  test("redacts project registry values in MCP JSON-RPC tool output", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-redaction-"));
+    const dbPath = join(root, "projects.db");
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+    const project = createWorkspace({
+      name: "MCP Redaction",
+      slug: "mcp-redaction",
+      kind: "project",
+      primary_path: join(root, "mcp-redaction"),
+      metadata: { clientSecret: "mcp-redaction-value-a" },
+      integrations: { api_token: "mcp-redaction-value-b" },
+    }, db);
+    recordWorkspaceEvent({
+      workspace_id: project.id,
+      event_type: "redaction_check",
+      source: "mcp",
+      prompt: "Use MCP_API_KEY=mcp-redaction-value-c",
+      metadata: { credential: "mcp-redaction-value-d" },
+    }, db);
+    db.close();
+
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "project-mcp-test", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "projects_list", arguments: { query: "mcp-redaction" } } },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "projects_events_list", arguments: { project: "mcp-redaction" } } },
+    ];
+    const child = Bun.spawn({
+      cmd: ["bun", "run", "src/mcp/index.ts"],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        HASNA_PROJECTS_DB_PATH: dbPath,
+      },
+    });
+
+    child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    child.stdin.end();
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    rmSync(root, { recursive: true, force: true });
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain(PROJECT_REDACTED_VALUE);
+    for (const leaked of [
+      "mcp-redaction-value-a",
+      "mcp-redaction-value-b",
+      "mcp-redaction-value-c",
+      "mcp-redaction-value-d",
+    ]) {
+      expect(stdout).not.toContain(leaked);
+    }
   });
 });

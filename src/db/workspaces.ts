@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
 import { assertProjectWorkspaceId, projectWorkspaceStorePath } from "../lib/project-store-paths.js";
+import { redactProjectText, redactProjectValue } from "../lib/redaction.js";
 import type {
   Agent,
   AgentRow,
@@ -103,7 +104,7 @@ function rowToRoot(row: RootRow): Root {
     repo_visibility: row.repo_visibility as Root["repo_visibility"],
     allowed_recipes: parseJson<string[]>(row.allowed_recipes, []),
     allowed_agents: parseJson<string[]>(row.allowed_agents, []),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -112,7 +113,7 @@ function rowToAgent(row: AgentRow): Agent {
     ...row,
     kind: row.kind as Agent["kind"],
     permissions: parseJson<string[]>(row.permissions, []),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -120,10 +121,10 @@ function rowToRecipe(row: RecipeRow): Recipe {
   return {
     ...row,
     kind: row.kind as Recipe["kind"],
-    steps: parseJson<JsonObject[]>(row.steps, []),
-    variables: parseJson<JsonObject>(row.variables, {}),
+    steps: redactProjectValue(parseJson<JsonObject[]>(row.steps, [])),
+    variables: redactProjectValue(parseJson<JsonObject>(row.variables, {})),
     default_tags: parseJson<string[]>(row.default_tags, []),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -133,8 +134,8 @@ function rowToWorkspace(row: WorkspaceRow): Workspace {
     kind: row.kind as WorkspaceKind,
     status: row.status as WorkspaceStatus,
     tags: parseJson<string[]>(row.tags, []),
-    integrations: parseJson<WorkspaceIntegrations>(row.integrations, {}),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    integrations: redactProjectValue(parseJson<WorkspaceIntegrations>(row.integrations, {})),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -143,14 +144,14 @@ function rowToLocation(row: WorkspaceLocationRow): WorkspaceLocation {
     ...row,
     is_primary: row.is_primary === 1,
     exists_at_create: row.exists_at_create === 1,
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
 function rowToWorkspaceAgentAssignment(row: WorkspaceAgentAssignmentRow, db: Database): WorkspaceAgentAssignment {
   return {
     ...row,
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
     agent: getAgent(row.agent_id, db),
   };
 }
@@ -159,9 +160,11 @@ function rowToEvent(row: WorkspaceEventRow): WorkspaceEvent {
   return {
     ...row,
     source: row.source as WorkspaceEvent["source"],
-    before_json: parseJson<JsonObject | null>(row.before_json, null),
-    after_json: parseJson<JsonObject | null>(row.after_json, null),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    prompt: row.prompt ? redactProjectText(row.prompt) : null,
+    command: row.command ? redactProjectText(row.command) : null,
+    before_json: redactProjectValue(parseJson<JsonObject | null>(row.before_json, null)),
+    after_json: redactProjectValue(parseJson<JsonObject | null>(row.after_json, null)),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -169,10 +172,12 @@ function rowToAgentRun(row: AgentRunRow): AgentRun {
   return {
     ...row,
     status: row.status as AgentRun["status"],
-    plan_json: parseJson<JsonObject | null>(row.plan_json, null),
-    tool_calls_json: parseJson<JsonObject[]>(row.tool_calls_json, []),
-    result_json: parseJson<JsonObject | null>(row.result_json, null),
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    prompt: redactProjectText(row.prompt),
+    plan_json: redactProjectValue(parseJson<JsonObject | null>(row.plan_json, null)),
+    tool_calls_json: redactProjectValue(parseJson<JsonObject[]>(row.tool_calls_json, [])),
+    result_json: redactProjectValue(parseJson<JsonObject | null>(row.result_json, null)),
+    error: row.error ? redactProjectText(row.error) : null,
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -180,7 +185,7 @@ function rowToTmuxProfile(row: TmuxProfileRow): TmuxProfile {
   return {
     ...row,
     attach: row.attach === 1,
-    metadata: parseJson<JsonObject>(row.metadata, {}),
+    metadata: redactProjectValue(parseJson<JsonObject>(row.metadata, {})),
   };
 }
 
@@ -188,7 +193,7 @@ function rowToTmuxProfileWindow(row: TmuxProfileWindowRow): TmuxProfileWindow {
   return {
     ...row,
     detached: row.detached === 1,
-    env: parseJson<Record<string, string>>(row.env, {}),
+    env: redactProjectValue(parseJson<Record<string, string>>(row.env, {})),
     revive: row.revive === 1,
   };
 }
@@ -1038,11 +1043,11 @@ export function recordWorkspaceEvent(input: RecordWorkspaceEventInput, db?: Data
       input.agent_id ?? null,
       input.event_type,
       input.source,
-      input.prompt ?? null,
-      input.command ?? null,
-      input.before === undefined ? null : json(input.before),
-      input.after === undefined ? null : json(input.after),
-      json(input.metadata ?? {}),
+      input.prompt ? redactProjectText(input.prompt) : null,
+      input.command ? redactProjectText(input.command) : null,
+      input.before === undefined ? null : json(redactProjectValue(input.before)),
+      input.after === undefined ? null : json(redactProjectValue(input.after)),
+      json(redactProjectValue(input.metadata ?? {})),
       now(),
     ],
   );
@@ -1074,9 +1079,9 @@ export function startAgentRun(
       input.workspace_id ?? null,
       input.provider ?? null,
       input.model ?? null,
-      input.prompt,
-      input.plan ? json(input.plan) : null,
-      json(input.metadata ?? {}),
+      redactProjectText(input.prompt),
+      input.plan ? json(redactProjectValue(input.plan)) : null,
+      json(redactProjectValue(input.metadata ?? {})),
       now(),
     ],
   );
@@ -1103,9 +1108,9 @@ export function completeAgentRun(
     [
       status,
       input.workspace_id ?? null,
-      input.result ? json(input.result) : null,
-      input.error ?? null,
-      json(input.tool_calls ?? []),
+      input.result ? json(redactProjectValue(input.result)) : null,
+      input.error ? redactProjectText(input.error) : null,
+      json(redactProjectValue(input.tool_calls ?? [])),
       now(),
       runId,
     ],
