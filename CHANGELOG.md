@@ -8,6 +8,32 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 No unreleased changes yet.
 
+## [0.1.79] - 2026-07-06
+
+### Added
+
+- **`projects-serve` HTTP API** — a new self-hosted HTTP surface for the project
+  domain. Unauthenticated probes `GET /health`, `/ready`, `/version` (each
+  returns `{status, version, mode}`) plus `GET /openapi.json`, and an
+  API-key-guarded versioned `/v1` covering project (workspace) CRUD
+  (`/v1/projects` list/create/get/patch/delete + `/archive`, `/unarchive`,
+  `/events`) and roots/agents/recipes. Amendment A1 pure-remote: the service
+  reads and writes cloud Postgres directly through the vendored storage kit,
+  with no local cache or sync engine.
+- **API-key authentication** via `@hasna/contracts/auth` (`verifyApiKey`) —
+  stateless HMAC-verified `hasna_projects_*` tokens with `projects:read` /
+  `projects:write` scope gating and DB-backed revocation.
+- **Generated SDK** (`@hasna/projects/sdk`) — a typed, dependency-free
+  `ProjectsClient` generated from the serve OpenAPI document
+  (`bun run sdk:generate`), plus `createProjectsClientFromEnv()` for the
+  `PROJECTS_API_URL` + `PROJECTS_API_KEY` self_hosted convention.
+- **Cloud storage + migrations** — vendored `@hasna/contracts` storage kit under
+  `src/generated/storage-kit`, a `migrations/` directory, and a migration runner
+  (`projects-serve migrate`) driven by the kit's checksum-guarded ledger.
+- **Container + deploy** — ARM64 Bun `Dockerfile`, `docker-compose.yml`,
+  `hasna.contract.json` manifest, and a `.github/workflows/deploy.yml` pipeline
+  for building/pushing the image and rolling the ECS service.
+
 ## [0.1.78] - 2026-07-04
 
 ### Added

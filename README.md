@@ -432,6 +432,42 @@ import {
 
 Per-project store helpers are also available from `@hasna/projects/project-store`.
 
+## HTTP API (`projects-serve`) & self_hosted SDK
+
+`projects-serve` is the self-hosted HTTP surface. It talks to cloud Postgres
+directly (Amendment A1, pure-remote — no local cache or sync in the service).
+
+```sh
+# apply migrations, then serve
+HASNA_PROJECTS_DATABASE_URL=postgres://… projects-serve migrate
+HASNA_PROJECTS_DATABASE_URL=postgres://… HASNA_PROJECTS_API_SIGNING_KEY=… projects-serve   # :8080
+```
+
+Endpoints:
+
+- `GET /health`, `GET /ready`, `GET /version` → `{status, version, mode}` (unauthenticated)
+- `GET /openapi.json` → the OpenAPI 3.1 document
+- `/v1/*` (API key required, header `x-api-key` or `Authorization: Bearer`):
+  - `GET|POST /v1/projects`, `GET|PATCH|DELETE /v1/projects/{id}`,
+    `POST /v1/projects/{id}/archive|unarchive`, `GET /v1/projects/{id}/events`
+  - `GET|POST /v1/roots`, `GET|PATCH|DELETE /v1/roots/{id}`
+  - `GET|POST /v1/agents`, `GET /v1/agents/{id}`
+  - `GET|POST /v1/recipes`, `GET /v1/recipes/{id}`
+
+Reads require the `projects:read` scope; writes require `projects:write`. Issue a
+key with `contracts issue-key --app projects --scopes projects:*`.
+
+The typed client is generated from the serve OpenAPI (`bun run sdk:generate`):
+
+```ts
+import { ProjectsClient, createProjectsClientFromEnv } from "@hasna/projects/sdk";
+
+// self_hosted convention: PROJECTS_API_URL + PROJECTS_API_KEY (never a DSN)
+const projects = createProjectsClientFromEnv();
+const created = await projects.createProject({ name: "My Project", tags: ["demo"] });
+const list = await projects.listProjects({ tag: "demo" });
+```
+
 ## Architecture
 
 ```text
