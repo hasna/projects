@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/@hasna/contracts/dist/hasna.contract.schema.json",
+  "schema": "hasna.service_contract.v1",
+  "name": "projects",
+  "class": "service",
+  "contractVersion": "v1",
+  "kitVersion": "0.4.1",
+  "description": "High-level project/workspace management: CLI, MCP server, HTTP API (projects-serve), and typed SDK. Amendment A1 pure-remote: the serve reads/writes cloud Postgres directly.",
+  "bins": ["projects", "projects-mcp", "projects-serve"],
+  "storage": {
+    "mode": "cloud",
+    "envPrefix": "HASNA_PROJECTS_",
+    "aliasEnvPrefix": "PROJECTS_",
+    "databaseUrlSecretRef": "hasna/oss/projects/database-url",
+    "sqlitePath": "~/.hasna/projects/projects.db"
+  },
+  "metadata": {
+    "healthPath": "/health",
+    "readyPath": "/ready",
+    "versionPath": "/version",
+    "apiBasePath": "/v1",
+    "auth": "api-key",
+    "authScopes": ["projects:read", "projects:write"],
+    "apiSigningSecretRef": "hasna/oss/projects/api-key-signing-secret",
+    "databaseUrlOwnerSecretRef": "hasna/oss/projects/database-url-owner",
+    "openapiPath": "/openapi.json",
+    "host": "projects.hasna.xyz"
+  }
+}
