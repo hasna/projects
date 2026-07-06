@@ -1,13 +1,14 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.78",
+  "version": "0.1.79",
   "description": "High-level project management CLI, MCP server, SDK, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "projects": "dist/cli/index.js",
-    "projects-mcp": "dist/mcp/index.js"
+    "projects-mcp": "dist/mcp/index.js",
+    "projects-serve": "dist/serve/index.js"
   },
   "exports": {
     ".": {
@@ -25,10 +26,20 @@
     "./storage": {
       "types": "./dist/storage.d.ts",
       "import": "./dist/storage.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./serve": {
+      "types": "./dist/serve/app.d.ts",
+      "import": "./dist/serve/app.js"
     }
   },
   "files": [
     "dist",
+    "migrations",
+    "hasna.contract.json",
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
@@ -39,7 +50,8 @@
     ".cursor/hooks/goal-continue.sh"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external pg --external @hasna/contracts --external @hasna/contracts/schemas && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external pg --external @hasna/contracts --external @hasna/contracts/schemas && bun build src/index.ts src/project-store.ts src/project-dashboard.ts src/storage.ts --outdir dist --target bun --external pg --external @hasna/contracts --external @hasna/contracts/schemas && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/serve/index.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/serve/app.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/sdk/index.ts --outdir dist/sdk --target bun && bun build src/index.ts src/project-store.ts src/project-dashboard.ts src/storage.ts --outdir dist --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && tsc --emitDeclarationOnly --outDir dist",
+    "sdk:generate": "bun run scripts/generate-sdk.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.ts",
@@ -78,7 +90,7 @@
   "author": "Andrei Hasna <andrei@hasna.com>",
   "license": "Apache-2.0",
   "dependencies": {
-    "@hasna/contracts": "^0.2.2",
+    "@hasna/contracts": "0.4.1",
     "@hasna/events": "^0.1.3",
     "@json-render/core": "0.19.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
