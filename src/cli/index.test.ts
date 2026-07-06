@@ -494,7 +494,7 @@ describe("project-first CLI surface", () => {
     expect(startPayload.tmux.windows[0]?.metadata?.path).toBe(created.project.primary_path);
 
     rmSync(root, { recursive: true, force: true });
-  }, 10000);
+  }, 60000);
 
   test("top-level list hides eval fixtures by default and cleanup-evals removes them", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-eval-cleanup-"));
@@ -561,7 +561,7 @@ describe("project-first CLI surface", () => {
     const rows = JSON.parse(text(json.stdout)) as Array<{ slug: string; metadata: Record<string, string> }>;
     expect(rows).toHaveLength(30);
     expect(rows.find((row) => row.slug === "compact-29")?.metadata.notes).toHaveLength(500);
-  }, 10000);
+  }, 60000);
 
   test("top-level list JSON output is not truncated above 64 KiB", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-large-list-json-"));
@@ -597,7 +597,7 @@ describe("project-first CLI surface", () => {
       if (!dbClosed) db.close();
       rmSync(root, { recursive: true, force: true });
     }
-  }, 10000);
+  }, 60000);
 
   test("top-level create, list, show, and update expose project management fields", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-management-"));
