@@ -12,6 +12,7 @@ import {
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { listWorkspaces } from "../db/workspaces.js";
 import type { Workspace } from "../types/workspace.js";
+import { redactProjectValue } from "./redaction.js";
 
 const REPORT_EXTENSIONS = new Set([".html", ".htm", ".md", ".markdown"]);
 const DATE_DIR_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -154,7 +155,7 @@ export function listProjectsWithReports(
         reportCount: dates.reduce((count, date) => count + date.reports.length, 0),
       }];
     });
-  return projects.sort((left, right) => left.project.name.localeCompare(right.project.name));
+  return redactProjectValue(projects.sort((left, right) => left.project.name.localeCompare(right.project.name)));
 }
 
 function listAllWorkspaces(db?: Database): Workspace[] {

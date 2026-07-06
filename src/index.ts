@@ -446,3 +446,20 @@ export type {
   ProjectWhyResult,
   ProjectWhyStep,
 } from "./lib/project-agent-assist.js";
+
+export {
+  PROJECT_REDACTED_VALUE,
+  isSensitiveProjectKey,
+  redactProjectJsonObject,
+  redactProjectText,
+  redactProjectValue,
+} from "./lib/redaction.js";
+export {
+  repairProjectPermissions,
+} from "./lib/project-permissions.js";
+export type {
+  ProjectPermissionRepairAction,
+  ProjectPermissionRepairOptions,
+  ProjectPermissionRepairReason,
+  ProjectPermissionRepairResult,
+} from "./lib/project-permissions.js";

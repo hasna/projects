@@ -21,6 +21,7 @@ import {
   validateProjectsRenderSpec,
   type ProjectsJsonRenderSpec,
 } from "./project-render.js";
+import { redactProjectValue } from "./redaction.js";
 
 export const PROJECT_DASHBOARD_DIR = ".hasna/project" as const;
 export const PROJECT_DASHBOARD_RENDER_DIR = ".hasna/project/dashboard" as const;
@@ -337,7 +338,7 @@ export async function buildProjectDashboardSnapshot(
 
   panels.push(actionsPanel(project, generatedAt));
 
-  const snapshot = ProjectSnapshotSchema.parse({
+  const snapshot = ProjectSnapshotSchema.parse(redactProjectValue({
     schema: SCHEMA_IDS.projectSnapshot,
     id: `project-snapshot:${project.slug}:${generatedAt}`,
     createdAt: generatedAt,
@@ -365,7 +366,7 @@ export async function buildProjectDashboardSnapshot(
     freshness: panels.some((panel) => panel.freshness === "stale")
       ? "stale"
       : "fresh",
-  });
+  }));
   return snapshot;
 }
 

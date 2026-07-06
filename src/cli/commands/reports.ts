@@ -1,12 +1,14 @@
 import type { Command } from "commander";
 import { serveProjectReports } from "../../lib/project-reports-server.js";
+import { redactProjectValue } from "../../lib/redaction.js";
 
 function wantsJson(options: { json?: boolean }): boolean {
   return Boolean(options.json || process.env["PROJECTS_JSON"]);
 }
 
 async function print(value: unknown, options: { json?: boolean }): Promise<void> {
-  const output = wantsJson(options) ? JSON.stringify(value, null, 2) : typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const safeValue = redactProjectValue(value);
+  const output = wantsJson(options) ? JSON.stringify(safeValue, null, 2) : typeof safeValue === "string" ? safeValue : JSON.stringify(safeValue, null, 2);
   await new Promise<void>((resolve, reject) => {
     process.stdout.write(`${output}\n`, (error) => {
       if (error) reject(error);

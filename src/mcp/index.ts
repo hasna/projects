@@ -72,7 +72,9 @@ import {
   type ProjectBudgetStatus,
 } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
+import { repairProjectPermissions } from "../lib/project-permissions.js";
 import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
+import { redactProjectValue } from "../lib/redaction.js";
 import {
   PROJECT_PRIORITIES,
   PROJECT_STAGES,
@@ -163,7 +165,7 @@ const server = new McpServer({
 });
 
 function jsonText(value: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
+  return { content: [{ type: "text" as const, text: JSON.stringify(redactProjectValue(value), null, 2) }] };
 }
 
 function errorText(message: string) {
@@ -1987,6 +1989,19 @@ server.tool(
       next_steps: "Pass verbose=true for full check records and full project payloads, or pass id to inspect one project.",
     });
   },
+);
+
+server.tool(
+  "projects_permissions_repair",
+  "Dry-run or apply private local filesystem modes for Projects registry DB/WAL/SHM, backups, canonical stores, reports, and dashboard artifacts.",
+  {
+    apply: z.boolean().optional(),
+    include_project_artifacts: z.boolean().optional(),
+  },
+  async (input) => jsonText(repairProjectPermissions({
+    apply: Boolean(input.apply),
+    includeProjectArtifacts: input.include_project_artifacts,
+  })),
 );
 
 server.tool(
