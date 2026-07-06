@@ -10,6 +10,7 @@ import {
 } from "../../lib/project-dashboard.js";
 import { serveProjectDashboard } from "../../lib/project-dashboard-server.js";
 import { resolveProjectStore } from "../../store/project-store.js";
+import { redactProjectValue } from "../../lib/redaction.js";
 import { ProjectSnapshotSchema } from "@hasna/contracts/schemas";
 import { listExistingProjectCanvases } from "../../db/project-store.js";
 
@@ -18,7 +19,8 @@ function wantsJson(options: { json?: boolean }): boolean {
 }
 
 async function print(value: unknown, options: { json?: boolean }): Promise<void> {
-  const output = wantsJson(options) ? JSON.stringify(value, null, 2) : typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const safeValue = redactProjectValue(value);
+  const output = wantsJson(options) ? JSON.stringify(safeValue, null, 2) : typeof safeValue === "string" ? safeValue : JSON.stringify(safeValue, null, 2);
   await new Promise<void>((resolve, reject) => {
     process.stdout.write(`${output}\n`, (error) => {
       if (error) reject(error);

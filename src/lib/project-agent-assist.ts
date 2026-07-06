@@ -27,6 +27,7 @@ import {
   projectManagementSummary,
   projectPathHealth,
 } from "./project-management.js";
+import { redactProjectText, redactProjectValue } from "./redaction.js";
 import {
   isProjectPathLike,
   normalizeProjectPath,
@@ -207,7 +208,7 @@ export async function buildProjectAgentContext(
     files_index_id: project.integrations.files_index_id ?? null,
   };
 
-  return {
+  return redactProjectValue({
     ...base,
     project: compactProject(project, locations),
     root: root ? compactRoot(root) : undefined,
@@ -220,7 +221,7 @@ export async function buildProjectAgentContext(
     doctor: doctorBlock,
     budgets: budgetBlock,
     marker: resolution.marker ?? null,
-  };
+  }) as ProjectAgentContext;
 }
 
 function compactProject(project: Workspace, locations: WorkspaceLocation[]): JsonObject {
@@ -660,7 +661,7 @@ export async function buildProjectHandoff(
     "Continue from the most recent event/run; do not redo finished work.",
   ].join("\n");
 
-  return {
+  return redactProjectValue({
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.handoff",
     machine: { hostname: MACHINE_ID },
@@ -672,7 +673,7 @@ export async function buildProjectHandoff(
     recent_events: events,
     recent_runs: runs,
     handoff_instructions: instructions,
-  };
+  }) as ProjectHandoff;
 }
 
 function tmuxAvailableRaw(): boolean {
@@ -734,7 +735,7 @@ export async function listProjectAgentRunsView(
     status: r.status,
     agent_id: r.agent_id,
     model: r.model,
-    prompt: r.prompt.length > 200 ? r.prompt.slice(0, 200) + "…" : r.prompt,
+    prompt: redactProjectText(r.prompt.length > 200 ? r.prompt.slice(0, 200) + "..." : r.prompt),
     tool_calls: Array.isArray(r.tool_calls_json) ? r.tool_calls_json.length : 0,
     error: r.error,
     started_at: r.started_at,
@@ -768,12 +769,12 @@ export async function getProjectAgentRunDetail(
   const run = runs.find((r) => r.id === options.runId);
   if (!run) throw new Error(`Agent run not found for project: ${options.runId}`);
   const agent = run.agent_id ? await store.getAgent(run.agent_id) : null;
-  return {
+  return redactProjectValue({
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.run_detail",
     run,
     agent: agent ? { id: agent.id, slug: agent.slug, name: agent.name, kind: agent.kind } : undefined,
-  };
+  }) as ProjectRunDetail;
 }
 
 // ---------------------------------------------------------------------------
@@ -782,11 +783,11 @@ export async function getProjectAgentRunDetail(
 
 export function toAgentText(value: unknown): string {
   if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return redactProjectText(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) return value.map((v) => toAgentText(v)).join("\n");
   if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
+    const obj = redactProjectValue(value) as Record<string, unknown>;
     const kind = obj["kind"];
     if (kind === "projects.agent_context") return contextToText(obj as unknown as ProjectAgentContext);
     if (kind === "projects.next") return nextToText(obj as unknown as ProjectNextResult);

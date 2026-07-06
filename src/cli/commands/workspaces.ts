@@ -50,6 +50,8 @@ import {
   migrateProjectToStore,
   planProjectStoreMigration,
 } from "../../lib/project-store.js";
+import { repairProjectPermissions } from "../../lib/project-permissions.js";
+import { redactProjectText, redactProjectValue } from "../../lib/redaction.js";
 import {
   buildOssProjectMatrix,
   DEFAULT_OSS_MATRIX_LIMIT,
@@ -145,12 +147,12 @@ function splitLabelFilters(...values: Array<string | undefined>): string[] {
 
 function printObject(value: unknown, opts?: { json?: boolean }): void {
   if (wantsJson(opts)) {
-    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(redactProjectValue(value), null, 2)}\n`);
   }
 }
 
 function printRenderSpec(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(redactProjectValue(value), null, 2)}\n`);
 }
 
 function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "render" | "schema_version" | "kind"> {
@@ -825,6 +827,7 @@ export function registerWorkspaceCommands(program: Command): void {
   registerBudgetCommands(program);
   registerAgentAssistCommands(program);
   registerOssCommands(program);
+  registerPermissionsCommand(program);
   registerStoreCommand(program);
   registerProjectCanvasCommands(program);
   registerProjectLoopCommands(program);
@@ -1046,12 +1049,12 @@ function registerAgentAssistCommands(program: Command): void {
           console.log(`model: ${detail.run.model ?? "—"}`);
           console.log(`agent: ${detail.agent?.slug ?? detail.run.agent_id ?? "—"}`);
           console.log(`started: ${detail.run.started_at}`);
-          console.log(`\nprompt: ${detail.run.prompt}`);
-          if (detail.run.error) console.log(`\nerror: ${detail.run.error}`);
+          console.log(`\nprompt: ${redactProjectText(detail.run.prompt)}`);
+          if (detail.run.error) console.log(`\nerror: ${redactProjectText(detail.run.error)}`);
           if (Array.isArray(detail.run.tool_calls_json)) {
             console.log(`\ntool calls (${detail.run.tool_calls_json.length}):`);
             for (const tc of detail.run.tool_calls_json) {
-              const t = tc as JsonObject;
+              const t = redactProjectValue(tc) as JsonObject;
               console.log(`  - ${t["name"] ?? t["type"] ?? "call"} ${t["args"] ? JSON.stringify(t["args"]).slice(0, 120) : ""}`);
             }
           }
@@ -2693,6 +2696,44 @@ function assertLocalOnlyStoreOperation(store: ReturnType<typeof resolveProjectSt
       `${operation} is a local-only operation: the canonical on-box store is a machine-local resource the cloud project does not own. Run it in local mode on the machine that holds the files.`,
     );
   }
+}
+
+function registerPermissionsCommand(program: Command): void {
+  const cmd = program.command("permissions").description("Inspect and repair local Projects file permissions");
+
+  cmd
+    .command("repair")
+    .description("Dry-run or apply private permissions for Projects registry, stores, backups, reports, and dashboard artifacts")
+    .option("--apply", "Apply chmod repairs; default is dry-run")
+    .option("--no-project-artifacts", "Skip registered project reports and dashboard artifacts outside HASNA_PROJECTS_HOME")
+    .option("-j, --json", "Output JSON")
+    .action((opts) => {
+      try {
+        const result = repairProjectPermissions({
+          apply: Boolean(opts.apply),
+          includeProjectArtifacts: opts.projectArtifacts,
+        });
+        if (wantsJson(opts)) { printObject(result, opts); return; }
+
+        const prefix = result.applied ? chalk.green("permissions repaired") : chalk.dim("permissions dry-run");
+        console.log(`${prefix}: ${result.changed || result.planned} ${result.applied ? "changed" : "planned"}, ${result.errors} error(s), ${result.skipped} skipped`);
+        const visible = result.actions
+          .filter((action) => action.status === "planned" || action.status === "changed" || action.status === "error")
+          .slice(0, 20);
+        for (const action of visible) {
+          const mode = action.target_mode ? `${action.before_mode ?? "----"} -> ${action.target_mode}` : action.before_mode ?? "----";
+          const marker = action.status === "error" ? chalk.red("error") : action.status === "changed" ? chalk.green("changed") : chalk.yellow("planned");
+          console.log(`  ${marker} ${mode} ${action.path}`);
+        }
+        if (result.actions.length > visible.length) {
+          console.log(chalk.dim(`  ${result.actions.length - visible.length} additional checked path(s); rerun with --json for full redacted details.`));
+        }
+        if (!result.applied) console.log(chalk.dim("  Re-run with --apply to repair modes."));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
 }
 
 function registerStoreCommand(program: Command): void {
