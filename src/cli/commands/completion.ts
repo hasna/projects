@@ -6,7 +6,7 @@ _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage reports completion"
+  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why channel handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage reports completion"
   local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
   local canvas_commands="create list show"
@@ -73,7 +73,7 @@ _projects_completion() {
       COMPREPLY=( $(compgen -W "$report_commands" -- "$cur") )
       return 0
       ;;
-    start|status|cleanup-create|show|update|tag|untag|add|remove|rm|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|context|next|why|handoff|list|record|inspect|ensure|migrate)
+    start|status|cleanup-create|show|update|tag|untag|add|remove|rm|link|unlink|publish|unpublish|archive|unarchive|delete|lock|doctor|context|next|why|channel|handoff|list|record|inspect|ensure|migrate)
       # Complete with project slugs
       local slugs
       slugs=$(projects list 2>/dev/null | grep -v '^  ' | awk '{print $1}' 2>/dev/null)
@@ -139,6 +139,7 @@ _project() {
     'context:Emit an agent-priming bundle for a project'
     'next:Suggest high-leverage next actions for a project'
     'why:Explain how a project target resolves'
+    'channel:Resolve the project conversations channel'
     'handoff:Emit a cross-agent handoff bundle'
     'runs:Inspect prompt-agent run ledger entries'
     'oss:Open-source workspace routing helpers'

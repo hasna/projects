@@ -131,8 +131,12 @@ export function expandProjectIntegrationUnlinkKey(key: string): string[] {
       return ["mementos_project_id"];
     case "conversations":
     case "conversation":
+      return ["conversations_space", "conversations_channel"];
     case "conversations_space":
       return ["conversations_space"];
+    case "conversations_channel":
+    case "channel":
+      return ["conversations_channel"];
     case "files":
     case "file_index":
     case "files_index":

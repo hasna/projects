@@ -338,6 +338,27 @@ export type {
   WorkspaceCreationPlanInput as ProjectCreationPlanInput,
 } from "./lib/workspace-plan.js";
 export {
+  PROJECT_CHANNEL_CLASSES,
+  PROJECT_CHANNEL_INTEGRATION_KEY,
+  classifyProjectChannelName,
+  conversationsCliRunner,
+  deriveProjectChannel,
+  ensureProjectChannel,
+  normalizeProjectChannelName,
+  resolveProjectChannel,
+  resolveProjectChannelForProject,
+  shouldEnsureProjectChannel,
+} from "./lib/project-channel.js";
+export type {
+  ConversationsChannelRunner,
+  ConversationsRunResult,
+  EnsureProjectChannelOptions,
+  ProjectChannelClass,
+  ProjectChannelDerivation,
+  ProjectChannelEnsureResult,
+  ProjectChannelResolution,
+} from "./lib/project-channel.js";
+export {
   DEFAULT_WORKSPACE_AGENT_MODEL as DEFAULT_PROJECT_AGENT_MODEL,
   PROJECT_AGENT_DESTRUCTIVE_TOOLS,
   PROJECT_AGENT_MUTATION_TOOLS,

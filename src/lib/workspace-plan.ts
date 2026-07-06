@@ -24,9 +24,17 @@ import type {
   Recipe,
   Root,
   Workspace,
+  WorkspaceIntegrations,
   WorkspaceKind,
   WorkspaceLock,
 } from "../types/workspace.js";
+import {
+  deriveProjectChannel,
+  ensureProjectChannel,
+  shouldEnsureProjectChannel,
+  type ConversationsChannelRunner,
+  type ProjectChannelEnsureResult,
+} from "./project-channel.js";
 import {
   applyWorkspaceTmux,
   applyWorkspaceTmuxProfile,
@@ -91,6 +99,7 @@ export interface WorkspaceCreationExecution {
   workspace: Workspace | null;
   prepare: WorkspaceRuntimeAction[];
   tmux: WorkspaceTmuxResult | null;
+  channel: ProjectChannelEnsureResult | null;
   locks: WorkspaceLock[];
   released_locks: string[];
   rollback_actions: WorkspaceCreationPlanAction[];
@@ -116,6 +125,10 @@ export interface ExecuteWorkspaceCreationOptions {
   dryRun?: boolean;
   runtimeDryRun?: boolean;
   lockTtlSeconds?: number;
+  /** Ensure the project's conversations channel exists after creation; defaults to shouldEnsureProjectChannel(). */
+  ensureChannel?: boolean;
+  /** Conversations CLI runner override (used by tests). */
+  channelRunner?: ConversationsChannelRunner;
 }
 
 export interface CleanupWorkspaceCreationOptions {
@@ -176,6 +189,19 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
     ...(recipe?.default_tags ?? []),
     ...(input.tags ?? []),
   ]);
+  const integrations: WorkspaceIntegrations = { ...(input.integrations ?? {}) };
+  if (!integrations.conversations_channel?.trim()) {
+    try {
+      integrations.conversations_channel = deriveProjectChannel({
+        slug,
+        kind: kind as WorkspaceKind,
+        integrations,
+      }).channel;
+    } catch {
+      // Slug does not produce a valid channel name; leave the integration unset.
+      delete integrations.conversations_channel;
+    }
+  }
 
   const workspace = {
     id,
@@ -191,7 +217,7 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
     s3_bucket: input.s3_bucket ?? null,
     s3_prefix: input.s3_prefix ?? null,
     tags,
-    integrations: input.integrations ?? {},
+    integrations,
     metadata: input.metadata ?? {},
     last_opened_at: null,
     created_at: null,
@@ -214,7 +240,7 @@ function plannedWorkspace(input: WorkspaceCreationPlanInput, db?: Database): {
       s3_bucket: input.s3_bucket,
       s3_prefix: input.s3_prefix,
       tags: input.tags,
-      integrations: input.integrations,
+      integrations,
       metadata: input.metadata,
       agent_id: input.agent_id,
       source: input.source,
@@ -566,6 +592,7 @@ export function executeWorkspaceCreation(
       workspace: null,
       prepare: plan.runtime_actions,
       tmux: plan.tmux,
+      channel: null,
       locks: [],
       released_locks: [],
       rollback_actions: plan.rollback_actions,
@@ -629,6 +656,19 @@ export function executeWorkspaceCreation(
       });
     }
 
+    let channel: ProjectChannelEnsureResult | null = null;
+    if (options.ensureChannel ?? shouldEnsureProjectChannel()) {
+      channel = ensureProjectChannel(workspace, {
+        db: options.db,
+        agentId: input.agent_id,
+        source,
+        command: input.command,
+        dryRun: runtimeDryRun,
+        runner: options.channelRunner,
+      });
+      if (channel.persisted) workspace = channel.project;
+    }
+
     recordWorkspaceEvent({
       workspace_id: workspace.id,
       agent_id: input.agent_id,
@@ -636,7 +676,7 @@ export function executeWorkspaceCreation(
       source,
       prompt: input.prompt,
       command: input.command,
-      after: { plan, prepare, tmux } as unknown as JsonObject,
+      after: { plan, prepare, tmux, channel } as unknown as JsonObject,
       metadata: { rollback_actions: plan.rollback_actions },
     }, options.db);
 
@@ -649,6 +689,7 @@ export function executeWorkspaceCreation(
       workspace,
       prepare,
       tmux,
+      channel,
       locks: acquired,
       released_locks: released,
       rollback_actions: plan.rollback_actions,

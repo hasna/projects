@@ -136,6 +136,18 @@ projects runs show <run-id> my-app         # full run detail + tool-call trace
 #   projects_context, projects_next, projects_why, projects_handoff,
 #   projects_runs_list, projects_runs_show
 
+# Conversations channel linkage — every project has one channel
+projects channel my-app                    # print the project's channel name
+projects channel my-app --json             # full resolution (class, linked, source)
+projects channel my-app --ensure           # create the channel if missing + link it
+# The channel name lives on the project record as
+# integrations.conversations_channel; when unset it is derived from the slug +
+# kind per the fleet naming convention (open-source -> flat repo name,
+# platform -> platform-*, internal-app -> iapp-*, company-website -> cweb-*,
+# community -> community-*, experiment -> research-*, else internal-*).
+# `projects create` and `projects start` ensure the channel automatically
+# (disable with PROJECTS_CHANNEL_ENSURE=0); MCP tool: projects_channel
+
 # Shell completion, including workon
 eval "$(projects completion)"
 eval "$(projects completion --shell zsh)"

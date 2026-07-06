@@ -80,6 +80,13 @@ const contracts: SurfaceContract[] = [
     promptAgent: ["projects_agents_assign: tool(", "projects_agents_list: tool("],
     sdk: ["assignAgentToWorkspace as assignAgentToProject", "listWorkspaceAgents as listProjectAgents"],
   },
+  {
+    operation: "channel",
+    cli: [".command(\"channel [target]\")"],
+    mcp: ["\"projects_channel\""],
+    promptAgent: ["projects_channel: tool("],
+    sdk: ["deriveProjectChannel", "ensureProjectChannel", "resolveProjectChannel"],
+  },
 ];
 
 function expectAll(source: string, tokens: string[], label: string, operation: string): void {

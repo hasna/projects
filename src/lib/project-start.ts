@@ -18,6 +18,12 @@ import {
   normalizeProjectPath,
   resolveRegisteredProjectTarget,
 } from "./project-resolver.js";
+import {
+  ensureProjectChannel,
+  shouldEnsureProjectChannel,
+  type ConversationsChannelRunner,
+  type ProjectChannelEnsureResult,
+} from "./project-channel.js";
 import { importWorkspace, planWorkspaceImport, type WorkspaceImportPreview } from "./workspace-import.js";
 import { applyWorkspaceTmux, tmuxProfileToSpec, type WorkspaceTmuxResult, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import { attachSession } from "./tmux.js";
@@ -49,6 +55,10 @@ export interface ProjectStartOptions {
   agentId?: string;
   source?: EventSource;
   auditCommand?: string;
+  /** Ensure the project's conversations channel exists on start; defaults to shouldEnsureProjectChannel(). */
+  ensureChannel?: boolean;
+  /** Conversations CLI runner override (used by tests). */
+  channelRunner?: ConversationsChannelRunner;
   db?: Database;
 }
 
@@ -75,6 +85,7 @@ export interface ProjectStartResult {
     used_windows: boolean;
   };
   tmux: WorkspaceTmuxResult;
+  channel: ProjectChannelEnsureResult | null;
   attached: boolean;
   render: JsonObject;
 }
@@ -409,6 +420,19 @@ export async function startProject(
     db: options.db,
   });
 
+  let channel: ProjectChannelEnsureResult | null = null;
+  if (options.ensureChannel ?? shouldEnsureProjectChannel()) {
+    channel = ensureProjectChannel(project, {
+      db: options.db,
+      agentId: options.agentId,
+      source: options.source ?? "cli",
+      command: options.auditCommand,
+      dryRun: options.dryRun,
+      runner: options.channelRunner,
+    });
+  }
+  const startedProject = channel?.persisted ? channel.project : project;
+
   let attached = false;
   if (options.attach && !options.dryRun && tmux.success) {
     attachSession(tmux.session_name);
@@ -437,6 +461,7 @@ export async function startProject(
         },
         session_policy: sessionPolicy,
         tmux,
+        channel,
         attached,
       } as unknown as JsonObject,
     }, options.db);
@@ -445,7 +470,7 @@ export async function startProject(
   const resultWithoutRender = {
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.start" as const,
-    project,
+    project: startedProject,
     resolution,
     agent_tool: agentTool,
     tool_command: command,
@@ -465,12 +490,13 @@ export async function startProject(
       used_windows: options.requestedWindows === undefined && defaultWindows.length > 0,
     },
     tmux,
+    channel,
     attached,
   };
   return {
     ...resultWithoutRender,
     render: buildProjectStartRender({
-      project,
+      project: startedProject,
       tmux,
       sessionPolicy,
       agentTool,

@@ -196,6 +196,7 @@ export function normalizeWorkspaceIntegrations(integrations: WorkspaceIntegratio
     memento: "mementos_project_id",
     conversations: "conversations_space",
     conversation: "conversations_space",
+    channel: "conversations_channel",
     files: "files_index_id",
     file_index: "files_index_id",
   };
