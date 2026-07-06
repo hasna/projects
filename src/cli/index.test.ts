@@ -172,7 +172,7 @@ describe("project-first CLI surface", () => {
     }
   });
 
-  test("reports serve defaults to network bind and keeps existing project registry semantics", async () => {
+  test("reports serve defaults to loopback and keeps existing project registry semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "projects-reports-serve-"));
     const env = {
       HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
@@ -185,6 +185,19 @@ describe("project-first CLI surface", () => {
       expect(runProjects(["create", "--name", "Fleet Reports", "--slug", "fleet-reports", "--path", projectPath, "--mkdir", "--json"], env).exitCode).toBe(0);
       mkdirSync(reportsDir, { recursive: true });
       writeFileSync(join(reportsDir, "daily.md"), "# Fleet daily\n");
+
+      const help = runProjects(["reports", "serve", "--help"], env);
+      const helpStdout = text(help.stdout);
+      expect(help.exitCode).toBe(0);
+      expect(helpStdout).toContain('--host <host>');
+      expect(helpStdout).toContain('(default: "127.0.0.1")');
+      expect(helpStdout).toContain("--token <token>");
+      expect(helpStdout).toContain("--trust-network");
+
+      const rejected = runProjects(["reports", "serve", "--host", "0.0.0.0", "--port", String(port), "--json"], env);
+      expect(rejected.exitCode).toBe(1);
+      expect(text(rejected.stderr)).toBe("");
+      expect(JSON.parse(text(rejected.stdout)).error.message).toContain("PROJECTS_REPORTS_TOKEN");
 
       const proc = Bun.spawn({
         cmd: ["bun", "run", CLI_PATH, "reports", "serve", "--port", String(port), "--json"],
@@ -204,7 +217,7 @@ describe("project-first CLI surface", () => {
         expect(payload).toMatchObject({
           ok: true,
           mode: "reports",
-          host: "0.0.0.0",
+          host: "127.0.0.1",
           port,
           url: `http://127.0.0.1:${port}/`,
         });

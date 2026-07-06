@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { timingSafeEqual } from "node:crypto";
 import {
   type Dirent,
   type Stats,
@@ -16,11 +17,15 @@ import type { Workspace } from "../types/workspace.js";
 const REPORT_EXTENSIONS = new Set([".html", ".htm", ".md", ".markdown"]);
 const DATE_DIR_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_REPORTS_PORT = 3345;
+const REPORTS_COOKIE_NAME = "projects_reports";
+const REPORTS_TOKEN_ENV_VAR = "PROJECTS_REPORTS_TOKEN";
 
 export interface ProjectReportsServerOptions {
   db?: Database;
   host?: string;
   port?: number;
+  token?: string;
+  trustNetwork?: boolean;
 }
 
 export interface ProjectReportsServer {
@@ -62,8 +67,17 @@ type ReportsRoute =
 export async function serveProjectReports(
   options: ProjectReportsServerOptions = {},
 ): Promise<ProjectReportsServer> {
-  const host = options.host ?? "0.0.0.0";
+  const host = options.host ?? "127.0.0.1";
   const port = options.port ?? DEFAULT_REPORTS_PORT;
+  const explicitToken = options.token ?? process.env[REPORTS_TOKEN_ENV_VAR];
+  const loopback = isLoopbackReportsHost(host);
+  const trustNetwork = Boolean(options.trustNetwork);
+  if (!loopback && !trustNetwork && !explicitToken) {
+    throw new Error(
+      "Serving reports on a non-loopback host requires --token, PROJECTS_REPORTS_TOKEN, or --trust-network.",
+    );
+  }
+  const requiresToken = !loopback && !trustNetwork;
 
   const server = Bun.serve({
     hostname: host,
@@ -72,6 +86,30 @@ export async function serveProjectReports(
       const url = new URL(request.url);
       if (url.pathname === "/health") {
         return Response.json({ ok: true, mode: "reports" });
+      }
+      if (requiresToken) {
+        if (url.pathname === "/session" && request.method === "POST") {
+          const submitted = await readSubmittedToken(request);
+          if (!submitted || !tokensMatch(submitted, explicitToken!)) {
+            return reportsLoginResponse(url.searchParams.get("returnTo"), 401);
+          }
+          if (!wantsJsonSession(request)) {
+            return new Response(null, {
+              status: 303,
+              headers: {
+                "location": safeReturnTo(url.searchParams.get("returnTo")),
+                "set-cookie": reportsCookie(explicitToken!),
+              },
+            });
+          }
+          return Response.json(
+            { ok: true },
+            { headers: { "set-cookie": reportsCookie(explicitToken!) } },
+          );
+        }
+        if (!hasReportsAccess(request, explicitToken!)) {
+          return reportsLoginResponse(url.pathname, 401);
+        }
       }
 
       const route = reportsRoute(url.pathname);
@@ -129,6 +167,111 @@ export async function serveProjectReports(
     host,
     port: server.port ?? port,
   };
+}
+
+export function isLoopbackReportsHost(host: string): boolean {
+  return (
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "::1" ||
+    host === "[::1]"
+  );
+}
+
+function hasReportsAccess(request: Request, token: string): boolean {
+  const bearer = reportsBearerToken(request);
+  if (bearer && tokensMatch(bearer, token)) return true;
+  const cookie = request.headers.get("cookie") ?? "";
+  return cookie
+    .split(";")
+    .map((part) => part.trim())
+    .some((part) => part === `${REPORTS_COOKIE_NAME}=${encodeURIComponent(token)}`);
+}
+
+function reportsBearerToken(request: Request): string | null {
+  const authorization = request.headers.get("authorization") ?? "";
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
+
+async function readSubmittedToken(request: Request): Promise<string | null> {
+  const contentType = request.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const parsed = (await request.json()) as { token?: unknown };
+      return typeof parsed.token === "string" ? parsed.token : null;
+    }
+    const form = await request.formData();
+    const token = form.get("token");
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function reportsCookie(token: string): string {
+  return `${REPORTS_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/`;
+}
+
+function wantsJsonSession(request: Request): boolean {
+  const contentType = request.headers.get("content-type") ?? "";
+  const accept = request.headers.get("accept") ?? "";
+  return contentType.includes("application/json") || accept.includes("application/json");
+}
+
+function tokensMatch(submitted: string, expected: string): boolean {
+  const left = Buffer.from(submitted);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function reportsLoginResponse(returnTo: string | null, status: number): Response {
+  return new Response(reportsLoginHtml(safeReturnTo(returnTo)), {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": reportsLoginCsp(),
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+    },
+  });
+}
+
+function reportsLoginHtml(returnTo: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Project Reports Access</title>
+  <style>${reportsCss()}</style>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div class="eyebrow">Project Reports</div>
+      <h1>Access Required</h1>
+    </header>
+    <form class="access-form" action="/session?returnTo=${encodeURIComponent(returnTo)}" method="post">
+      <label for="token">Reports access token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" autofocus>
+      <button type="submit">Continue</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
+
+function safeReturnTo(value: string | null): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";
+  try {
+    const parsed = new URL(value, "http://projects-reports.local");
+    if (parsed.origin !== "http://projects-reports.local") return "/";
+    return parsed.pathname || "/";
+  } catch {
+    return "/";
+  }
 }
 
 export function listProjectsWithReports(
@@ -597,6 +740,10 @@ function reportsPageCsp(): string {
   return "default-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:; font-src data:; base-uri 'none'; form-action 'none'";
 }
 
+function reportsLoginCsp(): string {
+  return "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'self'";
+}
+
 function reportsCss(): string {
   return `
     :root {
@@ -740,6 +887,38 @@ function reportsCss(): string {
     }
     .empty {
       color: var(--muted);
+    }
+    .access-form {
+      display: grid;
+      gap: 0.75rem;
+      max-width: 28rem;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .access-form label {
+      font-weight: 700;
+    }
+    .access-form input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.7rem 0.8rem;
+      font: inherit;
+      color: var(--text);
+      background: var(--surface);
+    }
+    .access-form button {
+      width: fit-content;
+      border: 0;
+      border-radius: 6px;
+      padding: 0.7rem 1rem;
+      font: inherit;
+      font-weight: 700;
+      color: #ffffff;
+      background: var(--accent);
+      cursor: pointer;
     }
     @media (max-width: 640px) {
       main {

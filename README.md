@@ -77,6 +77,8 @@ projects dashboard snapshot my-app --write --json
 projects dashboard render my-app --json
 projects dashboard validate my-app --json
 PROJECTS_DASHBOARD_TOKEN="<token>" projects dashboard serve my-app --host 0.0.0.0 --port 3344
+projects reports serve --port 3345
+PROJECTS_REPORTS_TOKEN="<token>" projects reports serve --host 0.0.0.0 --port 3345
 projects loops link my-app daily-check --name "Daily Check" --role maintenance
 projects loops list my-app --json
 projects import /path/to/existing --json
@@ -227,6 +229,12 @@ HTTP-only same-origin cookie; binding to a non-loopback host requires
 Do not put dashboard access tokens in URLs, render specs, reports, or task
 evidence. Dashboard JSON never carries raw private document bodies or arbitrary
 shell commands.
+
+`projects reports serve` serves registered project report files from each
+project `reports/` directory. It binds to `127.0.0.1` by default. Binding
+reports to a non-loopback host requires `--token`, `PROJECTS_REPORTS_TOKEN`, or
+an explicit `--trust-network` choice; token mode uses an HTTP-only same-origin
+cookie or `Authorization: Bearer` header and does not accept tokens in URLs.
 
 OpenLoops integration uses the `@hasna/loops` SDK as an optional peer. Runtime
 commands that need live loop state load `@hasna/loops/sdk` dynamically, so Open
