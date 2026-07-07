@@ -37,6 +37,35 @@ describe("projects client-flip resolution", () => {
   test("cloud requested but no key -> throws", () => {
     expect(() => resolveProjectsBackend({ HASNA_PROJECTS_STORAGE_MODE: "self_hosted" })).toThrow();
   });
+
+  // Regression: the fleet flip writes ONLY HASNA_PROJECTS_API_URL +
+  // HASNA_PROJECTS_API_KEY (no STORAGE_MODE). Their joint presence must route to
+  // cloud, otherwise an installed, flipped CLI silently keeps reading local.
+  test("url + key (no explicit mode) -> cloud-http", () => {
+    __resetProjectsBackend();
+    const b = resolveProjectsBackend({
+      HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz",
+      HASNA_PROJECTS_API_KEY: "k",
+    });
+    expect(b?.mode).toBe("cloud-http");
+    expect(b?.baseUrl).toBe("https://projects.hasna.xyz/v1");
+  });
+
+  test("api url without key -> local (no silent partial cloud)", () => {
+    __resetProjectsBackend();
+    expect(resolveProjectsBackend({ HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz" })).toBeNull();
+  });
+
+  test("explicit local mode wins even with creds present -> local", () => {
+    __resetProjectsBackend();
+    expect(
+      resolveProjectsBackend({
+        HASNA_PROJECTS_STORAGE_MODE: "local",
+        HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz",
+        HASNA_PROJECTS_API_KEY: "k",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("projects cloud workspace CRUD mapping", () => {

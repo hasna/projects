@@ -105,6 +105,12 @@ export function resolveTransport(name: string, env: Env = process.env): Transpor
     mode = normalized.mode;
     deprecatedAlias = normalized.deprecatedAlias;
     modeSource = modeHit.key;
+  } else if (urlHit && keyHit) {
+    // Flip signal: the fleet flip writes exactly HASNA_<APP>_API_URL +
+    // HASNA_<APP>_API_KEY (no explicit STORAGE_MODE). Their joint presence IS the
+    // self_hosted intent, so infer cloud. Unset either var -> back to local.
+    mode = "cloud";
+    modeSource = `${urlHit.key}+${keyHit.key}`;
   }
 
   if (mode === "local") {
