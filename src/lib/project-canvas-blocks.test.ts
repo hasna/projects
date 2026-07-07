@@ -80,4 +80,70 @@ describe("project canvas blocks", () => {
       }),
     ).toThrow("target does not match");
   });
+
+  test("rejects malformed layout numbers before generating node positions", () => {
+    const base = {
+      blocks: [
+        { id: "a", title: "A" },
+        { id: "b", title: "B" },
+      ],
+    };
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        ...base,
+        layout: { columns: "2" } as never,
+      }),
+    ).toThrow("layout.columns must be a finite number");
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        ...base,
+        layout: { columnGap: Number.NaN } as never,
+      }),
+    ).toThrow("layout.columnGap must be a finite number");
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        ...base,
+        layout: { rowGap: "wide" } as never,
+      }),
+    ).toThrow("layout.rowGap must be a finite number");
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        ...base,
+        layout: { origin: { x: null, y: 0 } } as never,
+      }),
+    ).toThrow("layout.origin must include finite numeric x and y");
+  });
+
+  test("rejects malformed block dimensions and explicit positions", () => {
+    expect(() =>
+      composeProjectCanvasBlocks({
+        blocks: [{ id: "a", title: "A", position: { x: "left", y: 0 } as never }],
+      }),
+    ).toThrow("blocks[0].position must include finite numeric x and y");
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        blocks: [{ id: "a", title: "A", width: "wide" as never }],
+      }),
+    ).toThrow("blocks[0].width must be a finite number");
+
+    expect(() =>
+      composeProjectCanvasBlocks({
+        blocks: [{ id: "a", title: "A", height: 0 }],
+      }),
+    ).toThrow("blocks[0].height must be greater than 0");
+  });
+
+  test("rejects malformed viewport numbers", () => {
+    expect(() =>
+      composeProjectCanvasBlocks({
+        viewport: { x: 0, y: 0, zoom: "close" } as never,
+        blocks: [{ id: "a", title: "A" }],
+      }),
+    ).toThrow("viewport.zoom must be a finite number");
+  });
 });
