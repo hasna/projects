@@ -392,6 +392,36 @@ describe("project-first CLI surface", () => {
       expect(upsertPayload.canvas.name).toBe("Agent Directory Updated");
       expect(upsertPayload.canvas.nodes).toEqual([expect.objectContaining({ id: "single-card" })]);
       expect(upsertPayload.canvas.edges).toEqual([]);
+
+      const invalidColumns = runProjects([
+        "canvases",
+        "compose",
+        "canvas-blocks",
+        "--slug",
+        "invalid-columns",
+        "--blocks-json",
+        JSON.stringify([{ id: "broken", title: "Broken" }]),
+        "--layout-json",
+        JSON.stringify({ columns: "2" }),
+        "--json",
+      ], env);
+      expect(invalidColumns.exitCode).toBe(1);
+      expect(text(invalidColumns.stderr)).toContain("layout.columns must be a finite number");
+
+      const invalidGap = runProjects([
+        "canvases",
+        "compose",
+        "canvas-blocks",
+        "--slug",
+        "invalid-gap",
+        "--blocks-json",
+        JSON.stringify([{ id: "broken", title: "Broken" }]),
+        "--layout-json",
+        JSON.stringify({ columnGap: "wide" }),
+        "--json",
+      ], env);
+      expect(invalidGap.exitCode).toBe(1);
+      expect(text(invalidGap.stderr)).toContain("layout.columnGap must be a finite number");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -6,6 +6,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.84] - 2026-07-07
+
+### Fixed
+
+- Hardened generic canvas block validation so malformed public layout,
+  viewport, explicit position, width, or height JSON fails fast instead of
+  generating invalid React Flow canvas geometry.
+
+### Tests
+
+- Added regression coverage for malformed canvas block geometry through the
+  typed compiler, CLI `projects canvases compose`, and MCP
+  `projects_canvases_compose` / `projects_canvases_upsert` JSON-RPC calls.
+
 ## [0.1.83] - 2026-07-07
 
 ### Added

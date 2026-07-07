@@ -1,8 +1,11 @@
 import { describe, test, expect } from "bun:test";
+import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runMigrations } from "../db/schema.js";
+import { createWorkspace } from "../db/workspaces.js";
 
 function runMcpCli(args: string[]) {
   return Bun.spawnSync({
@@ -211,5 +214,128 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_loops_list");
     expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
+  });
+
+  test("calls canvas compose and upsert MCP tools over stdio", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-canvas-call-"));
+    const dbPath = join(root, "projects.db");
+    const db = new Database(dbPath);
+    db.run("PRAGMA foreign_keys=ON");
+    runMigrations(db);
+    createWorkspace({
+      name: "MCP Canvas",
+      slug: "mcp-canvas",
+      kind: "project",
+      primary_path: join(root, "mcp-canvas"),
+    }, db);
+    db.close();
+
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "project-mcp-test", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "projects_canvases_compose",
+          arguments: {
+            project: "mcp-canvas",
+            slug: "mcp-blocks",
+            blocks: [
+              { id: "summary", title: "Summary" },
+              { id: "table", title: "Table", kind: "table", columns: ["name"], rows: [{ name: "Ada" }] },
+            ],
+            links: [{ source: "summary", target: "table", label: "feeds" }],
+            layout: { columns: 2, columnGap: 320 },
+          },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "projects_canvases_upsert",
+          arguments: {
+            project: "mcp-canvas",
+            slug: "raw-canvas",
+            name: "Raw Canvas",
+            nodes: [
+              { id: "raw", type: "projectPanel", position: { x: 0, y: 0 }, data: { title: "Raw" } },
+            ],
+            edges: [],
+            data: { source: "mcp-test" },
+          },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "projects_canvases_compose",
+          arguments: {
+            project: "mcp-canvas",
+            slug: "invalid-layout",
+            blocks: [{ id: "broken", title: "Broken" }],
+            layout: { columnGap: "wide" },
+            dry_run: true,
+          },
+        },
+      },
+    ];
+    const child = Bun.spawn({
+      cmd: ["bun", "run", "src/mcp/index.ts"],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        HASNA_PROJECTS_HOME: join(root, "home"),
+        HASNA_PROJECTS_DB_PATH: dbPath,
+      },
+    });
+
+    child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    child.stdin.end();
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    rmSync(root, { recursive: true, force: true });
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+      id?: number;
+      result?: { content?: Array<{ type: string; text: string }>; isError?: boolean };
+    }>;
+    const composed = JSON.parse(responses.find((response) => response.id === 2)?.result?.content?.[0]?.text ?? "{}") as {
+      canvas?: { slug: string; nodes: Array<{ id: string; position: { x: number; y: number } }>; data: { block_schema?: string } };
+    };
+    const upserted = JSON.parse(responses.find((response) => response.id === 3)?.result?.content?.[0]?.text ?? "{}") as {
+      canvas?: { slug: string; data?: { source?: string } };
+    };
+    const invalid = responses.find((response) => response.id === 4)?.result;
+
+    expect(composed.canvas?.slug).toBe("mcp-blocks");
+    expect(composed.canvas?.data.block_schema).toBe("hasna.projects_canvas_blocks.v1");
+    expect(composed.canvas?.nodes.map((node) => node.position)).toEqual([{ x: 0, y: 0 }, { x: 320, y: 0 }]);
+    expect(upserted.canvas?.slug).toBe("raw-canvas");
+    expect(upserted.canvas?.data?.source).toBe("mcp-test");
+    expect(invalid?.isError).toBe(true);
+    expect(invalid?.content?.[0]?.text).toContain("layout.columnGap must be a finite number");
   });
 });

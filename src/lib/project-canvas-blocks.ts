@@ -78,6 +78,12 @@ export interface ProjectCanvasBlockLayout extends JsonObject {
   rowGap?: number;
 }
 
+interface ProjectCanvasViewport extends JsonObject {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
 export interface ProjectCanvasBlockSpec extends JsonObject {
   schema?: typeof PROJECT_CANVAS_BLOCK_SCHEMA | string;
   name?: string;
@@ -127,18 +133,50 @@ function assertFinitePoint(value: unknown, label: string): { x: number; y: numbe
   return { x, y };
 }
 
+function assertFiniteNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number`);
+  }
+  return value;
+}
+
+function optionalFiniteNumber(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : assertFiniteNumber(value, label);
+}
+
+function optionalPositiveNumber(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  const numeric = assertFiniteNumber(value, label);
+  if (numeric <= 0) throw new Error(`${label} must be greater than 0`);
+  return numeric;
+}
+
 function normalizeLayout(layout: ProjectCanvasBlockLayout | undefined): Required<ProjectCanvasBlockLayout> {
-  const origin = layout?.origin ? assertFinitePoint(layout.origin, "layout.origin") : { x: 0, y: 0 };
+  if (layout !== undefined && !isObject(layout)) throw new Error("layout must be an object");
+  const origin = layout?.origin === undefined ? { x: 0, y: 0 } : assertFinitePoint(layout.origin, "layout.origin");
   const direction = layout?.direction ?? "grid";
   if (!["horizontal", "vertical", "grid"].includes(direction)) {
     throw new Error(`layout.direction must be horizontal, vertical, or grid`);
   }
+  const columns = optionalFiniteNumber(layout?.columns, "layout.columns");
+  const columnGap = optionalFiniteNumber(layout?.columnGap, "layout.columnGap");
+  const rowGap = optionalFiniteNumber(layout?.rowGap, "layout.rowGap");
   return {
     direction,
-    columns: Math.max(1, Math.floor(layout?.columns ?? 3)),
+    columns: Math.max(1, Math.floor(columns ?? 3)),
     origin,
-    columnGap: Math.max(120, layout?.columnGap ?? 440),
-    rowGap: Math.max(120, layout?.rowGap ?? 300),
+    columnGap: Math.max(120, columnGap ?? 440),
+    rowGap: Math.max(120, rowGap ?? 300),
+  };
+}
+
+function normalizeViewport(viewport: JsonObject | undefined): ProjectCanvasViewport {
+  if (viewport === undefined) return { x: 0, y: 0, zoom: 1 };
+  if (!isObject(viewport)) throw new Error("viewport must be an object");
+  return {
+    x: assertFiniteNumber(viewport.x, "viewport.x"),
+    y: assertFiniteNumber(viewport.y, "viewport.y"),
+    zoom: assertFiniteNumber(viewport.zoom, "viewport.zoom"),
   };
 }
 
@@ -203,15 +241,19 @@ function blockNodeData(block: ProjectCanvasBlock): JsonObject {
 }
 
 function blockToNode(block: ProjectCanvasBlock, index: number, layout: Required<ProjectCanvasBlockLayout>): ProjectCanvasNode {
-  const position = block.position ? assertFinitePoint(block.position, `blocks[${index}].position`) : generatedPosition(index, layout);
+  const position = block.position === undefined
+    ? generatedPosition(index, layout)
+    : assertFinitePoint(block.position, `blocks[${index}].position`);
   const node: ProjectCanvasNode = {
     id: block.id,
     type: block.nodeType ?? "projectPanel",
     position,
     data: blockNodeData(block),
   };
-  if (block.width) node.width = block.width;
-  if (block.height) node.height = block.height;
+  const width = optionalPositiveNumber(block.width, `blocks[${index}].width`);
+  const height = optionalPositiveNumber(block.height, `blocks[${index}].height`);
+  if (width !== undefined) node.width = width;
+  if (height !== undefined) node.height = height;
   return node;
 }
 
@@ -252,7 +294,7 @@ export function composeProjectCanvasBlocks(spec: ProjectCanvasBlockSpec): Compos
   const edges = links.map((link, index) => linkToEdge(link, index, ids));
 
   return {
-    viewport: spec.viewport ?? { x: 0, y: 0, zoom: 1 },
+    viewport: normalizeViewport(spec.viewport),
     nodes,
     edges,
     data: {
