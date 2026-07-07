@@ -25,6 +25,16 @@ function printResults(results: SyncResult[], label: string): void {
   console.log(`Done. ${total} rows ${label}.`);
 }
 
+function printReadiness(info: ReturnType<typeof getStorageStatus>): void {
+  console.log(`Cloud-backed runtime ready: ${info.readiness.cloudBackedRuntimeReady ? "yes" : "no"}`);
+  console.log("Storage surfaces:");
+  for (const surface of info.readiness.surfaces) {
+    const remoteState = surface.remote.active ? "available" : surface.state === "cloud-planned" ? "planned" : "not configured";
+    console.log(`  ${surface.surface}: local ${surface.local.backend} active; remote ${surface.remote.backend} ${remoteState}`);
+    if (surface.migration.blocker) console.log(`    blocker: ${surface.migration.blocker}`);
+  }
+}
+
 export function registerStorageCommands(program: Command): void {
   const cmd = program.command("storage").description("Storage sync commands");
 
@@ -45,6 +55,7 @@ export function registerStorageCommands(program: Command): void {
       console.log(`Runtime secret path: ${info.canonical.runtimeSecretPath}`);
       console.log(`Database env: ${info.canonical.env} (fallback: ${info.canonical.fallbackEnv})`);
       console.log(`Tables: ${info.tables.join(", ")}`);
+      printReadiness(info);
       if (info.sync.length === 0) console.log("Sync: no local sync history");
       for (const entry of info.sync) {
         console.log(`  ${entry.table_name} ${entry.direction}: ${entry.last_synced_at ?? "never"}`);
@@ -53,7 +64,7 @@ export function registerStorageCommands(program: Command): void {
 
   cmd
     .command("push")
-    .description("Push local workspace data to storage PostgreSQL")
+    .description("Push local project registry data to storage PostgreSQL")
     .option("--tables <tables>", "Comma-separated table names (default: all)")
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
@@ -72,7 +83,7 @@ export function registerStorageCommands(program: Command): void {
 
   cmd
     .command("pull")
-    .description("Pull workspace data from storage PostgreSQL to local SQLite")
+    .description("Pull project registry data from storage PostgreSQL to local SQLite")
     .option("--tables <tables>", "Comma-separated table names (default: all)")
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {

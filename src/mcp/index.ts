@@ -73,6 +73,7 @@ import {
   type ProjectBudgetStatus,
 } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
+import { ensureProjectChannel, resolveProjectChannel } from "../lib/project-channel.js";
 import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
 import {
   PROJECT_PRIORITIES,
@@ -2405,6 +2406,35 @@ server.tool(
       const res = explainProjectResolution(input.target, { cwd: input.cwd });
       if (input.for_agent) return jsonText({ text: toAgentText(res) });
       return jsonText(res);
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_channel",
+  "Resolve a project's conversations channel (project -> channel) from the stored integration or the fleet naming convention. Pass ensure=true to create the channel if missing and link it on the project record.",
+  {
+    target: z.string().optional(),
+    cwd: z.string().optional(),
+    ensure: z.boolean().optional(),
+    from: z.string().optional(),
+    dry_run: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const effectiveTarget = input.target?.trim() || input.cwd?.trim() || ".";
+      if (!input.ensure) return jsonText(resolveProjectChannel(effectiveTarget));
+      const project = findProjectTarget(effectiveTarget);
+      if (!project) return errorText(`Project not found: ${effectiveTarget}`);
+      return jsonText(ensureProjectChannel(project, {
+        source: "mcp",
+        command: "projects_channel",
+        agentId: ensureCliAgent().id,
+        from: input.from,
+        dryRun: input.dry_run,
+      }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }

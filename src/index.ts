@@ -44,6 +44,7 @@ export * from "./db/remote-storage.js";
 export * from "./db/pg-migrations.js";
 export {
   PROJECT_STORE_SCHEMA_VERSION,
+  PROJECT_STORE_TABLES,
   createProjectCanvas,
   createProjectDataModel,
   createProjectDataRecord,
@@ -87,6 +88,7 @@ export type {
   ProjectStorePaths as ProjectAppStorePaths,
   ProjectStoreProject as ProjectAppStoreProject,
   ProjectStoreSummary as ProjectAppStoreSummary,
+  ProjectStoreTable as ProjectAppStoreTable,
 } from "./db/project-store.js";
 export {
   createRoot,
@@ -337,6 +339,27 @@ export type {
   WorkspaceCreationPlanAction as ProjectCreationPlanAction,
   WorkspaceCreationPlanInput as ProjectCreationPlanInput,
 } from "./lib/workspace-plan.js";
+export {
+  PROJECT_CHANNEL_CLASSES,
+  PROJECT_CHANNEL_INTEGRATION_KEY,
+  classifyProjectChannelName,
+  conversationsCliRunner,
+  deriveProjectChannel,
+  ensureProjectChannel,
+  normalizeProjectChannelName,
+  resolveProjectChannel,
+  resolveProjectChannelForProject,
+  shouldEnsureProjectChannel,
+} from "./lib/project-channel.js";
+export type {
+  ConversationsChannelRunner,
+  ConversationsRunResult,
+  EnsureProjectChannelOptions,
+  ProjectChannelClass,
+  ProjectChannelDerivation,
+  ProjectChannelEnsureResult,
+  ProjectChannelResolution,
+} from "./lib/project-channel.js";
 export {
   DEFAULT_WORKSPACE_AGENT_MODEL as DEFAULT_PROJECT_AGENT_MODEL,
   PROJECT_AGENT_DESTRUCTIVE_TOOLS,

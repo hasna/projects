@@ -89,6 +89,7 @@ import {
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
+import { ensureProjectChannel, resolveProjectChannelForProject } from "../../lib/project-channel.js";
 import {
   parseProjectStartAgent,
   parseProjectStartSessionPolicy,
@@ -780,6 +781,59 @@ function registerAgentAssistCommands(program: Command): void {
         if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(toAgentText(result));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
+    .command("channel [target]")
+    .description("Resolve the project's conversations channel (prints the channel name)")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("--ensure", "Create the conversations channel if missing and link it on the project record")
+    .option("--from <identity>", "Conversations identity recorded as channel creator (with --ensure)")
+    .option("--dry-run", "With --ensure: report what would happen without creating anything")
+    .option("--agent <id-or-slug>", "Attributing agent")
+    .option("-j, --json", "Output JSON")
+    .action((target, opts) => {
+      try {
+        const effectiveTarget = typeof target === "string" && target.trim() ? target : resolveCwdOption(opts);
+        const project = resolveRegisteredProjectTargetOrThrow(effectiveTarget).project;
+        if (!opts.ensure) {
+          const resolution = resolveProjectChannelForProject(project);
+          if (wantsJson(opts)) { printObject(resolution, opts); return; }
+          console.log(resolution.channel);
+          return;
+        }
+        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const result = ensureProjectChannel(project, {
+          agentId,
+          source: "cli",
+          command: process.argv.join(" "),
+          from: opts.from,
+          dryRun: opts.dryRun,
+        });
+        if (wantsJson(opts)) {
+          printObject({
+            channel: result.channel,
+            channel_class: result.channel_class,
+            source: result.source,
+            status: result.status,
+            created: result.created,
+            linked: result.linked,
+            persisted: result.persisted,
+            message: result.message,
+            project: { id: result.project.id, slug: result.project.slug, integrations: result.project.integrations },
+          }, opts);
+        } else if (result.status === "planned") {
+          console.log(chalk.dim(`[dry-run] Would ensure conversations channel #${result.channel} (${result.channel_class}).`));
+        } else if (result.status === "error") {
+          console.error(chalk.red(`Channel ensure failed for #${result.channel}: ${result.message ?? "unknown error"}`));
+        } else {
+          console.log(chalk.green(`✓ Channel ${result.status === "created" ? "created" : "exists"}: #${result.channel}`) + chalk.dim(` (${result.channel_class}${result.persisted ? ", linked on project" : ""})`));
+        }
+        if (result.status === "error") process.exit(1);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -1886,6 +1940,9 @@ function registerProjectCommands(program: Command): void {
         const briefTarget = externalLinks.brief.id ?? externalLinks.brief.path;
         console.log(`  ${chalk.dim("brief:")} ${opts.verbose ? briefTarget : compactText(briefTarget, 120)}${externalLinks.brief.path_exists === false ? " (path missing)" : ""}`);
       }
+      if (project.integrations.conversations_channel) {
+        console.log(`  ${chalk.dim("channel:")} #${project.integrations.conversations_channel}`);
+      }
       try {
         const tmux = await projectTmuxStatus(project.slug);
         if (tmux.tmux_available) {
@@ -2218,6 +2275,7 @@ function registerProjectCommands(program: Command): void {
     .option("--brief-path <path>", "Brief/spec path")
     .option("--mementos-project-id <id>", "Mementos project id")
     .option("--conversations-space <space>", "Conversations space")
+    .option("--conversations-channel <name>", "Conversations channel name")
     .option("--files-index-id <id>", "Files index id")
     .option("--integration <key=value>", "Additional integration key=value", collectOption, [])
     .option("--integrations-json <json>", "Additional integrations JSON object")
@@ -2236,6 +2294,7 @@ function registerProjectCommands(program: Command): void {
             brief_path: opts.briefPath,
             mementos_project_id: opts.mementosProjectId,
             conversations_space: opts.conversationsSpace,
+            conversations_channel: opts.conversationsChannel,
             files_index_id: opts.filesIndexId,
           },
           parseIntegrationPairs(opts.integration),
@@ -2262,7 +2321,7 @@ function registerProjectCommands(program: Command): void {
     .option("--todos", "Clear todos project and task-list links")
     .option("--brief", "Clear brief/spec id and path links")
     .option("--mementos", "Clear mementos project link")
-    .option("--conversations", "Clear conversations space link")
+    .option("--conversations", "Clear conversations space and channel links")
     .option("--files", "Clear files index link")
     .option("--key <key>", "Integration key or group to clear; repeatable", collectOption, [])
     .option("--agent <id-or-slug>", "Attributing agent")

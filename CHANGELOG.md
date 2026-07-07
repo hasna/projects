@@ -6,7 +6,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Added
+
+- **Project -> conversations channel linkage** (fleet comms workflow, todos
+  task `c4bee3e0`): the channel name is stored on the project record as
+  `integrations.conversations_channel` and derived from the slug + kind per
+  the fleet channel naming convention when unset (`open-source` -> flat repo
+  name, `platform` -> `platform-*`, `internal-app` -> `iapp-*`,
+  `company-website` -> `cweb-*`, `community` -> `community-*`, `experiment` ->
+  `research-*`, everything else -> `internal-*`; already-prefixed slugs are
+  kept as-is).
+- **Ensure-channel on create/start** — `projects create` and `projects start`
+  create the conversations channel when missing (create-first probe against
+  the `conversations` CLI, 15s timeout, never fatal: failures surface as
+  `channel.status === "error"`), link it on the project record, and record a
+  `channel_ensured` audit event. Opt out with `PROJECTS_CHANNEL_ENSURE=0`;
+  defaults off under `NODE_ENV=test`.
+- **Channel resolution surface parity** — `projects channel [target]` CLI
+  command (prints the bare channel name for loops/scripts; `--json`,
+  `--ensure`, `--from`, `--dry-run`), `projects_channel` MCP tool,
+  `projects_channel` prompt-agent tool (approval-gated ensure), and SDK
+  exports (`deriveProjectChannel`, `resolveProjectChannel`,
+  `resolveProjectChannelForProject`, `ensureProjectChannel`).
+- `projects link --conversations-channel <name>`, `channel` integration alias,
+  `conversations_channel` in the `conversations` unlink group, agent
+  context/handoff integration payloads, and `projects show` channel line.
 
 ## [0.1.79] - 2026-07-06
 

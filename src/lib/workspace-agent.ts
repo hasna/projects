@@ -64,6 +64,7 @@ import {
   startProject,
 } from "./project-start.js";
 import { projectTmuxStatus } from "./project-tmux-status.js";
+import { ensureProjectChannel, resolveProjectChannelForProject } from "./project-channel.js";
 import { filterProjectEvalArtifacts } from "./project-eval-artifacts.js";
 import { resolveRegisteredProjectTarget } from "./project-resolver.js";
 import {
@@ -139,6 +140,7 @@ export const PROJECT_AGENT_MUTATION_TOOLS = [
   "projects_github_unpublish",
   "projects_link",
   "projects_unlink",
+  "projects_channel",
   "projects_event_record",
   "projects_start",
 ] as const;
@@ -1882,6 +1884,29 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         prompt: options.prompt,
         command,
       })),
+    }),
+    projects_channel: tool({
+      description: "Resolve the project's conversations channel (project -> channel) from the stored integration or the fleet naming convention. ensure=true creates the channel if missing and links it on the project record; mutates only when approved.",
+      inputSchema: z.object({
+        target: z.string().optional().describe("Project id, slug, name, or path; defaults to the working directory"),
+        ensure: z.boolean().optional().describe("Create the conversations channel if missing and persist the link on the project record"),
+      }),
+      execute: async (input) => {
+        const workspace = resolveProjectTarget(input.target?.trim() || ".");
+        if (!workspace) return { error: `Project not found: ${input.target ?? "."}` };
+        if (!input.ensure) return resolveProjectChannelForProject(workspace);
+        const result = ensureProjectChannel(workspace, {
+          agentId: actorAgent.id,
+          source: "agent",
+          command,
+          dryRun: !approve,
+        });
+        return {
+          ...result,
+          project: compactProject(result.project),
+          ...(approve ? {} : { note: "Run again with --yes to create the channel." }),
+        };
+      },
     }),
     projects_link: tool({
       description: "Merge external integration IDs, such as todos/mementos/conversations/files/GitHub IDs, into an existing project. Mutates only when approved.",

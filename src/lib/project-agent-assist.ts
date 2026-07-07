@@ -193,6 +193,7 @@ export function buildProjectAgentContext(options: ProjectAgentContextOptions = {
       path_exists: links.brief.path ? existsSync(links.brief.path) : null,
     },
     conversations_space: project.integrations.conversations_space ?? null,
+    conversations_channel: project.integrations.conversations_channel ?? null,
     mementos_project_id: project.integrations.mementos_project_id ?? null,
     files_index_id: project.integrations.files_index_id ?? null,
   };
@@ -620,6 +621,7 @@ export function buildProjectHandoff(options: ProjectHandoffOptions = {}): Projec
     todos: links.todos,
     brief: { id: links.brief.id, path: links.brief.path, path_exists: links.brief.path ? existsSync(links.brief.path) : null },
     conversations_space: project.integrations.conversations_space ?? null,
+    conversations_channel: project.integrations.conversations_channel ?? null,
   };
 
   const tmuxSessions = safeTmuxSessionNames().filter((n) => n.includes(project.slug));

@@ -1,6 +1,7 @@
 export {
   PROJECTS_HOME_ENV,
   PROJECT_STORE_SCHEMA_VERSION,
+  PROJECT_STORE_TABLES,
   createProjectCanvas,
   createProjectDataModel,
   createProjectDataRecord,
@@ -45,4 +46,5 @@ export type {
   ProjectStorePaths,
   ProjectStoreProject,
   ProjectStoreSummary,
+  ProjectStoreTable,
 } from "./db/project-store.js";

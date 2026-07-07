@@ -228,7 +228,7 @@ describe("project-first CLI surface", () => {
     const stdout = text(result.stdout);
 
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why handoff runs oss store canvases loops locations");
+    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why channel handoff runs oss store canvases loops locations");
     expect(stdout).toContain("storage reports completion");
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
@@ -326,6 +326,7 @@ describe("project-first CLI surface", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as { files: string[] };
     expect(pkg.files).toContain(".cursor/hooks.json");
     expect(pkg.files).toContain(".cursor/hooks/goal-continue.sh");
+    expect(pkg.files).toContain("docs");
   });
 
   test("agent-assist CLI commands emit JSON, agent text, and run detail by default", () => {
@@ -356,6 +357,17 @@ describe("project-first CLI surface", () => {
     const why = runProjects(["why", "agent-assist", "--for-agent"], env);
     expect(why.exitCode).toBe(0);
     expect(text(why.stdout)).toContain("Resolution");
+
+    const channel = runProjects(["channel", "agent-assist"], env);
+    expect(channel.exitCode).toBe(0);
+    expect(text(channel.stdout).trim()).toBe("internal-agent-assist");
+
+    const channelJson = runProjects(["channel", "agent-assist", "--json"], env);
+    expect(channelJson.exitCode).toBe(0);
+    const channelPayload = JSON.parse(text(channelJson.stdout)) as { channel: string; channel_class: string; linked: boolean };
+    expect(channelPayload.channel).toBe("internal-agent-assist");
+    expect(channelPayload.channel_class).toBe("initiative");
+    expect(channelPayload.linked).toBe(false);
 
     const handoff = runProjects(["handoff", "agent-assist", "--json"], env);
     expect(handoff.exitCode).toBe(0);

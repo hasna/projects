@@ -196,6 +196,7 @@ export interface WorkspaceIntegrations {
   todos_project_id?: string;
   mementos_project_id?: string;
   conversations_space?: string;
+  conversations_channel?: string;
   files_index_id?: string;
   [key: string]: string | undefined;
 }
