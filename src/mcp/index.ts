@@ -53,6 +53,7 @@ import {
   startProject,
 } from "../lib/project-start.js";
 import { projectTmuxStatus } from "../lib/project-tmux-status.js";
+import { projectCanvasInputFromBlocks } from "../lib/project-canvas-blocks.js";
 import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../lib/project-render.js";
 import { inspectProjectStore as inspectCanonicalProjectStore } from "../lib/project-store.js";
 import {
@@ -64,6 +65,7 @@ import {
   listProjectCanvases,
   listProjectDataModels,
   listProjectLoopSummaries,
+  upsertProjectCanvas,
 } from "../db/project-store.js";
 import {
   createProjectBudget,
@@ -1149,6 +1151,107 @@ server.tool(
         edges: input.edges as never,
         data: input.data as JsonObject | undefined,
         metadata: input.metadata as JsonObject | undefined,
+      }));
+      const payload = buildProjectCanvasPayload({
+        project,
+        canvas,
+        dataModels: listProjectDataModels(project),
+      });
+      return jsonText(input.render_spec ? payload.render : withoutRender(payload));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_canvases_upsert",
+  "Create or update a per-project React Flow canvas by slug.",
+  {
+    project: z.string(),
+    slug: z.string(),
+    name: z.string().optional(),
+    description: z.string().nullable().optional(),
+    status: z.enum(["active", "archived"]).optional(),
+    layout_engine: z.string().optional(),
+    viewport: z.record(z.unknown()).optional(),
+    nodes: z.array(z.record(z.unknown())).optional(),
+    edges: z.array(z.record(z.unknown())).optional(),
+    data: z.record(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    render_spec: z.boolean().optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const canvas = withWorkspaceMutationLock(project, owner, "project canvas upsert", () => upsertProjectCanvas(project, {
+        slug: input.slug,
+        name: input.name,
+        description: input.description,
+        status: input.status,
+        layout_engine: input.layout_engine,
+        viewport: input.viewport as JsonObject | undefined,
+        nodes: input.nodes as never,
+        edges: input.edges as never,
+        data: input.data as JsonObject | undefined,
+        metadata: input.metadata as JsonObject | undefined,
+      }));
+      const payload = buildProjectCanvasPayload({
+        project,
+        canvas,
+        dataModels: listProjectDataModels(project),
+      });
+      return jsonText(input.render_spec ? payload.render : withoutRender(payload));
+    } catch (err) {
+      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+);
+
+server.tool(
+  "projects_canvases_compose",
+  "Compile generic canvas blocks/links and upsert the resulting React Flow canvas.",
+  {
+    project: z.string(),
+    slug: z.string().optional(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    viewport: z.record(z.unknown()).optional(),
+    layout: z.record(z.unknown()).optional(),
+    blocks: z.array(z.record(z.unknown())),
+    links: z.array(z.record(z.unknown())).optional(),
+    data: z.record(z.unknown()).optional(),
+    metadata: z.record(z.unknown()).optional(),
+    dry_run: z.boolean().optional(),
+    render_spec: z.boolean().optional(),
+    agent: z.string().optional(),
+  },
+  async (input) => {
+    try {
+      const project = findProjectTarget(input.project);
+      if (!project) return errorText(`Project not found: ${input.project}`);
+      const canvasInput = projectCanvasInputFromBlocks({
+        slug: input.slug,
+        name: input.name,
+        description: input.description,
+        viewport: input.viewport as JsonObject | undefined,
+        layout: input.layout as never,
+        blocks: input.blocks as never,
+        links: input.links as never,
+        data: input.data as JsonObject | undefined,
+        metadata: input.metadata as JsonObject | undefined,
+      });
+      if (!canvasInput.slug) return errorText("Canvas slug is required");
+      if (input.dry_run) {
+        return jsonText({ project: projectWithManagement(project), canvas: canvasInput });
+      }
+      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const canvas = withWorkspaceMutationLock(project, owner, "project canvas compose", () => upsertProjectCanvas(project, {
+        ...canvasInput,
+        slug: canvasInput.slug!,
       }));
       const payload = buildProjectCanvasPayload({
         project,

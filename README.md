@@ -73,6 +73,8 @@ projects status my-app --profile dev --json
 projects store inspect my-app --json
 projects canvases list my-app --ensure-default --render-spec
 projects canvases create my-app --name "Research Board" --nodes-json '[{"id":"note","position":{"x":0,"y":0},"data":{"title":"Note"}}]'
+projects canvases upsert my-app --slug planning-board --nodes-json '[{"id":"summary","type":"projectPanel","position":{"x":0,"y":0},"data":{"title":"Summary"}}]'
+projects canvases compose my-app --spec-json '{"slug":"directory","blocks":[{"id":"summary","title":"Summary"},{"id":"table","title":"Table","columns":["name","role"],"rows":[{"name":"Ada","role":"Lead"}]}],"links":[{"source":"summary","target":"table"}]}'
 projects dashboard snapshot my-app --write --json
 projects dashboard render my-app --json
 projects dashboard validate my-app --json
@@ -225,7 +227,41 @@ Per-project app data lives in the canonical runtime data path at
 stores project-specific canvases, custom JSON data models/records, and OpenLoops
 links. `projects canvases * --render-spec` emits a JSON Render contract for a
 TypeScript React surface using Tailwind, shadcn components, and React Flow as an
-infinite canvas; a project may have multiple canvases.
+infinite canvas; a project may have multiple canvases. Use
+`projects canvases upsert <project> --slug <slug>` when an agent or script needs
+idempotent create-or-update behavior for raw React Flow `nodes`/`edges`.
+Use `projects canvases compose <project>` for higher-level generic block specs:
+blocks become `ProjectCanvasCard` nodes, links become React Flow edges, and
+table-like blocks can carry `columns`/`rows` without creating a one-off
+domain-specific command.
+
+Generic block specs are intentionally domain-neutral. The same shape can model a
+reporting hierarchy, a project map, a directory table, a roadmap, or a handoff
+board:
+
+```json
+{
+  "slug": "directory",
+  "name": "Directory",
+  "layout": { "direction": "grid", "columns": 2 },
+  "blocks": [
+    {
+      "id": "summary",
+      "title": "Summary",
+      "kind": "summary",
+      "metrics": [{ "label": "People", "value": 2, "tone": "info" }]
+    },
+    {
+      "id": "table",
+      "title": "Directory Table",
+      "kind": "table",
+      "columns": ["name", "role"],
+      "rows": [{ "name": "Ada", "role": "Lead" }]
+    }
+  ],
+  "links": [{ "source": "summary", "target": "table", "label": "details" }]
+}
+```
 
 Cloud-backed runtime support is explicit in storage status. The local SQLite
 registry and each project's local `project.db` remain the active runtime stores
@@ -338,7 +374,7 @@ Endpoints: `GET /health` → `{"status":"ok","name":"projects"}`, MCP at `POST/G
 | `projects_list` / `projects_show` | Search and inspect projects |
 | `projects_render_list` / `projects_render_show` / `projects_render_start` / `projects_render_status` / `projects_render_sessions` / `projects_render_roots` / `projects_render_recipes` | Emit validated JSON Render specs for project surfaces |
 | `projects_store_inspect` | Inspect canonical project storage and the per-project app store under `$HASNA_PROJECTS_HOME/data/<workspace_id>/project.db` |
-| `projects_canvases_list` / `projects_canvases_create` / `projects_render_canvas` | Manage and render per-project React Flow canvas records |
+| `projects_canvases_list` / `projects_canvases_create` / `projects_canvases_upsert` / `projects_canvases_compose` / `projects_render_canvas` | Manage, compose, update, and render per-project React Flow canvas records |
 | `projects_loops_link` / `projects_loops_list` | Link project stores to OpenLoops loops and summarize them through `@hasna/loops` |
 | `projects_locations_list` / `projects_locations_add` | Inspect and register additional folder locations for a project |
 | `projects_create` | Plan or create a project anywhere on disk |

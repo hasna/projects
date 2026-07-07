@@ -1,6 +1,6 @@
 {
   "name": "@hasna/projects",
-  "version": "0.1.82",
+  "version": "0.1.83",
   "description": "High-level project management CLI, MCP server, SDK, and AI SDK agent loop for coding agents",
   "type": "module",
   "main": "dist/index.js",
@@ -112,7 +112,6 @@
     }
   },
   "devDependencies": {
-    "@hasna/mcp-harness": "file:../open-mcp",
     "@types/bun": "^1.2.4",
     "@types/pg": "^8.11.11",
     "typescript": "^5.7.3"

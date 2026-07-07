@@ -98,6 +98,13 @@ import {
   type ProjectStartResult,
 } from "../../lib/project-start.js";
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
+import {
+  projectCanvasInputFromBlocks,
+  type ProjectCanvasBlock,
+  type ProjectCanvasBlockLayout,
+  type ProjectCanvasBlockLink,
+  type ProjectCanvasBlockSpec,
+} from "../../lib/project-canvas-blocks.js";
 import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
   createProjectCanvas,
@@ -110,6 +117,8 @@ import {
   listProjectLoopSummaries,
   type ProjectCanvasEdge,
   type ProjectCanvasNode,
+  type UpsertProjectCanvasInput,
+  upsertProjectCanvas,
 } from "../../db/project-store.js";
 import {
   buildProjectAgentContext,
@@ -252,6 +261,135 @@ function parseJsonArray<T>(value: string | undefined, label: string): T[] | unde
   const parsed = JSON.parse(value) as unknown;
   if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array`);
   return parsed as T[];
+}
+
+function parseJsonValueSource(value: string | undefined, file: string | undefined, label: string): unknown {
+  if (value && file) throw new Error(`Use either ${label}-json or ${label}-file, not both`);
+  if (file) return JSON.parse(readFileSync(file, "utf-8")) as unknown;
+  if (value) return JSON.parse(value) as unknown;
+  return undefined;
+}
+
+function jsonObjectFromValue(value: unknown, label: string): JsonObject | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return value as JsonObject;
+}
+
+function jsonArrayFromValue<T>(value: unknown, label: string): T[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label} must be a JSON array`);
+  return value as T[];
+}
+
+function stringFromValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+interface CanvasJsonSpec extends JsonObject {
+  name?: string;
+  slug?: string;
+  description?: string;
+  status?: string;
+  layout_engine?: string;
+  viewport?: JsonObject;
+  nodes?: ProjectCanvasNode[];
+  edges?: ProjectCanvasEdge[];
+  data?: JsonObject;
+  metadata?: JsonObject;
+  layout?: ProjectCanvasBlockLayout;
+  blocks?: ProjectCanvasBlock[];
+  links?: ProjectCanvasBlockLink[];
+}
+
+interface CanvasUpsertCliOptions {
+  slug?: string;
+  name?: string;
+  description?: string;
+  status?: string;
+  layoutEngine?: string;
+  specJson?: string;
+  specFile?: string;
+  viewportJson?: string;
+  nodesJson?: string;
+  edgesJson?: string;
+  dataJson?: string;
+  metadataJson?: string;
+  blocksJson?: string;
+  blocksFile?: string;
+  linksJson?: string;
+  linksFile?: string;
+  layoutJson?: string;
+}
+
+function parseCanvasStatus(value: string | undefined): "active" | "archived" | undefined {
+  if (!value) return undefined;
+  if (value === "active" || value === "archived") return value;
+  throw new Error(`--status must be active or archived`);
+}
+
+function parseCanvasJsonSpec(opts: CanvasUpsertCliOptions): CanvasJsonSpec {
+  const rawSpec = parseJsonValueSource(opts.specJson, opts.specFile, "--spec");
+  const spec = jsonObjectFromValue(rawSpec, "--spec") ?? {};
+  return spec as CanvasJsonSpec;
+}
+
+function parseCanvasBlocks(spec: CanvasJsonSpec, opts: CanvasUpsertCliOptions): ProjectCanvasBlockSpec | undefined {
+  const blocks = jsonArrayFromValue<ProjectCanvasBlock>(
+    parseJsonValueSource(opts.blocksJson, opts.blocksFile, "--blocks") ?? spec.blocks,
+    "--blocks",
+  );
+  if (!blocks) return undefined;
+  const links = jsonArrayFromValue<ProjectCanvasBlockLink>(
+    parseJsonValueSource(opts.linksJson, opts.linksFile, "--links") ?? spec.links,
+    "--links",
+  );
+  const layout = jsonObjectFromValue(
+    opts.layoutJson ? JSON.parse(opts.layoutJson) : spec.layout,
+    "--layout-json",
+  ) as ProjectCanvasBlockLayout | undefined;
+  return {
+    schema: stringFromValue(spec.schema) ?? undefined,
+    name: opts.name ?? stringFromValue(spec.name),
+    slug: opts.slug ?? stringFromValue(spec.slug),
+    description: opts.description ?? stringFromValue(spec.description),
+    viewport: parseJsonObject(opts.viewportJson, "--viewport-json") ?? spec.viewport,
+    layout,
+    blocks,
+    links,
+    data: parseJsonObject(opts.dataJson, "--data-json") ?? spec.data,
+    metadata: parseJsonObject(opts.metadataJson, "--metadata-json") ?? spec.metadata,
+  };
+}
+
+function canvasUpsertInputFromOptions(opts: CanvasUpsertCliOptions, requireBlocks = false): UpsertProjectCanvasInput {
+  const spec = parseCanvasJsonSpec(opts);
+  const blockSpec = parseCanvasBlocks(spec, opts);
+  if (requireBlocks && !blockSpec) throw new Error("Provide --spec-json/--spec-file with blocks or --blocks-json/--blocks-file");
+  const blockInput = blockSpec
+    ? projectCanvasInputFromBlocks(blockSpec, {
+      slug: opts.slug ?? stringFromValue(spec.slug),
+      name: opts.name ?? stringFromValue(spec.name),
+      description: opts.description ?? stringFromValue(spec.description),
+    })
+    : undefined;
+  const slug = opts.slug ?? stringFromValue(spec.slug) ?? blockInput?.slug;
+  if (!slug) throw new Error("Canvas slug is required. Pass --slug or include slug in --spec-json/--spec-file.");
+
+  return {
+    slug,
+    name: opts.name ?? stringFromValue(spec.name) ?? blockInput?.name,
+    description: opts.description ?? stringFromValue(spec.description) ?? blockInput?.description,
+    status: parseCanvasStatus(opts.status ?? stringFromValue(spec.status)),
+    layout_engine: opts.layoutEngine ?? stringFromValue(spec.layout_engine),
+    viewport: blockInput?.viewport ?? parseJsonObject(opts.viewportJson, "--viewport-json") ?? spec.viewport,
+    nodes: blockInput?.nodes ?? parseJsonArray<ProjectCanvasNode>(opts.nodesJson, "--nodes-json") ?? spec.nodes,
+    edges: blockInput?.edges ?? parseJsonArray<ProjectCanvasEdge>(opts.edgesJson, "--edges-json") ?? spec.edges,
+    data: blockInput?.data ?? parseJsonObject(opts.dataJson, "--data-json") ?? spec.data,
+    metadata: blockInput?.metadata ?? parseJsonObject(opts.metadataJson, "--metadata-json") ?? spec.metadata,
+  };
 }
 
 function parseIntegrationsJson(value: string | undefined): WorkspaceIntegrations | undefined {
@@ -2830,6 +2968,100 @@ function registerProjectCanvasCommands(program: Command): void {
         if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
         if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
         console.log(chalk.green(`✓ Canvas created: ${canvas.slug}`));
+        console.log(`  ${chalk.dim("project db:")} ${inspectProjectAppStore(project).paths.db_path}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("upsert <project>")
+    .description("Create or update a project canvas by slug from React Flow JSON or a generic block spec")
+    .option("--slug <slug>", "Canvas slug. Required unless --spec-json/--spec-file includes slug")
+    .option("--name <name>", "Canvas name")
+    .option("--description <text>", "Canvas description")
+    .option("--status <status>", "Canvas status: active or archived")
+    .option("--layout-engine <engine>", "Canvas layout engine")
+    .option("--spec-json <json>", "Canvas spec JSON object; may include nodes/edges or blocks/links")
+    .option("--spec-file <path>", "Read canvas spec JSON object from a file")
+    .option("--viewport-json <json>", "React Flow viewport JSON object")
+    .option("--nodes-json <json>", "React Flow nodes JSON array")
+    .option("--edges-json <json>", "React Flow edges JSON array")
+    .option("--data-json <json>", "Canvas data JSON object")
+    .option("--metadata-json <json>", "Canvas metadata JSON object")
+    .option("--blocks-json <json>", "Generic canvas block JSON array")
+    .option("--blocks-file <path>", "Read generic canvas block JSON array from a file")
+    .option("--links-json <json>", "Generic canvas block link JSON array")
+    .option("--links-file <path>", "Read generic canvas block link JSON array from a file")
+    .option("--layout-json <json>", "Generic block layout JSON object")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const input = canvasUpsertInputFromOptions(opts);
+        const canvas = upsertProjectCanvas(project, input);
+        const payload = buildProjectCanvasPayload({
+          project,
+          canvas,
+          dataModels: listProjectDataModels(project),
+        });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
+        console.log(chalk.green(`✓ Canvas upserted: ${canvas.slug}`));
+        console.log(`  ${chalk.dim("nodes:")} ${canvas.nodes.length}`);
+        console.log(`  ${chalk.dim("edges:")} ${canvas.edges.length}`);
+        console.log(`  ${chalk.dim("project db:")} ${inspectProjectAppStore(project).paths.db_path}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command("compose <project>")
+    .description("Compile generic canvas blocks/links and upsert the resulting React Flow canvas")
+    .option("--slug <slug>", "Canvas slug. Required unless --spec-json/--spec-file includes slug")
+    .option("--name <name>", "Canvas name")
+    .option("--description <text>", "Canvas description")
+    .option("--spec-json <json>", "Block canvas spec JSON object")
+    .option("--spec-file <path>", "Read block canvas spec JSON object from a file")
+    .option("--blocks-json <json>", "Generic canvas block JSON array")
+    .option("--blocks-file <path>", "Read generic canvas block JSON array from a file")
+    .option("--links-json <json>", "Generic canvas block link JSON array")
+    .option("--links-file <path>", "Read generic canvas block link JSON array from a file")
+    .option("--layout-json <json>", "Generic block layout JSON object")
+    .option("--viewport-json <json>", "React Flow viewport JSON object")
+    .option("--data-json <json>", "Canvas data JSON object")
+    .option("--metadata-json <json>", "Canvas metadata JSON object")
+    .option("--dry-run", "Compile and print the canvas input without writing project.db")
+    .option("--render-spec", "Output a JSON Render spec")
+    .option("-j, --json", "Output JSON")
+    .action((projectIdOrSlug, opts) => {
+      try {
+        const project = resolveProjectTarget(projectIdOrSlug);
+        const input = canvasUpsertInputFromOptions(opts, true);
+        if (opts.dryRun) {
+          const payload = { project: projectWithManagement(project), canvas: input };
+          if (wantsJson(opts)) { printObject(payload, opts); return; }
+          console.log(chalk.dim("[dry-run] Canvas blocks compiled"));
+          console.log(`  ${chalk.dim("slug:")} ${input.slug}`);
+          console.log(`  ${chalk.dim("nodes:")} ${input.nodes?.length ?? 0}`);
+          console.log(`  ${chalk.dim("edges:")} ${input.edges?.length ?? 0}`);
+          return;
+        }
+        const canvas = upsertProjectCanvas(project, input);
+        const payload = buildProjectCanvasPayload({
+          project,
+          canvas,
+          dataModels: listProjectDataModels(project),
+        });
+        if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+        if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
+        console.log(chalk.green(`✓ Canvas composed: ${canvas.slug}`));
+        console.log(`  ${chalk.dim("nodes:")} ${canvas.nodes.length}`);
+        console.log(`  ${chalk.dim("edges:")} ${canvas.edges.length}`);
         console.log(`  ${chalk.dim("project db:")} ${inspectProjectAppStore(project).paths.db_path}`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));

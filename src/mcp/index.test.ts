@@ -125,6 +125,8 @@ describe("projects-mcp project-first surface", () => {
     expect(source).toContain("\"projects_store_inspect\"");
     expect(source).toContain("\"projects_canvases_list\"");
     expect(source).toContain("\"projects_canvases_create\"");
+    expect(source).toContain("\"projects_canvases_upsert\"");
+    expect(source).toContain("\"projects_canvases_compose\"");
     expect(source).toContain("\"projects_render_canvas\"");
     expect(source).toContain("\"projects_loops_link\"");
     expect(source).toContain("\"projects_loops_list\"");
@@ -202,6 +204,8 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_store_inspect");
     expect(tools).toContain("projects_canvases_list");
     expect(tools).toContain("projects_canvases_create");
+    expect(tools).toContain("projects_canvases_upsert");
+    expect(tools).toContain("projects_canvases_compose");
     expect(tools).toContain("projects_render_canvas");
     expect(tools).toContain("projects_loops_link");
     expect(tools).toContain("projects_loops_list");

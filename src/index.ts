@@ -68,6 +68,7 @@ export {
   listProjectLoopSummaries,
   runProjectStoreMigrations,
   updateProjectCanvasLayout,
+  upsertProjectCanvas,
 } from "./db/project-store.js";
 export type {
   CreateProjectCanvasInput,
@@ -76,6 +77,7 @@ export type {
   LinkProjectLoopInput,
   LoopsClientLike,
   UpdateProjectCanvasLayoutInput,
+  UpsertProjectCanvasInput,
   ProjectCanvas,
   ProjectCanvasEdge,
   ProjectCanvasNode,
@@ -90,6 +92,26 @@ export type {
   ProjectStoreSummary as ProjectAppStoreSummary,
   ProjectStoreTable as ProjectAppStoreTable,
 } from "./db/project-store.js";
+export {
+  PROJECT_CANVAS_BLOCK_SCHEMA,
+  composeProjectCanvasBlocks,
+  projectCanvasInputFromBlocks,
+} from "./lib/project-canvas-blocks.js";
+export type {
+  ComposeProjectCanvasBlocksResult,
+  ProjectCanvasBlock,
+  ProjectCanvasBlockAction,
+  ProjectCanvasBlockDirection,
+  ProjectCanvasBlockHandle,
+  ProjectCanvasBlockItem,
+  ProjectCanvasBlockLayout,
+  ProjectCanvasBlockLink,
+  ProjectCanvasBlockMetric,
+  ProjectCanvasBlockSize,
+  ProjectCanvasBlockSpec,
+  ProjectCanvasBlockTone,
+  ProjectCanvasInputFromBlocksOptions,
+} from "./lib/project-canvas-blocks.js";
 export {
   createRoot,
   getRoot,

@@ -9,7 +9,7 @@ _projects_completion() {
   local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why channel handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage reports completion"
   local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
-  local canvas_commands="create list show"
+  local canvas_commands="create list show upsert compose"
   local loop_commands="link list"
   local label_commands="list add remove rm"
   local location_commands="add list"

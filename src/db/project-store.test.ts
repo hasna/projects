@@ -15,6 +15,7 @@ import {
   listProjectCanvases,
   listProjectDataRecords,
   listProjectLoopSummaries,
+  upsertProjectCanvas,
   type LoopsClientLike,
   type ProjectStoreProject,
 } from "./project-store.js";
@@ -53,6 +54,24 @@ describe("project store", () => {
       });
       expect(custom.slug).toBe("research-board");
       expect(listProjectCanvases(project).map((canvas) => canvas.slug)).toEqual(["research-board", "dashboard"]);
+
+      const first = upsertProjectCanvas(project, {
+        slug: "agent-directory",
+        name: "Agent Directory",
+        nodes: [{ id: "summary", type: "projectPanel", position: { x: 0, y: 0 }, data: { title: "Summary" } }],
+        edges: [],
+        metadata: { source: "blocks" },
+      });
+      const second = upsertProjectCanvas(project, {
+        slug: "agent-directory",
+        name: "Agent Directory Updated",
+        edges: [{ id: "summary-note", source: "summary", target: "note" }],
+      });
+      expect(second.id).toBe(first.id);
+      expect(second.name).toBe("Agent Directory Updated");
+      expect(second.nodes).toEqual(first.nodes);
+      expect(second.edges).toHaveLength(1);
+      expect(second.metadata).toEqual(first.metadata);
 
       const model = createProjectDataModel(project, {
         name: "Dataset",

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectSnapshotSchema, SCHEMA_IDS } from "@hasna/contracts/schemas";
@@ -10,7 +10,9 @@ import {
   DEFAULT_PROJECT_DASHBOARD_PROVIDERS,
   buildProjectDashboardRender,
   buildProjectDashboardSnapshot,
+  ensureProjectDashboardStructure,
   resolveDashboardImports,
+  writeProjectDashboardRenderManifest,
   type ProjectDashboardProvider,
 } from "./project-dashboard.js";
 import {
@@ -461,6 +463,155 @@ describe("project dashboard", () => {
     expect(validated.elements.file_preview_dialog?.type).toBe(
       "FilePreviewDialog",
     );
+    db.close();
+  });
+
+  test("preserves existing dashboard imports when rewriting the render manifest", () => {
+    const db = makeDb();
+    const root = mkdtempSync(join(tmpdir(), "projects-dashboard-imports-"));
+    const project = createWorkspace(
+      {
+        name: "Import Dashboard",
+        slug: "import-dashboard",
+        kind: "project",
+        primary_path: join(root, "import-dashboard"),
+      },
+      db,
+    );
+
+    try {
+      const paths = ensureProjectDashboardStructure(
+        project,
+        "2026-06-29T00:00:00.000Z",
+      );
+      writeFileSync(join(paths.renderDir, "agent-directory-table.json"), "{}\n");
+      writeFileSync(
+        paths.renderManifestPath,
+        `${JSON.stringify(
+          {
+            schema: "hasna.projects_dashboard_render.v1",
+            projectId: "import-dashboard",
+            defaultView: "canvas",
+            imports: [
+              {
+                id: "agent-directory-table",
+                path: "agent-directory-table.json",
+                kind: "canvas",
+              },
+            ],
+            updatedAt: "2026-06-29T00:00:00.000Z",
+          },
+          null,
+          2,
+        )}\n`,
+      );
+
+      const updated = writeProjectDashboardRenderManifest(
+        project,
+        "2026-06-30T00:00:00.000Z",
+      );
+      const manifest = JSON.parse(
+        readFileSync(updated.renderManifestPath, "utf-8"),
+      ) as { imports: unknown[]; updatedAt: string };
+
+      expect(manifest.imports).toEqual([
+        {
+          id: "agent-directory-table",
+          path: "agent-directory-table.json",
+          kind: "canvas",
+        },
+      ]);
+      expect(manifest.updatedAt).toBe("2026-06-30T00:00:00.000Z");
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("exposes dashboard imports and linked project canvases in the default render", () => {
+    const db = makeDb();
+    const project = createWorkspace(
+      {
+        name: "Linked Canvas Dashboard",
+        slug: "linked-canvas-dashboard",
+        kind: "project",
+        primary_path: "/tmp/linked-canvas-dashboard",
+      },
+      db,
+    );
+    const generatedAt = "2026-06-29T00:00:00.000Z";
+    const snapshot = ProjectSnapshotSchema.parse({
+      schema: SCHEMA_IDS.projectSnapshot,
+      id: "snapshot-linked-canvas-dashboard",
+      createdAt: generatedAt,
+      projectId: "linked-canvas-dashboard",
+      generatedAt,
+      status: "succeeded",
+      manifestRef: {
+        kind: "project",
+        id: "linked-canvas-dashboard",
+        uri: "project://linked-canvas-dashboard",
+        tags: [],
+      },
+      panels: [],
+    });
+
+    const spec = validateProjectsRenderSpec(
+      buildProjectDashboardRender(project, snapshot, {
+        imports: [
+          {
+            id: "agent-directory-table",
+            path: "agent-directory-table.json",
+            kind: "canvas",
+          },
+        ],
+        linkedCanvases: [
+          {
+            id: "pcv_agent_directory",
+            slug: "agent-directory-table",
+            name: "Agent Directory Table",
+            description: "All Hasna agents",
+            status: "active",
+            layout_engine: "react-flow",
+            viewport: { x: 0, y: 0, zoom: 1 },
+            nodes: [
+              {
+                id: "agent_directory_summary",
+                type: "projectPanel",
+                position: { x: 0, y: 0 },
+                data: { title: "Agent Directory Table" },
+              },
+            ],
+            edges: [],
+            data: {},
+            metadata: {},
+            created_at: generatedAt,
+            updated_at: generatedAt,
+          },
+        ],
+      }),
+    );
+    const root = spec.elements.root?.props as {
+      data?: {
+        linked_canvases?: Array<{ slug: string }>;
+        dashboard_imports?: Array<{ id: string }>;
+      };
+      nodes?: Array<{ id: string }>;
+    };
+
+    expect(root.data?.linked_canvases?.[0]?.slug).toBe(
+      "agent-directory-table",
+    );
+    expect(root.data?.dashboard_imports?.[0]?.id).toBe(
+      "agent-directory-table",
+    );
+    expect(root.nodes?.some((node) => node.id === "project-canvases")).toBe(
+      true,
+    );
+    expect(root.nodes?.some((node) => node.id === "dashboard-imports")).toBe(
+      true,
+    );
+    expect(JSON.stringify(spec)).toContain("agent-directory-table");
     db.close();
   });
 

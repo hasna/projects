@@ -4,13 +4,14 @@ import {
   buildProjectDashboard,
   buildProjectDashboardRender,
   buildProjectDashboardSnapshot,
-  ensureProjectDashboardStructure,
   loadProjectDashboardRenderManifest,
+  writeProjectDashboardRenderManifest,
   writeProjectDashboardSnapshot,
 } from "../../lib/project-dashboard.js";
 import { serveProjectDashboard } from "../../lib/project-dashboard-server.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
 import { ProjectSnapshotSchema } from "@hasna/contracts/schemas";
+import { listExistingProjectCanvases } from "../../db/project-store.js";
 
 function wantsJson(options: { json?: boolean }): boolean {
   return Boolean(options.json || process.env["PROJECTS_JSON"]);
@@ -89,16 +90,14 @@ async function renderAction(target: string, options: { snapshot?: string; write?
   const snapshot = options.snapshot
     ? ProjectSnapshotSchema.parse(JSON.parse(readFileSync(options.snapshot, "utf-8")))
     : await buildProjectDashboardSnapshot(target, { initialize: false });
-  const render = buildProjectDashboardRender(resolution.project, snapshot);
+  const manifest = loadProjectDashboardRenderManifest(resolution.project);
+  const linkedCanvases = listExistingProjectCanvases(resolution.project);
+  const render = buildProjectDashboardRender(resolution.project, snapshot, {
+    imports: manifest?.imports ?? [],
+    linkedCanvases,
+  });
   if (options.write) {
-    const paths = ensureProjectDashboardStructure(resolution.project, snapshot.generatedAt);
-    await Bun.write(paths.renderManifestPath, `${JSON.stringify({
-      schema: "hasna.projects_dashboard_render.v1",
-      projectId: resolution.project.slug,
-      defaultView: "canvas",
-      imports: [],
-      updatedAt: snapshot.generatedAt,
-    }, null, 2)}\n`);
+    const paths = writeProjectDashboardRenderManifest(resolution.project, snapshot.generatedAt);
     await print({ render, path: paths.renderManifestPath }, options);
     return;
   }
