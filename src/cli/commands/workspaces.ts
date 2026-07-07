@@ -53,6 +53,16 @@ import {
 } from "../../lib/workspace-plan.js";
 import { doctorWorkspace } from "../../lib/workspace-doctor.js";
 import { resolveProjectsBackend } from "../../http/backend.js";
+
+// Drop keys whose value is `undefined` so a cloud PATCH only carries fields the
+// caller actually set (an explicit `null` still clears the field server-side).
+function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as Partial<T>;
+}
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
@@ -2069,8 +2079,63 @@ function registerProjectCommands(program: Command): void {
     .option("--metadata-json <json>", "Replace metadata with a JSON object")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const current = await cloud.getWorkspace(idOrSlug);
+          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
+          const metaBase = opts.metadataJson === undefined
+            ? (current.metadata ?? {})
+            : parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
+          const startWindowsC = opts.clearStartWindows
+            ? null
+            : parseTmuxWindowsJson(opts.startWindowsJson, "--start-windows-json");
+          const metaFields = {
+            stage: opts.clearStage ? null : opts.stage,
+            priority: opts.clearPriority ? null : opts.priority,
+            owner: opts.clearOwner ? null : opts.owner,
+            launch_profile: opts.clearLaunchProfile ? null : opts.launchProfile,
+            start_agent: opts.clearStartAgent ? null : opts.startAgent,
+            start_command: opts.clearStartCommand ? null : opts.startCommand,
+            start_session_policy: opts.clearStartSessionPolicy ? null : opts.startSessionPolicy,
+            start_windows: startWindowsC,
+          };
+          const mergedMeta = hasProjectManagementFields(metaFields)
+            ? mergeProjectManagementMetadata(metaBase, metaFields)
+            : opts.metadataJson === undefined ? undefined : metaBase;
+          const integBase = opts.integrationsJson === undefined
+            ? (current.integrations ?? {})
+            : parseIntegrationsJson(opts.integrationsJson) ?? {};
+          const integFields = {
+            todos_project_id: opts.clearTodosProjectId ? null : opts.todosProjectId,
+            todos_task_list_id: opts.clearTodosTaskListId ? null : opts.todosTaskListId,
+            brief_id: opts.clearBriefId ? null : opts.briefId,
+            brief_path: opts.clearBriefPath ? null : opts.briefPath,
+          };
+          const mergedInteg = hasProjectIntegrationFields(integFields)
+            ? mergeProjectIntegrationFields(integBase, integFields)
+            : opts.integrationsJson === undefined ? undefined : integBase;
+          const patch = pruneUndefined({
+            name: opts.name,
+            slug: opts.slug,
+            description: opts.description,
+            kind: parseKind(opts.kind),
+            status: parseStatus(opts.status),
+            primary_path: opts.clearPath ? null : opts.path,
+            tags: opts.tags === undefined ? undefined : splitList(opts.tags),
+            git_remote: opts.clearGitRemote ? null : opts.gitRemote,
+            s3_bucket: opts.clearS3Bucket ? null : opts.s3Bucket,
+            s3_prefix: opts.clearS3Prefix ? null : opts.s3Prefix,
+            integrations: mergedInteg,
+            metadata: mergedMeta,
+          });
+          if (Object.keys(patch).length === 0) throw new Error("No updatable fields provided");
+          const updated = await cloud.updateWorkspace(current.id, patch);
+          if (wantsJson(opts)) { printObject(updated, opts); return; }
+          console.log(chalk.green(`✓ Project updated (cloud): ${updated.slug}`));
+          return;
+        }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const metadataBase = opts.metadataJson === undefined
@@ -2136,11 +2201,20 @@ function registerProjectCommands(program: Command): void {
     .description("Add tags to a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, tags, opts) => {
+    .action(async (idOrSlug, tags, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const current = await cloud.getWorkspace(idOrSlug);
+          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
+          const updated = await cloud.updateWorkspace(current.id, { tags: mergeProjectTags(current.tags ?? [], requestedTags) });
+          if (wantsJson(opts)) { printObject(updated, opts); return; }
+          console.log(chalk.green(`✓ Tagged project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
+          return;
+        }
+        const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const updated = withWorkspaceLock(project, agentId, "project tag", () => updateWorkspace(project.id, {
           tags: mergeProjectTags(project.tags, requestedTags),
@@ -2161,11 +2235,20 @@ function registerProjectCommands(program: Command): void {
     .description("Remove tags from a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, tags, opts) => {
+    .action(async (idOrSlug, tags, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const current = await cloud.getWorkspace(idOrSlug);
+          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
+          const updated = await cloud.updateWorkspace(current.id, { tags: removeProjectTags(current.tags ?? [], requestedTags) });
+          if (wantsJson(opts)) { printObject(updated, opts); return; }
+          console.log(chalk.green(`✓ Removed tags from project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
+          return;
+        }
+        const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const updated = withWorkspaceLock(project, agentId, "project untag", () => updateWorkspace(project.id, {
           tags: removeProjectTags(project.tags, requestedTags),
@@ -2354,8 +2437,15 @@ function registerProjectCommands(program: Command): void {
     .description("Archive a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const archived = await cloud.archiveWorkspace(idOrSlug);
+          if (wantsJson(opts)) { printObject(archived, opts); return; }
+          console.log(chalk.green(`✓ Archived (cloud) ${archived.slug}`));
+          return;
+        }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const archived = withWorkspaceLock(project, agentId, "project archive", () => archiveWorkspace(project.id, {
@@ -2376,8 +2466,15 @@ function registerProjectCommands(program: Command): void {
     .description("Unarchive a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const unarchived = await cloud.unarchiveWorkspace(idOrSlug);
+          if (wantsJson(opts)) { printObject(unarchived, opts); return; }
+          console.log(chalk.green(`✓ Unarchived (cloud) ${unarchived.slug}`));
+          return;
+        }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const unarchived = withWorkspaceLock(project, agentId, "project unarchive", () => unarchiveWorkspace(project.id, {
