@@ -6,6 +6,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.83] - 2026-07-07
+
+### Added
+
+- Added generic scalable canvas composition for Projects canvases:
+  `projects canvases compose <project>` compiles domain-neutral block/link specs
+  into React Flow nodes and edges, and `projects canvases upsert <project>`
+  idempotently creates or updates a canvas by slug from either raw React Flow
+  JSON or block specs.
+- Added a typed `project-canvas-blocks` library layer and SDK exports for
+  composing reusable blocks such as summary cards, tables, groups, links,
+  roadmap/checklist cards, and hierarchy-style views without adding a one-off
+  org-chart command.
+- Added MCP parity for the new canvas surface through
+  `projects_canvases_upsert` and `projects_canvases_compose`.
+
+### Fixed
+
+- Preserved existing dashboard render imports when `projects dashboard render
+  --write` rewrites `.hasna/project/dashboard/render.json`, and exposed linked
+  stored canvases plus dashboard imports in the default dashboard render model.
+- Made dashboard server canvas routes use the enriched dashboard render so
+  linked canvases/imports remain visible when served.
+- Removed the broken unpublished `@hasna/mcp-harness` dev dependency and kept
+  the MCP HTTP transport local to this package using the official MCP SDK
+  web-standard transport, restoring install/typecheck/build safety.
+
 ### Added
 
 - **Project -> conversations channel linkage** (fleet comms workflow, todos

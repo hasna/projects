@@ -26,6 +26,7 @@ export {
   listProjectLoopSummaries,
   runProjectStoreMigrations,
   updateProjectCanvasLayout,
+  upsertProjectCanvas,
 } from "./db/project-store.js";
 export type {
   CreateProjectCanvasInput,
@@ -34,6 +35,7 @@ export type {
   LinkProjectLoopInput,
   LoopsClientLike,
   UpdateProjectCanvasLayoutInput,
+  UpsertProjectCanvasInput,
   ProjectCanvas,
   ProjectCanvasEdge,
   ProjectCanvasNode,

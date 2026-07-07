@@ -18,7 +18,6 @@
         "zod": "3.25.76",
       },
       "devDependencies": {
-        "@hasna/mcp-harness": "file:../open-mcp",
         "@types/bun": "^1.2.4",
         "@types/pg": "^8.11.11",
         "typescript": "^5.7.3",
@@ -41,8 +40,6 @@
     "@hasna/contracts": ["@hasna/contracts@0.4.1", "", { "dependencies": { "commander": "^13.1.0", "zod": "^3.25.76" }, "bin": { "contracts": "dist/cli/index.js", "contracts-cli": "dist/cli/index.js" } }, "sha512-oubsu1FFyVvxbt5d+85iBXEK6M81ZsaeODycoQGZuFNqQ3ecfXFujlQz3cL+NHwHJPVmy4wBGLPcaXcRTjO/IQ=="],
 
     "@hasna/events": ["@hasna/events@0.1.3", "", { "dependencies": { "commander": "^13.1.0" }, "bin": { "events": "dist/cli/index.js", "hasna-events": "dist/cli/index.js" } }, "sha512-0PgS0wSfLPg/kqxoDhzr/t00p8/H8LzfJAAlP4hhEByvTkM0UXGEzayFoZ1dOk7uqKtLuD5vrIDRdUoHwuVBkQ=="],
-
-    "@hasna/mcp-harness": ["@hasna/mcp-harness@file:../open-mcp", { "devDependencies": { "@modelcontextprotocol/sdk": "^1.12.1", "@types/bun": "latest", "typescript": "^5.7.3", "zod": "^3.24.2" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.12.1", "zod": "^3.24.2" } }],
 
     "@hono/node-server": ["@hono/node-server@1.19.11", "", { "peerDependencies": { "hono": "^4" } }, "sha512-dr8/3zEaB+p0D2n/IUrlPF1HZm586qgJNXK1a9fhg/PzdtkK7Ksd5l312tJX2yBuALqDYBlG20QEbayqPyxn+g=="],
 
@@ -288,10 +285,6 @@
 
     "@ai-sdk/provider-utils/eventsource-parser": ["eventsource-parser@3.1.0", "", {}, "sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg=="],
 
-    "@hasna/mcp-harness/@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
-
     "@json-render/core/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
-
-    "@hasna/mcp-harness/@types/bun/bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
   }
 }

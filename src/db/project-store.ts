@@ -86,6 +86,19 @@ export interface CreateProjectCanvasInput {
   metadata?: JsonObject;
 }
 
+export interface UpsertProjectCanvasInput {
+  slug: string;
+  name?: string;
+  description?: string | null;
+  status?: ProjectCanvasStatus;
+  layout_engine?: string;
+  viewport?: JsonObject;
+  nodes?: ProjectCanvasNode[];
+  edges?: ProjectCanvasEdge[];
+  data?: JsonObject;
+  metadata?: JsonObject;
+}
+
 export interface UpdateProjectCanvasLayoutInput {
   nodes?: ProjectCanvasNode[];
   viewport?: JsonObject;
@@ -286,6 +299,14 @@ function uniqueSlug(table: "project_canvases" | "project_data_models", base: str
     suffix++;
     candidate = `${slugify(base)}-${suffix}`;
   }
+}
+
+function titleFromSlug(value: string): string {
+  return value
+    .split("-")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ") || "Canvas";
 }
 
 function rowToCanvas(row: ProjectCanvasRow): ProjectCanvas {
@@ -527,6 +548,23 @@ export function listProjectCanvases(project: string | Pick<Workspace, "id">, db?
   }
 }
 
+export function listExistingProjectCanvases(project: string | Pick<Workspace, "id">): ProjectCanvas[] {
+  const paths = getProjectStorePaths(project);
+  if (!existsSync(paths.db_path)) return [];
+  const db = new Database(paths.db_path, { readonly: true });
+  try {
+    const rows = db
+      .query<ProjectCanvasRow, []>("SELECT * FROM project_canvases ORDER BY status ASC, updated_at DESC")
+      .all();
+    return rows.map(rowToCanvas);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("no such table: project_canvases")) return [];
+    throw err;
+  } finally {
+    db.close();
+  }
+}
+
 export function getProjectCanvas(project: string | Pick<Workspace, "id">, idOrSlug: string, db?: Database): ProjectCanvas | null {
   const opened = openDbForProject(project, db);
   try {
@@ -534,6 +572,53 @@ export function getProjectCanvas(project: string | Pick<Workspace, "id">, idOrSl
       .query<ProjectCanvasRow, [string, string]>("SELECT * FROM project_canvases WHERE id = ? OR slug = ? LIMIT 1")
       .get(idOrSlug, idOrSlug);
     return row ? rowToCanvas(row) : null;
+  } finally {
+    closeIfOwned(opened.db, opened.owned);
+  }
+}
+
+export function upsertProjectCanvas(project: string | Pick<Workspace, "id">, input: UpsertProjectCanvasInput, db?: Database): ProjectCanvas {
+  const opened = openDbForProject(project, db);
+  try {
+    const slug = slugify(input.slug);
+    const existing = getProjectCanvas(project, slug, opened.db);
+    if (!existing) {
+      return createProjectCanvas(project, {
+        name: input.name ?? titleFromSlug(slug),
+        slug,
+        description: input.description ?? undefined,
+        status: input.status,
+        layout_engine: input.layout_engine,
+        viewport: input.viewport,
+        nodes: input.nodes,
+        edges: input.edges,
+        data: input.data,
+        metadata: input.metadata,
+      }, opened.db);
+    }
+
+    const ts = now();
+    opened.db.run(
+      `UPDATE project_canvases
+       SET name = ?, description = ?, status = ?, layout_engine = ?,
+           viewport_json = ?, nodes_json = ?, edges_json = ?, data_json = ?,
+           metadata_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        input.name ?? existing.name,
+        input.description === undefined ? existing.description : input.description,
+        input.status ?? existing.status,
+        input.layout_engine ?? existing.layout_engine,
+        json(input.viewport ?? existing.viewport),
+        json(input.nodes ?? existing.nodes),
+        json(input.edges ?? existing.edges),
+        json(input.data ?? existing.data),
+        json(input.metadata ?? existing.metadata),
+        ts,
+        existing.id,
+      ],
+    );
+    return getProjectCanvas(project, existing.id, opened.db)!;
   } finally {
     closeIfOwned(opened.db, opened.owned);
   }

@@ -14,6 +14,10 @@ import {
   type ProjectPanel,
   type ProjectSnapshot,
 } from "@hasna/contracts/schemas";
+import {
+  listExistingProjectCanvases,
+  type ProjectCanvas,
+} from "../db/project-store.js";
 import type { JsonObject, Workspace } from "../types/workspace.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
 import {
@@ -88,6 +92,32 @@ export interface ProjectDashboardRenderManifest {
   defaultView: "canvas";
   imports: Array<{ id: string; path: string; kind?: string }>;
   updatedAt: string;
+}
+
+export interface ProjectDashboardRenderImportRef extends JsonObject {
+  id: string;
+  path: string;
+  kind: string;
+  status: "ready";
+  renderRef: string;
+}
+
+export interface ProjectDashboardLinkedCanvasRef extends JsonObject {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  status: string;
+  kind: "project-canvas";
+  nodes: number;
+  edges: number;
+  updated_at: string;
+  renderRef: string;
+}
+
+export interface BuildProjectDashboardRenderOptions {
+  imports?: ProjectDashboardRenderManifest["imports"];
+  linkedCanvases?: ProjectCanvas[];
 }
 
 export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
@@ -276,6 +306,26 @@ export function loadProjectDashboardRenderManifest(
   return parsed;
 }
 
+export function writeProjectDashboardRenderManifest(
+  project: Workspace,
+  updatedAt = new Date().toISOString(),
+): ProjectDashboardPaths {
+  const paths = ensureProjectDashboardStructure(project, updatedAt);
+  const existing = loadProjectDashboardRenderManifest(project);
+  const manifest: ProjectDashboardRenderManifest = {
+    schema: "hasna.projects_dashboard_render.v1",
+    projectId: project.slug,
+    defaultView: existing?.defaultView ?? "canvas",
+    imports: existing?.imports ?? [],
+    updatedAt,
+  };
+  writeFileSync(
+    paths.renderManifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return paths;
+}
+
 export function resolveDashboardImports(
   baseDir: string,
   imports: Array<{ id: string; path: string; kind?: string }>,
@@ -384,11 +434,25 @@ export function writeProjectDashboardSnapshot(
 export function buildProjectDashboardRender(
   project: Workspace,
   snapshot: ProjectSnapshot,
+  options: BuildProjectDashboardRenderOptions = {},
 ): ProjectsJsonRenderSpec {
   const panelStartX = 680;
   const panelStartY = 40;
   const panelColumnGap = 1120;
   const panelRowGap = 640;
+  const dashboardImports = dashboardImportRefs(options.imports ?? []);
+  const linkedCanvases = linkedCanvasRefs(
+    project,
+    options.linkedCanvases ?? [],
+  );
+  const supportNodes = [
+    ...(linkedCanvases.length > 0
+      ? [projectCanvasesNode(linkedCanvases)]
+      : []),
+    ...(dashboardImports.length > 0
+      ? [dashboardImportsNode(dashboardImports)]
+      : []),
+  ];
   const nodes = [
     {
       id: "overview",
@@ -414,6 +478,7 @@ export function buildProjectDashboardRender(
         ],
       },
     },
+    ...supportNodes,
     ...snapshot.panels.map((panel, index) => ({
       id: panel.id,
       type: "projectPanel",
@@ -451,13 +516,22 @@ export function buildProjectDashboardRender(
       },
     })),
   ];
-  const edges = snapshot.panels.map((panel) => ({
-    id: `overview-${panel.id}`,
-    source: "overview",
-    target: panel.id,
-    animated: panel.state === "loading",
-    data: { provider: panel.provider.kind },
-  }));
+  const edges = [
+    ...supportNodes.map((node) => ({
+      id: `overview-${node.id}`,
+      source: "overview",
+      target: node.id,
+      animated: false,
+      data: { provider: "projects" },
+    })),
+    ...snapshot.panels.map((panel) => ({
+      id: `overview-${panel.id}`,
+      source: "overview",
+      target: panel.id,
+      animated: panel.state === "loading",
+      data: { provider: panel.provider.kind },
+    })),
+  ];
   const canvas = {
     id: `dashboard:${project.slug}`,
     slug: "dashboard",
@@ -470,15 +544,117 @@ export function buildProjectDashboardRender(
     edges: [],
     data: {
       snapshot,
+      linked_canvases: linkedCanvases,
+      dashboard_imports: dashboardImports,
       availableEdges: edges,
       ui: { show_connections: false },
     },
-    metadata: { generatedAt: snapshot.generatedAt },
+    metadata: {
+      generatedAt: snapshot.generatedAt,
+      linked_canvases: linkedCanvases,
+      dashboard_imports: dashboardImports,
+    },
     created_at: snapshot.createdAt,
     updated_at: snapshot.generatedAt,
   };
   const payload = buildProjectCanvasPayload({ project, canvas });
   return validateProjectsRenderSpec(payload.render) as ProjectsJsonRenderSpec;
+}
+
+function dashboardImportRefs(
+  imports: ProjectDashboardRenderManifest["imports"],
+): ProjectDashboardRenderImportRef[] {
+  return imports.map((item) => ({
+    id: item.id,
+    path: item.path,
+    kind: item.kind ?? "render",
+    status: "ready",
+    renderRef: `dashboard-import://${encodeURIComponent(item.id)}`,
+  }));
+}
+
+function linkedCanvasRefs(
+  project: Workspace,
+  canvases: ProjectCanvas[],
+): ProjectDashboardLinkedCanvasRef[] {
+  return canvases
+    .filter((canvas) => canvas.status === "active" && canvas.slug !== "dashboard")
+    .map((canvas) => ({
+      id: canvas.id,
+      slug: canvas.slug,
+      name: canvas.name,
+      description: canvas.description,
+      status: canvas.status,
+      kind: "project-canvas" as const,
+      nodes: canvas.nodes.length,
+      edges: canvas.edges.length,
+      updated_at: canvas.updated_at,
+      renderRef: `projects://canvases/${encodeURIComponent(project.slug)}/${encodeURIComponent(canvas.slug || canvas.id)}`,
+    }));
+}
+
+function projectCanvasesNode(
+  canvases: ProjectDashboardLinkedCanvasRef[],
+): ProjectCanvas["nodes"][number] {
+  return {
+    id: "project-canvases",
+    type: "projectPanel",
+    position: { x: 40, y: 480 },
+    data: {
+      id: "project-canvases",
+      title: "Project Canvases",
+      kind: "project-canvases",
+      provider: "projects",
+      state: "ready",
+      summary: `${canvases.length} linked project canvas${canvases.length === 1 ? "" : "es"}`,
+      component: "ProjectCanvasCard",
+      size: "XL",
+      metrics: [
+        { id: "canvases", label: "Canvases", value: canvases.length, tone: "good" },
+      ],
+      items: canvases.slice(0, 5).map((canvas) => ({
+        id: canvas.slug,
+        title: canvas.name,
+        summary: canvas.description,
+        status: `${canvas.nodes} nodes, ${canvas.edges} edges`,
+      })),
+      actions: [
+        { label: "List", value: "list-canvases", variant: "secondary" },
+      ],
+      warnings: [],
+    },
+  };
+}
+
+function dashboardImportsNode(
+  imports: ProjectDashboardRenderImportRef[],
+): ProjectCanvas["nodes"][number] {
+  return {
+    id: "dashboard-imports",
+    type: "projectPanel",
+    position: { x: 40, y: 880 },
+    data: {
+      id: "dashboard-imports",
+      title: "Dashboard Imports",
+      kind: "dashboard-imports",
+      provider: "projects",
+      state: "ready",
+      summary: `${imports.length} validated dashboard import${imports.length === 1 ? "" : "s"}`,
+      component: "ProjectCanvasCard",
+      size: "XL",
+      metrics: [
+        { id: "imports", label: "Imports", value: imports.length, tone: "good" },
+      ],
+      items: imports.slice(0, 5).map((item) => ({
+        id: item.id,
+        title: item.id,
+        summary: item.path,
+        status: item.kind,
+      })),
+      actions: [],
+      warnings: [],
+    },
+  };
 }
 
 function dashboardPanelSize(
@@ -515,11 +691,18 @@ export async function buildProjectDashboard(
     db: options.db,
   });
   const snapshot = await buildProjectDashboardSnapshot(target, options);
-  const render = buildProjectDashboardRender(resolution.project, snapshot);
+  const manifest = loadProjectDashboardRenderManifest(resolution.project);
+  const linkedCanvases = listExistingProjectCanvases(resolution.project);
+  const render = buildProjectDashboardRender(resolution.project, snapshot, {
+    imports: manifest?.imports ?? [],
+    linkedCanvases,
+  });
   return {
     project: resolution.project,
     snapshot,
     render,
+    manifest,
+    linkedCanvases,
     paths: projectDashboardPaths(resolution.project),
   };
 }

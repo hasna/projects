@@ -6,6 +6,10 @@ the per-project canvas store plus JSON Render `Canvas` component emitted by:
 
 - `projects canvases list <project> --render-spec`
 - `projects canvases show <project> <canvas> --render-spec`
+- `projects canvases upsert <project> --slug <slug>`
+- `projects canvases compose <project> --spec-json <json>`
+- MCP `projects_canvases_upsert`
+- MCP `projects_canvases_compose`
 - MCP `projects_render_canvas`
 - SDK `buildProjectCanvasPayload`
 
@@ -63,8 +67,9 @@ The intended frontend stack is:
 1. Build a frontend package or app shell that loads project render specs from
    MCP/SDK and maps JSON Render `Canvas`, `Table`, `Actions`, and `Badge`
    components to shadcn/Tailwind components.
-2. Add React Flow editing controls for creating, moving, connecting, and saving
-   canvas nodes back into `project_canvases`.
+2. Add browser React Flow editing controls that use the existing upsert/compose
+   write path for creating, moving, connecting, and saving canvas nodes back
+   into `project_canvases`.
 3. Add typed CRUD commands/MCP tools for `project_data_models` and
    `project_data_records`, then render records inside canvas nodes.
 4. Add live OpenLoops status refresh for linked loops when `@hasna/loops` is

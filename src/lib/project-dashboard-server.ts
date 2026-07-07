@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildProjectDashboard,
-  buildProjectDashboardRender,
   ensureProjectDashboardStructure,
   projectDashboardPaths,
   type BuildProjectDashboardSnapshotOptions,
@@ -168,7 +167,7 @@ export async function serveProjectDashboard(
         const context = buildDashboardCanvasContext(
           resolution.project,
           route.canvasRef,
-          dashboard.snapshot,
+          dashboard,
         );
         if (!context)
           return Response.json(
@@ -205,7 +204,7 @@ export async function serveProjectDashboard(
         const context = buildDashboardCanvasContext(
           resolution.project,
           route.canvasRef,
-          dashboard.snapshot,
+          dashboard,
         );
         if (!context)
           return Response.json(
@@ -284,10 +283,10 @@ function dashboardCanvasPath(projectSlug: string, canvasRef: string): string {
 function buildDashboardCanvasContext(
   project: Workspace,
   canvasRef: string,
-  snapshot: Awaited<ReturnType<typeof buildProjectDashboard>>["snapshot"],
+  dashboard: Awaited<ReturnType<typeof buildProjectDashboard>>,
 ): DashboardCanvasContext | null {
   if (isDashboardCanvasRef(canvasRef)) {
-    const render = buildProjectDashboardRender(project, snapshot);
+    const render = dashboard.render;
     applyDashboardLayout(project, "dashboard", render);
     return {
       canvas: virtualDashboardCanvasSummary(project, "dashboard", true, render),
