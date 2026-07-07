@@ -487,7 +487,13 @@ describe("project-first CLI surface", () => {
 
     const loops = runProjects(["loops", "list", "store-work", "--json"], env);
     expect(loops.exitCode).toBe(0);
-    expect((JSON.parse(text(loops.stdout)) as { loops: Array<{ status: string }> }).loops[0]?.status).toBe("unavailable");
+    // The linked loop_123 does not exist in any real loops store. Depending on
+    // whether the @hasna/loops SDK is resolvable in this environment, the status
+    // is "unavailable" (SDK absent) or "missing" (SDK present, loop not found) —
+    // both mean the linked loop is not resolvable here.
+    expect(["unavailable", "missing"]).toContain(
+      (JSON.parse(text(loops.stdout)) as { loops: Array<{ status: string }> }).loops[0]?.status,
+    );
 
     const labelsAdd = runProjects(["labels", "add", "store-work", "org:hasnaxyz", "kind:work-project", "client:foo", "--json"], env);
     expect(labelsAdd.exitCode).toBe(0);
