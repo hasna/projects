@@ -45,6 +45,7 @@ import {
   updateWorkspace,
 } from "../db/workspaces.js";
 import { getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
+import { resolveProjectsBackend } from "../http/backend.js";
 import { runWorkspaceAgentPrompt } from "../lib/workspace-agent.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../lib/workspace-agent-eval.js";
 import {
@@ -870,6 +871,11 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
+    const cloud = resolveProjectsBackend();
+    if (cloud) {
+      const projects = await cloud.listWorkspaces({ kind: input.kind, status: input.status, query: input.query, tags: input.tags, limit: input.limit });
+      return jsonText({ projects, count: projects.length });
+    }
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     const projects = filterProjectEvalArtifacts(listWorkspaces({
       kind: input.kind as WorkspaceKind | undefined,
@@ -901,6 +907,13 @@ server.tool(
     events_limit: z.number().int().positive().max(500).optional(),
   },
   async (input) => {
+    const cloud = resolveProjectsBackend();
+    if (cloud) {
+      const project = await cloud.getWorkspace(input.id);
+      if (!project) return errorText(`Project not found: ${input.id}`);
+      const events = await cloud.listWorkspaceEvents(project.id, input.events_limit);
+      return jsonText({ project, events, count: events.length });
+    }
     const project = findProjectTarget(input.id);
     if (!project) return errorText(`Project not found: ${input.id}`);
     const events = listWorkspaceEvents(project.id);
@@ -1321,6 +1334,19 @@ server.tool(
   },
   async (input) => {
     try {
+      const cloud = resolveProjectsBackend();
+      if (cloud) {
+        const project = await cloud.createWorkspace({
+          name: input.name,
+          slug: input.slug,
+          description: input.description,
+          kind: input.kind,
+          tags: input.tags,
+          integrations: input.integrations,
+          metadata: input.metadata,
+        });
+        return jsonText({ project });
+      }
       const owner = agentId(input.agent);
       const metadataBase = (input.metadata ?? {}) as JsonObject;
       const metadata = mergeProjectManagementMetadata(metadataBase, {
@@ -1924,6 +1950,11 @@ server.tool(
   { id: z.string(), hard: z.boolean().optional(), agent: z.string().optional() },
   async (input) => {
     try {
+      const cloud = resolveProjectsBackend();
+      if (cloud) {
+        const res = await cloud.deleteWorkspace(input.id, { hard: input.hard });
+        return jsonText(res);
+      }
       const project = findProjectTarget(input.id);
       if (!project) return errorText(`Project not found: ${input.id}`);
       const owner = agentId(input.agent);

@@ -52,6 +52,7 @@ import {
   type WorkspaceCreationPlanAction,
 } from "../../lib/workspace-plan.js";
 import { doctorWorkspace } from "../../lib/workspace-doctor.js";
+import { resolveProjectsBackend } from "../../http/backend.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
@@ -1354,8 +1355,23 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview full creation without writing DB/files/tmux")
     .option("--dry-run-runtime", "Plan directory/git/tmux runtime actions without applying them")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const project = await cloud.createWorkspace({
+            name: opts.name,
+            slug: opts.slug,
+            description: opts.description,
+            kind: parseKind(opts.kind),
+            tags: splitList(opts.tags),
+            metadata: parseJsonObject(opts.metadataJson, "--metadata-json") ?? undefined,
+            integrations: parseIntegrationsJson(opts.integrationsJson) ?? undefined,
+          });
+          if (wantsJson(opts)) { printObject({ project }, opts); return; }
+          console.log(chalk.green(`✓ Project created (cloud): ${project.slug}`));
+          return;
+        }
         const agentId = resolveAgentId(opts.agent);
         const tmuxWindows = parseTmuxWindowsJson(opts.tmuxWindowsJson);
         const baseMetadata = parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
@@ -1705,7 +1721,7 @@ function registerProjectCommands(program: Command): void {
     .option("--verbose", "Show additional columns in terminal output")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
         const json = wantsJson(opts);
         const baseFilter = {
@@ -1714,6 +1730,25 @@ function registerProjectCommands(program: Command): void {
           query: opts.query,
           tags: splitLabelFilters(opts.tags, opts.label, opts.labels),
         };
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const projects = await cloud.listWorkspaces({
+            ...baseFilter,
+            limit: parsePositiveInteger(opts.limit, "--limit"),
+          });
+          if (json) { printObject(projects, opts); return; }
+          printRows(
+            projects.map((project) => ({
+              slug: project.slug,
+              status: project.status,
+              kind: project.kind,
+              path: compactText(project.primary_path, opts.verbose ? 96 : 56),
+            })),
+            ["slug", "status", "kind", "path"],
+          );
+          printDiscoveryHint(`Showing ${projects.length} project(s) from cloud. Use --json or 'projects show <slug>'.`);
+          return;
+        }
         if (wantsRenderSpec(opts)) {
           const projects = filterProjectEvalArtifacts(listWorkspaces({
             ...baseFilter,
@@ -1781,6 +1816,19 @@ function registerProjectCommands(program: Command): void {
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
+      const cloud = resolveProjectsBackend();
+      if (cloud) {
+        const cloudProject = await cloud.getWorkspace(idOrSlug);
+        if (!cloudProject) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); return; }
+        const cloudEvents = await cloud.listWorkspaceEvents(cloudProject.id);
+        if (wantsJson(opts)) { printObject({ project: cloudProject, events: cloudEvents }, opts); return; }
+        console.log(`${chalk.bold(cloudProject.name)} ${chalk.dim(`(${cloudProject.slug})`)} ${chalk.green(`[${cloudProject.status}]`)}`);
+        console.log(`  ${chalk.dim("id:")}   ${cloudProject.id}`);
+        console.log(`  ${chalk.dim("kind:")} ${cloudProject.kind}`);
+        if (cloudProject.primary_path) console.log(`  ${chalk.dim("path:")} ${cloudProject.primary_path}`);
+        if (cloudProject.tags?.length) console.log(`  ${chalk.dim("tags:")} ${cloudProject.tags.join(", ")}`);
+        return;
+      }
       const project = resolveProjectTarget(idOrSlug);
       const dashboard = projectDashboardSummary(project);
       const agents = listWorkspaceAgents(project.id);
@@ -2292,8 +2340,15 @@ function registerProjectCommands(program: Command): void {
     .option("--hard", "Hard-delete the project row")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
+        const cloud = resolveProjectsBackend();
+        if (cloud) {
+          const res = await cloud.deleteWorkspace(idOrSlug, { hard: opts.hard });
+          if (wantsJson(opts)) { printObject(res, opts); return; }
+          console.log(res.hard ? chalk.yellow(`Deleted ${res.id}`) : chalk.green(`✓ Marked deleted ${res.id}`));
+          return;
+        }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const result = withWorkspaceLock(project, agentId, "project delete", () => deleteWorkspace(project.id, {
