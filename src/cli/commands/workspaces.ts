@@ -6,13 +6,11 @@ import {
   acquireWorkspaceLock,
   addWorkspaceLocation,
   addTmuxProfileWindow,
-  archiveWorkspace,
   assignAgentToWorkspace,
   createAgent,
   createRecipe,
   createRoot,
   createTmuxProfile,
-  deleteWorkspace,
   deleteRoot,
   ensureCliAgent,
   getAgent,
@@ -36,7 +34,6 @@ import {
   releaseWorkspaceLock,
   resolveWorkspace,
   resolveTmuxProfile,
-  unarchiveWorkspace,
   updateWorkspace,
   updateRoot,
 } from "../../db/workspaces.js";
@@ -52,7 +49,7 @@ import {
   type WorkspaceCreationPlanAction,
 } from "../../lib/workspace-plan.js";
 import { doctorWorkspace } from "../../lib/workspace-doctor.js";
-import { resolveProjectsBackend } from "../../http/backend.js";
+import { resolveProjectStore } from "../../store/project-store.js";
 
 // Drop keys whose value is `undefined` so a cloud PATCH only carries fields the
 // caller actually set (an explicit `null` still clears the field server-side).
@@ -1421,9 +1418,9 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const project = await cloud.createWorkspace({
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const project = await store.createProject({
             name: opts.name,
             slug: opts.slug,
             description: opts.description,
@@ -1794,9 +1791,9 @@ function registerProjectCommands(program: Command): void {
           query: opts.query,
           tags: splitLabelFilters(opts.tags, opts.label, opts.labels),
         };
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const projects = await cloud.listWorkspaces({
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const projects = await store.listProjects({
             ...baseFilter,
             limit: parsePositiveInteger(opts.limit, "--limit"),
           });
@@ -1880,11 +1877,11 @@ function registerProjectCommands(program: Command): void {
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
-      const cloud = resolveProjectsBackend();
-      if (cloud) {
-        const cloudProject = await cloud.getWorkspace(idOrSlug);
+      const store = resolveProjectStore();
+      if (store.mode === "api") {
+        const cloudProject = await store.getProject(idOrSlug);
         if (!cloudProject) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); return; }
-        const cloudEvents = await cloud.listWorkspaceEvents(cloudProject.id);
+        const cloudEvents = await store.listEvents(cloudProject.id);
         if (wantsJson(opts)) { printObject({ project: cloudProject, events: cloudEvents }, opts); return; }
         console.log(`${chalk.bold(cloudProject.name)} ${chalk.dim(`(${cloudProject.slug})`)} ${chalk.green(`[${cloudProject.status}]`)}`);
         console.log(`  ${chalk.dim("id:")}   ${cloudProject.id}`);
@@ -2081,9 +2078,9 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const current = await cloud.getWorkspace(idOrSlug);
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const current = await store.getProject(idOrSlug);
           if (!current) throw new Error(`Project not found: ${idOrSlug}`);
           const metaBase = opts.metadataJson === undefined
             ? (current.metadata ?? {})
@@ -2131,7 +2128,7 @@ function registerProjectCommands(program: Command): void {
             metadata: mergedMeta,
           });
           if (Object.keys(patch).length === 0) throw new Error("No updatable fields provided");
-          const updated = await cloud.updateWorkspace(current.id, patch);
+          const updated = await store.updateProject(current.id, patch);
           if (wantsJson(opts)) { printObject(updated, opts); return; }
           console.log(chalk.green(`✓ Project updated (cloud): ${updated.slug}`));
           return;
@@ -2169,7 +2166,7 @@ function registerProjectCommands(program: Command): void {
         const mergedIntegrations = hasProjectIntegrationFields(integrationFields)
           ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
           : opts.integrationsJson === undefined ? undefined : integrationsBase;
-        const updated = withWorkspaceLock(project, agentId, "project update", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
@@ -2187,7 +2184,7 @@ function registerProjectCommands(program: Command): void {
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject(updated, opts); return; }
         console.log(chalk.green(`✓ Project updated: ${updated.slug}`));
       } catch (err) {
@@ -2205,23 +2202,23 @@ function registerProjectCommands(program: Command): void {
       try {
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const current = await cloud.getWorkspace(idOrSlug);
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const current = await store.getProject(idOrSlug);
           if (!current) throw new Error(`Project not found: ${idOrSlug}`);
-          const updated = await cloud.updateWorkspace(current.id, { tags: mergeProjectTags(current.tags ?? [], requestedTags) });
+          const updated = await store.updateProject(current.id, { tags: mergeProjectTags(current.tags ?? [], requestedTags) });
           if (wantsJson(opts)) { printObject(updated, opts); return; }
           console.log(chalk.green(`✓ Tagged project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
           return;
         }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project tag", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           tags: mergeProjectTags(project.tags, requestedTags),
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject(projectWithManagement(updated), opts); return; }
         console.log(chalk.green(`✓ Tagged project: ${updated.slug} (${updated.tags.join(", ")})`));
       } catch (err) {
@@ -2239,23 +2236,23 @@ function registerProjectCommands(program: Command): void {
       try {
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const current = await cloud.getWorkspace(idOrSlug);
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const current = await store.getProject(idOrSlug);
           if (!current) throw new Error(`Project not found: ${idOrSlug}`);
-          const updated = await cloud.updateWorkspace(current.id, { tags: removeProjectTags(current.tags ?? [], requestedTags) });
+          const updated = await store.updateProject(current.id, { tags: removeProjectTags(current.tags ?? [], requestedTags) });
           if (wantsJson(opts)) { printObject(updated, opts); return; }
           console.log(chalk.green(`✓ Removed tags from project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
           return;
         }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project untag", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           tags: removeProjectTags(project.tags, requestedTags),
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject(projectWithManagement(updated), opts); return; }
         console.log(chalk.green(`✓ Removed tags from project: ${updated.slug} (${updated.tags.join(", ")})`));
       } catch (err) {
@@ -2439,20 +2436,16 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const archived = await cloud.archiveWorkspace(idOrSlug);
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const archived = await store.archiveProject(idOrSlug);
           if (wantsJson(opts)) { printObject(archived, opts); return; }
           console.log(chalk.green(`✓ Archived (cloud) ${archived.slug}`));
           return;
         }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const archived = withWorkspaceLock(project, agentId, "project archive", () => archiveWorkspace(project.id, {
-          agent_id: agentId,
-          source: "cli",
-          command: process.argv.join(" "),
-        }));
+        const archived = await store.archiveProject(project.id, { agentId, source: "cli", command: process.argv.join(" ") });
         if (wantsJson(opts)) { printObject(archived, opts); return; }
         console.log(chalk.green(`✓ Archived ${archived.slug}`));
       } catch (err) {
@@ -2468,20 +2461,16 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const unarchived = await cloud.unarchiveWorkspace(idOrSlug);
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const unarchived = await store.unarchiveProject(idOrSlug);
           if (wantsJson(opts)) { printObject(unarchived, opts); return; }
           console.log(chalk.green(`✓ Unarchived (cloud) ${unarchived.slug}`));
           return;
         }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const unarchived = withWorkspaceLock(project, agentId, "project unarchive", () => unarchiveWorkspace(project.id, {
-          agent_id: agentId,
-          source: "cli",
-          command: process.argv.join(" "),
-        }));
+        const unarchived = await store.unarchiveProject(project.id, { agentId, source: "cli", command: process.argv.join(" ") });
         if (wantsJson(opts)) { printObject(unarchived, opts); return; }
         console.log(chalk.green(`✓ Unarchived ${unarchived.slug}`));
       } catch (err) {
@@ -2498,23 +2487,19 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const res = await cloud.deleteWorkspace(idOrSlug, { hard: opts.hard });
+        const store = resolveProjectStore();
+        if (store.mode === "api") {
+          const res = await store.deleteProject(idOrSlug, { hard: opts.hard });
           if (wantsJson(opts)) { printObject(res, opts); return; }
           console.log(res.hard ? chalk.yellow(`Deleted ${res.id}`) : chalk.green(`✓ Marked deleted ${res.id}`));
           return;
         }
         const project = resolveProjectTarget(idOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const result = withWorkspaceLock(project, agentId, "project delete", () => deleteWorkspace(project.id, {
-          hard: opts.hard,
-          agent_id: agentId,
-          source: "cli",
-          command: process.argv.join(" "),
-        }));
-        if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
-        console.log(result.hard ? chalk.yellow(`Deleted ${result.workspace.slug}`) : chalk.green(`✓ Marked deleted ${result.workspace.slug}`));
+        const result = await store.deleteProject(project.id, { hard: opts.hard }, { agentId, source: "cli", command: process.argv.join(" ") });
+        const label = result.workspace?.slug ?? result.id;
+        if (wantsJson(opts)) { printObject(projectPayload({ workspace: result.workspace, hard: result.hard }), opts); return; }
+        console.log(result.hard ? chalk.yellow(`Deleted ${label}`) : chalk.green(`✓ Marked deleted ${label}`));
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
