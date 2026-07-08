@@ -4,6 +4,22 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.89]
+
+### Fixed
+
+- **Prompt-agent cloud-write split-brain**: in api/cloud mode the LLM
+  prompt-agent (`projects agent "..."` / MCP `projects_agent_prompt`) now
+  routes every shared-registry mutation through the `ProjectStore` (cloud
+  HTTP `<url>/v1`) instead of writing directly to local sqlite. Previously
+  only `projects_create` used the store; `update`, `archive`, `unarchive`,
+  `delete`, `tag`, `untag`, `integration_unlink` and `event_record` wrote to
+  the local island while the project lived in the cloud, and target
+  resolution read local. The per-project local-only sub-resources
+  (`agents_assign`, `locations_add`) now surface the store's
+  `LocalOnlyOperationError` as a clean tool error in cloud mode rather than
+  silently writing local sqlite. Local mode behaviour is unchanged.
+
 ## [Unreleased]
 
 ### Added
