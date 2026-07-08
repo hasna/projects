@@ -964,6 +964,64 @@ async function runMockPrompt(
     command: options.command,
     tags: ["agent-created"],
   };
+
+  const store = resolveProjectStore();
+  if (store.mode === "api") {
+    // Cloud project rows are created through the Store (shared registry), never
+    // the local sqlite island. Machine-local runtime does not apply to a cloud
+    // row, so this mirrors the projects_create tool's api-mode path.
+    const nameKey = comparisonKey(workspaceInput.name);
+    const cloudExisting = workspaceInput.name
+      ? (await store.listProjects({ query: workspaceInput.name, limit: 25 })).find((workspace) => (
+          comparisonKey(workspace.name) === nameKey || comparisonKey(workspace.slug) === nameKey
+        ))
+      : undefined;
+    const projects: Workspace[] = [];
+    let text: string;
+    if (cloudExisting) {
+      text = `Project ${cloudExisting.slug} already exists in the cloud registry.`;
+    } else if (options.approve && !options.dryRun) {
+      const project = await store.createProject({
+        name: workspaceInput.name,
+        root_id: workspaceInput.root_id,
+        recipe_id: workspaceInput.recipe_id,
+        tags: workspaceInput.tags,
+      });
+      projects.push(project);
+      text = `Created project ${project.slug} in the cloud registry.`;
+    } else {
+      text = `Plan: create cloud project "${workspaceInput.name}". Run with --yes to execute.`;
+    }
+    const toolCalls: JsonObject[] = [{
+      name: "projects_create",
+      input: workspaceInput,
+      dry_run: options.dryRun || !options.approve,
+      approved: options.approve,
+      output: projectPayload(cloudExisting
+        ? existingWorkspaceOutput(cloudExisting)
+        : { status: projects.length ? "created" : "planned", workspace: projects[0] ? compactProject(projects[0]) : null }) as JsonObject,
+    }];
+    completeAgentRun(runId, {
+      status: "completed",
+      workspace_id: projects[0]?.id ?? cloudExisting?.id,
+      tool_calls: toolCalls,
+      result: projectPayload({ text, workspaces: projects.map(compactProject) }) as JsonObject,
+    });
+    return {
+      mode: "mock",
+      run_id: runId,
+      agent_id: agent.id,
+      provider: "openrouter",
+      model: options.model,
+      actor_agent_id: agent.id,
+      approved: options.approve,
+      dry_run: options.dryRun,
+      text,
+      projects,
+      tool_calls: toolCalls,
+    };
+  }
+
   const existing = findExistingWorkspaceForCreate(workspaceInput);
   if (existing) {
     const output = existingWorkspaceOutput(existing);
@@ -2107,6 +2165,69 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         tmux_profile: z.string().optional().describe("Existing tmux profile id or slug to apply"),
       }),
       execute: async (input) => {
+        if (store.mode === "api") {
+          // Cloud project rows are created through the Store so they land in
+          // the shared registry (not the local sqlite island). Machine-local
+          // runtime (directory/git/tmux/marker) and the on-box run ledger do
+          // not apply to a shared cloud row. Root/recipe are shared registry
+          // resources resolved through the Store so intent is honored.
+          const rootId = forcedRootId ?? (input.root ? (await store.getRoot(input.root))?.id : undefined);
+          if (input.root && !rootId) return { error: `Root not found: ${input.root}` };
+          const recipeId = forcedRecipeId ?? (input.recipe ? (await store.getRecipe(input.recipe))?.id : undefined);
+          if (input.recipe && !recipeId) return { error: `Recipe not found: ${input.recipe}` };
+
+          const cloudIntegrations = mergeProjectIntegrationFields(input.integrations as WorkspaceIntegrations | undefined, {
+            todos_project_id: input.todos_project_id,
+            todos_task_list_id: input.todos_task_list_id,
+            brief_id: input.brief_id,
+            brief_path: input.brief_path,
+          }) ?? input.integrations as WorkspaceIntegrations | undefined;
+          const cloudMetadata = mergeProjectManagementMetadata(input.metadata as JsonObject | undefined, {
+            stage: input.stage,
+            priority: input.priority,
+            owner: input.owner,
+            launch_profile: input.launch_profile,
+            start_agent: input.start_agent,
+            start_command: input.start_command,
+            start_session_policy: input.start_session_policy,
+            start_windows: input.start_windows as WorkspaceTmuxWindowSpec[] | undefined,
+          }) ?? input.metadata as JsonObject | undefined;
+
+          if (input.slug) {
+            const bySlug = await store.getProject(input.slug);
+            if (bySlug) return existingWorkspaceOutput(bySlug);
+          }
+          const nameKey = comparisonKey(input.name);
+          const nameMatch = nameKey
+            ? (await store.listProjects({ query: input.name, limit: 25 })).find((workspace) => (
+                comparisonKey(workspace.name) === nameKey || comparisonKey(workspace.slug) === nameKey
+              ))
+            : undefined;
+          if (nameMatch) return existingWorkspaceOutput(nameMatch);
+
+          if (!approve) {
+            return projectPayload({
+              status: "planned",
+              plan: { workspace: { name: input.name, slug: input.slug, kind: input.kind, root_id: rootId, recipe_id: recipeId } },
+              note: "Run again with --yes to create this project in the shared cloud registry. Machine-local runtime (directory/git/tmux) is not applied to cloud projects.",
+            });
+          }
+
+          const project = await store.createProject({
+            name: input.name,
+            slug: input.slug,
+            description: input.description,
+            kind: input.kind,
+            root_id: rootId,
+            recipe_id: recipeId,
+            git_remote: input.git_remote,
+            tags: input.tags,
+            integrations: cloudIntegrations,
+            metadata: cloudMetadata,
+          });
+          createdWorkspaces.push(project);
+          return projectPayload({ status: "created", workspace: compactProject(project) });
+        }
         if (tmuxAllowed && input.tmux_profile && !inspectedTmuxProfiles) {
           return { error: "Call projects_tmux_profiles_list before using a saved tmux_profile, then retry projects_create with the selected profile slug." };
         }

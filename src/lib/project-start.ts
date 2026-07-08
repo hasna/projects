@@ -16,6 +16,7 @@ import {
   isProjectDirectory,
   isProjectPathLike,
   normalizeProjectPath,
+  readProjectMarker,
   resolveRegisteredProjectTarget,
 } from "./project-resolver.js";
 import {
@@ -355,6 +356,28 @@ export async function resolveProjectStartTarget(
           registered: true,
         },
       };
+    }
+    // Cloud registry can't resolve by path, but the on-disk marker is a
+    // machine-local pointer to a registered project. Read it and resolve the
+    // referenced id/slug through the Store so `.`/path targets (e.g. running
+    // `projects status` from a project dir) work in api mode too.
+    const markerPath = normalizeProjectPath(normalizedTarget);
+    if (isProjectPathLike(normalizedTarget) || isProjectDirectory(markerPath)) {
+      const marker = readProjectMarker(markerPath);
+      for (const idOrSlug of [marker?.id, marker?.slug]) {
+        if (!idOrSlug) continue;
+        const referenced = await store.getProject(idOrSlug);
+        if (referenced) {
+          return {
+            project: referenced,
+            resolution: {
+              target: normalizedTarget,
+              source: "marker",
+              registered: true,
+            },
+          };
+        }
+      }
     }
   }
 

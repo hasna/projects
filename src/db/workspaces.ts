@@ -1092,6 +1092,19 @@ export function listWorkspaceEvents(workspaceId: string, db?: Database): Workspa
     .all(workspaceId) as WorkspaceEventRow[]).map(rowToEvent);
 }
 
+/**
+ * The on-box agent-run ledger (agent_runs) FK-references the LOCAL workspaces
+ * table. In api/cloud mode the referenced project lives only in the cloud
+ * registry, so a cloud id would violate the FK. The ledger is a machine-local
+ * record of a run that happened here; keep the workspace_id only when the row
+ * exists on this box, otherwise store null (the run is still fully recorded).
+ */
+function localWorkspaceIdOrNull(d: Database, workspaceId: string | undefined | null): string | null {
+  if (!workspaceId) return null;
+  const row = d.query("SELECT id FROM workspaces WHERE id = ?").get(workspaceId);
+  return row ? workspaceId : null;
+}
+
 export function startAgentRun(
   input: { agent_id?: string; workspace_id?: string; provider?: string; model?: string; prompt: string; plan?: JsonObject; metadata?: JsonObject },
   db?: Database,
@@ -1106,7 +1119,7 @@ export function startAgentRun(
     [
       id,
       input.agent_id ?? null,
-      input.workspace_id ?? null,
+      localWorkspaceIdOrNull(d, input.workspace_id),
       input.provider ?? null,
       input.model ?? null,
       input.prompt,
@@ -1137,7 +1150,7 @@ export function completeAgentRun(
     WHERE id = ?`,
     [
       status,
-      input.workspace_id ?? null,
+      localWorkspaceIdOrNull(d, input.workspace_id),
       input.result ? json(input.result) : null,
       input.error ?? null,
       json(input.tool_calls ?? []),

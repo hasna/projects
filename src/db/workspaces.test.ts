@@ -294,6 +294,21 @@ describe("workspace domain services", () => {
     db.close();
   });
 
+  // Regression: in api/cloud mode a prompt run creates the project in the cloud
+  // registry, so its id is NOT present in the local workspaces table. The on-box
+  // run ledger must record the run without FK-failing on that cloud id (it nulls
+  // the workspace_id rather than throwing "FOREIGN KEY constraint failed").
+  test("agent run ledger nulls a workspace_id that does not exist locally", () => {
+    const db = makeDb();
+    const agent = createAgent({ name: "Cloud Agent", slug: "cloud-agent", kind: "ai", provider: "openrouter", model: "test/model" }, db);
+    const run = startAgentRun({ agent_id: agent.id, workspace_id: "wks_cloud_only", prompt: "make it", model: "test/model" }, db);
+    expect(run.workspace_id).toBeNull();
+    const completed = completeAgentRun(run.id, { workspace_id: "wks_cloud_only", result: { ok: true } }, db);
+    expect(completed.status).toBe("completed");
+    expect(completed.workspace_id).toBeNull();
+    db.close();
+  });
+
   test("seeds built-in workspace recipes idempotently", () => {
     const db = makeDb();
     expect(builtInWorkspaceRecipes().map((recipe) => recipe.slug)).toContain("open-source-typescript-cli");

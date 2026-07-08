@@ -165,4 +165,41 @@ describe("projects store api transport (roots/agents/recipes)", () => {
     await expect(store.addLocation("p", { path: "/x" })).rejects.toThrow(/local-only/);
     await expect(store.acquireLock({ key: "k" })).rejects.toThrow(/local-only/);
   });
+
+  // Regression: resolving "." (or any path/marker target) in api mode must NOT
+  // hit the API — the URL parser collapses `/projects/.` to the collection
+  // route `/projects/`, returning a LIST payload that then masqueraded as a
+  // single project and crashed renderers reading `project.metadata.stage`.
+  test("getProject returns null for path-like/relative targets without a network call", async () => {
+    const { store, calls } = stubStore(() => ({ workspaces: [{ id: "x", slug: "x" }], count: 1 }));
+    for (const target of [".", "..", "./foo", "../bar", "/abs/path", "~/home", "a/b", "C:\\win"]) {
+      expect(await store.getProject(target)).toBeNull();
+    }
+    expect(calls).toHaveLength(0);
+    // resolveTarget surfaces a clean not-found rather than a masquerading list.
+    await expect(store.resolveTarget(".")).rejects.toThrow(/Project not found/);
+  });
+
+  test("getProject normalizes null metadata/integrations/tags into safe shapes", async () => {
+    const { store } = stubStore(() => ({
+      id: "wks_1",
+      slug: "iproj-x",
+      name: "X",
+      metadata: null,
+      integrations: null,
+      tags: null,
+    }));
+    const project = await store.getProject("iproj-x");
+    expect(project).not.toBeNull();
+    expect(project!.metadata).toEqual({});
+    expect(project!.integrations).toEqual({});
+    expect(project!.tags).toEqual([]);
+  });
+
+  test("getProject rejects a list-wrapper payload masquerading as a project", async () => {
+    // Even if the server ever returned a collection body for a detail id, the
+    // normalizer refuses it (no string id/slug) so it can't crash renderers.
+    const { store } = stubStore(() => ({ workspaces: [{ id: "a", slug: "a" }], count: 1 }));
+    expect(await store.getProject("iproj-x")).toBeNull();
+  });
 });

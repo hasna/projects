@@ -688,6 +688,47 @@ function listQuery(filter?: WorkspaceFilter): QueryParams {
   };
 }
 
+/**
+ * The shared cloud registry resolves a project only by id or slug. Path,
+ * marker and relative targets (".", "..", "/abs", "~/x", "a/b") are a
+ * machine-local concept the cloud does not model — and, worse, sending "." or
+ * ".." lets the URL parser collapse the dot-segment so `/projects/.` becomes
+ * the collection route `/projects/`, returning a LIST payload that then
+ * masquerades as a single project (and crashes renderers that read
+ * `project.metadata`). We never send those to the API; callers fall back to
+ * their local path/marker handling when this returns false.
+ */
+function isCloudResolvableId(idOrSlug: string): boolean {
+  const target = idOrSlug.trim();
+  if (!target) return false;
+  if (target === "." || target === "..") return false;
+  if (target.startsWith("~")) return false;
+  if (target.startsWith("/") || target.startsWith("./") || target.startsWith("../")) return false;
+  if (target.includes("/") || target.includes("\\")) return false;
+  if (/^[a-zA-Z]:[\\/]/.test(target)) return false; // windows absolute path
+  return true;
+}
+
+/**
+ * Guarantee the shape the LocalStore always produces: `metadata`/`integrations`
+ * are objects and `tags` is an array. The projects API returns these
+ * populated, but normalizing at the transport boundary keeps every downstream
+ * renderer (`projectManagementSummary` et al.) safe even if a row ever comes
+ * back with a null column. Rejects non-object payloads (e.g. a list wrapper)
+ * so a malformed response can never masquerade as a single project.
+ */
+function normalizeApiWorkspace(raw: unknown): Workspace | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ws = raw as Partial<Workspace>;
+  if (typeof ws.id !== "string" || typeof ws.slug !== "string") return null;
+  return {
+    ...(ws as Workspace),
+    tags: Array.isArray(ws.tags) ? ws.tags : [],
+    integrations: (ws.integrations ?? {}) as Workspace["integrations"],
+    metadata: (ws.metadata ?? {}) as JsonObject,
+  };
+}
+
 class ApiProjectStore implements ProjectStore {
   readonly mode = "api" as const;
   readonly baseUrl: string;
@@ -702,11 +743,15 @@ class ApiProjectStore implements ProjectStore {
     const raw = await this.client.transport.get<{ workspaces?: Workspace[]; projects?: Workspace[] }>("/projects", {
       query: listQuery(filter),
     });
-    return raw.workspaces ?? raw.projects ?? [];
+    const rows = raw.workspaces ?? raw.projects ?? [];
+    return rows.map((row) => normalizeApiWorkspace(row) ?? (row as Workspace));
   }
 
   async getProject(idOrSlug: string): Promise<Workspace | null> {
-    return this.client.get<Workspace>(RESOURCE, idOrSlug);
+    // Path/marker/relative targets are machine-local and not resolvable by the
+    // cloud registry; never send them to the API (see isCloudResolvableId).
+    if (!isCloudResolvableId(idOrSlug)) return null;
+    return normalizeApiWorkspace(await this.client.get<Workspace>(RESOURCE, idOrSlug));
   }
 
   async resolveTarget(target: string | undefined): Promise<Workspace> {
@@ -718,19 +763,23 @@ class ApiProjectStore implements ProjectStore {
   }
 
   async createProject(input: CreateWorkspaceInput): Promise<Workspace> {
-    return this.client.create<Workspace>(RESOURCE, input);
+    const created = await this.client.create<Workspace>(RESOURCE, input);
+    return normalizeApiWorkspace(created) ?? created;
   }
 
   async updateProject(id: string, patch: UpdateWorkspaceInput): Promise<Workspace> {
-    return this.client.update<Workspace>(RESOURCE, id, patch);
+    const updated = await this.client.update<Workspace>(RESOURCE, id, patch);
+    return normalizeApiWorkspace(updated) ?? updated;
   }
 
   async archiveProject(id: string): Promise<Workspace> {
-    return this.client.transport.post<Workspace>(`/projects/${encodeURIComponent(id)}/archive`);
+    const ws = await this.client.transport.post<Workspace>(`/projects/${encodeURIComponent(id)}/archive`);
+    return normalizeApiWorkspace(ws) ?? ws;
   }
 
   async unarchiveProject(id: string): Promise<Workspace> {
-    return this.client.transport.post<Workspace>(`/projects/${encodeURIComponent(id)}/unarchive`);
+    const ws = await this.client.transport.post<Workspace>(`/projects/${encodeURIComponent(id)}/unarchive`);
+    return normalizeApiWorkspace(ws) ?? ws;
   }
 
   async deleteProject(id: string, opts: { hard?: boolean }): Promise<DeleteProjectResult> {
@@ -741,7 +790,7 @@ class ApiProjectStore implements ProjectStore {
       hard?: boolean;
       id?: string;
     }>(`/projects/${encodeURIComponent(id)}${q}`);
-    const workspace = (res?.workspace ?? res?.project) ?? null;
+    const workspace = normalizeApiWorkspace(res?.workspace ?? res?.project);
     return { workspace, hard: Boolean(res?.hard), id: res?.id ?? workspace?.id ?? id };
   }
 

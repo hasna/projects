@@ -2495,6 +2495,21 @@ function registerProjectCommands(program: Command): void {
     });
 }
 
+/**
+ * The canonical on-box store ($HASNA_PROJECTS_HOME/data/<id> + primary-path
+ * bookkeeping) is a machine-local resource that the cloud project does not own.
+ * `store ensure`/`store migrate` write the local project.db (locations, events)
+ * for the target id, which FK-fails for a cloud-only project. Refuse cleanly in
+ * api mode instead of touching sqlite for a row that only lives in the cloud.
+ */
+function assertLocalOnlyStoreOperation(store: ReturnType<typeof resolveProjectStore>, operation: string): void {
+  if (store.mode === "api") {
+    throw new Error(
+      `${operation} is a local-only operation: the canonical on-box store is a machine-local resource the cloud project does not own. Run it in local mode on the machine that holds the files.`,
+    );
+  }
+}
+
 function registerStoreCommand(program: Command): void {
   const cmd = program.command("store").description("Inspect, ensure, and safely migrate canonical project stores");
 
@@ -2538,6 +2553,7 @@ function registerStoreCommand(program: Command): void {
     .action(async (projectIdOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
+        assertLocalOnlyStoreOperation(store, "store ensure");
         const project = await store.resolveTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const ensure = () => ensureCanonicalProjectStore(project, {
@@ -2570,6 +2586,7 @@ function registerStoreCommand(program: Command): void {
     .action(async (projectIdOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
+        assertLocalOnlyStoreOperation(store, "store migrate");
         const project = await store.resolveTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const apply = Boolean(opts.apply || opts.yes);
