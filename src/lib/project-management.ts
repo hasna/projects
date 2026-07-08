@@ -166,6 +166,26 @@ export function unlinkProjectIntegrationFields(integrations: WorkspaceIntegratio
   return next;
 }
 
+/**
+ * Merge incoming integration fields into an existing set: values are trimmed,
+ * empty/whitespace values are dropped, and existing keys survive. Mirrors the
+ * persistence-time merge in `linkWorkspaceIntegrations` so the Store-routed
+ * link path (local + api) produces an identical record without touching sqlite
+ * directly. Callers should alias-normalize the incoming map first.
+ */
+export function mergeProjectIntegrations(
+  existing: WorkspaceIntegrations,
+  incoming: WorkspaceIntegrations,
+): WorkspaceIntegrations {
+  const merged: WorkspaceIntegrations = { ...existing };
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === undefined) continue;
+    const trimmed = String(value).trim();
+    if (trimmed.length > 0) merged[key] = trimmed;
+  }
+  return merged;
+}
+
 export interface ProjectPathHealth {
   status: "ok" | "missing" | "remote-only" | "unknown";
   path: string | null;

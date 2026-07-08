@@ -38,7 +38,7 @@ import { builtInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
   syncWorkspaceGitHubRoots,
-  linkWorkspaceExternalIntegrations,
+  normalizeWorkspaceIntegrations,
   publishWorkspaceToGitHub,
   unpublishWorkspaceFromGitHub,
   type GitHubRemoteProtocol,
@@ -60,7 +60,7 @@ import {
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
 import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
-import { ensureProjectChannel, resolveProjectChannelForProject } from "../../lib/project-channel.js";
+import { resolveProjectChannelForProject } from "../../lib/project-channel.js";
 import {
   parseProjectStartAgent,
   parseProjectStartSessionPolicy,
@@ -71,14 +71,7 @@ import {
 import { projectTmuxStatus } from "../../lib/project-tmux-status.js";
 import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
-  createProjectCanvas,
-  ensureDefaultProjectCanvas,
-  inspectProjectStore as inspectProjectAppStore,
-  inspectProjectStoreWithLoops as inspectProjectAppStoreWithLoops,
-  linkProjectLoop,
-  listProjectCanvases,
-  listProjectDataModels,
-  listProjectLoopSummaries,
+  type ProjectCanvas,
   type ProjectCanvasEdge,
   type ProjectCanvasNode,
 } from "../../db/project-store.js";
@@ -92,13 +85,6 @@ import {
   toAgentText,
 } from "../../lib/project-agent-assist.js";
 import {
-  createProjectBudget,
-  getProjectBudgetStatuses,
-  listProjectBudgets,
-  recordProjectSpend,
-  resetProjectBudget,
-} from "../../lib/budget.js";
-import {
   PROJECT_PRIORITIES,
   PROJECT_START_AGENTS,
   PROJECT_START_SESSION_POLICIES,
@@ -108,6 +94,7 @@ import {
   hasProjectManagementFields,
   mergeProjectIntegrationFields,
   mergeProjectManagementMetadata,
+  mergeProjectIntegrations,
   mergeProjectTags,
   projectDashboardSummary,
   projectExternalLinksSummary,
@@ -777,18 +764,19 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--dry-run", "With --ensure: report what would happen without creating anything")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
+        const store = resolveProjectStore();
         const effectiveTarget = typeof target === "string" && target.trim() ? target : resolveCwdOption(opts);
-        const project = resolveRegisteredProjectTargetOrThrow(effectiveTarget).project;
+        const project = await store.resolveTarget(effectiveTarget);
         if (!opts.ensure) {
           const resolution = resolveProjectChannelForProject(project);
           if (wantsJson(opts)) { printObject(resolution, opts); return; }
           console.log(resolution.channel);
           return;
         }
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const result = ensureProjectChannel(project, {
+        const agentId = mutationAgentId(store, opts.agent);
+        const result = await store.ensureChannel(project, {
           agentId,
           source: "cli",
           command: process.argv.join(" "),
@@ -938,14 +926,15 @@ function registerBudgetCommands(program: Command): void {
     .option("--max-total-tokens <n>", "Total token budget")
     .option("--warning-threshold <ratio>", "Soft warning threshold ratio, e.g. 0.8")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        const store = resolveProjectStore();
+        const project = opts.project ? await store.resolveTarget(opts.project) : null;
         if (!project && !opts.runId) throw new Error("Pass --project or --run-id");
         if (opts.project && opts.runId) throw new Error("Choose only one scope: --project or --run-id");
         const scopeType = project ? "project" : "run";
         const scopeId = project?.id ?? opts.runId;
-        const budget = createProjectBudget({
+        const budget = await store.createBudget({
           id: opts.id ?? `${scopeType}-${scopeId}`,
           scope_type: scopeType,
           scope_id: scopeId,
@@ -974,10 +963,11 @@ function registerBudgetCommands(program: Command): void {
     .option("--run-id <run>", "Agent run id")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const project = opts.project ? resolveProjectTarget(opts.project) : null;
-        const budgets = listProjectBudgets({ workspace_id: project?.id, run_id: opts.runId });
+        const store = resolveProjectStore();
+        const project = opts.project ? await store.resolveTarget(opts.project) : null;
+        const budgets = await store.listBudgets({ workspace_id: project?.id, run_id: opts.runId });
         if (wantsJson(opts)) { printObject(budgets, opts); return; }
         const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const visible = budgets.slice(0, limit);
@@ -1002,10 +992,11 @@ function registerBudgetCommands(program: Command): void {
     .option("--run-id <run>", "Agent run id")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const project = opts.project ? resolveProjectTarget(opts.project) : null;
-        const statuses = getProjectBudgetStatuses({ workspace_id: project?.id, run_id: opts.runId, budget_id: opts.id });
+        const store = resolveProjectStore();
+        const project = opts.project ? await store.resolveTarget(opts.project) : null;
+        const statuses = await store.getBudgetStatuses({ workspace_id: project?.id, run_id: opts.runId, budget_id: opts.id });
         if (wantsJson(opts)) { printObject(statuses, opts); return; }
         const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const visible = statuses.slice(0, limit);
@@ -1027,9 +1018,9 @@ function registerBudgetCommands(program: Command): void {
     .command("reset <id>")
     .description("Reset a budget window from now")
     .option("-j, --json", "Output JSON")
-    .action((id, opts) => {
+    .action(async (id, opts) => {
       try {
-        const budget = resetProjectBudget(id);
+        const budget = await resolveProjectStore().resetBudget(id);
         if (wantsJson(opts)) { printObject({ budget }, opts); return; }
         console.log(chalk.green(`✓ Budget reset: ${budget.id}`));
       } catch (err) {
@@ -1050,11 +1041,12 @@ function registerBudgetCommands(program: Command): void {
     .option("--output-tokens <n>", "Output tokens", "0")
     .option("--total-tokens <n>", "Total tokens")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const project = opts.project ? resolveProjectTarget(opts.project) : null;
+        const store = resolveProjectStore();
+        const project = opts.project ? await store.resolveTarget(opts.project) : null;
         if (!project && !opts.runId) throw new Error("Pass --project or --run-id");
-        const spend = recordProjectSpend({
+        const spend = await store.recordSpend({
           workspace_id: project?.id,
           run_id: opts.runId,
           provider: opts.provider,
@@ -2175,9 +2167,10 @@ function registerProjectCommands(program: Command): void {
     .option("--integrations-json <json>", "Additional integrations JSON object")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug);
         const integrations = mergeIntegrations(
           {
             github_repo: opts.githubRepo,
@@ -2194,12 +2187,12 @@ function registerProjectCommands(program: Command): void {
           parseIntegrationPairs(opts.integration),
           parseIntegrationsJson(opts.integrationsJson),
         );
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project integration link", () => linkWorkspaceExternalIntegrations(project, integrations, {
-          agent_id: agentId,
+        const updated = await store.updateProject(project.id, {
+          integrations: mergeProjectIntegrations(project.integrations, normalizeWorkspaceIntegrations(integrations)),
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject(updated, opts); return; }
         console.log(chalk.green(`✓ Linked integrations for ${updated.slug}`));
       } catch (err) {
@@ -2508,11 +2501,12 @@ function registerStoreCommand(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
         const inspection = inspectCanonicalProjectStore(project);
         const appStore = opts.includeLoops
-          ? await inspectProjectAppStoreWithLoops(project, { includeRuns: opts.includeRuns })
-          : inspectProjectAppStore(project);
+          ? await store.inspectAppStoreWithLoops(project, { includeRuns: opts.includeRuns })
+          : await store.inspectAppStore(project);
         if (wantsJson(opts)) { printObject({ ...inspection, app_store: appStore }, opts); return; }
         console.log(`${chalk.bold(project.slug)} store`);
         console.log(`  ${chalk.dim("home:")} ${inspection.paths.home}`);
@@ -2607,11 +2601,12 @@ function registerProjectCanvasCommands(program: Command): void {
     .option("--ensure-default", "Create the default dashboard canvas if missing")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        if (opts.ensureDefault) ensureDefaultProjectCanvas(project);
-        const canvases = listProjectCanvases(project);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        if (opts.ensureDefault) await store.ensureDefaultCanvas(project);
+        const canvases = await store.listCanvases(project);
         const payload = buildProjectCanvasesPayload({ project, canvases });
         if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
         if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
@@ -2632,15 +2627,16 @@ function registerProjectCanvasCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (projectIdOrSlug, canvasIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const canvas = listProjectCanvases(project).find((item) => item.id === (canvasIdOrSlug ?? "dashboard") || item.slug === (canvasIdOrSlug ?? "dashboard"));
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const canvas = (await store.listCanvases(project)).find((item) => item.id === (canvasIdOrSlug ?? "dashboard") || item.slug === (canvasIdOrSlug ?? "dashboard"));
         if (!canvas) throw new Error(`Project canvas not found: ${canvasIdOrSlug ?? "dashboard"}`);
-        const loops = opts.includeLoops ? await listProjectLoopSummaries(project, { includeRuns: opts.includeRuns }) : [];
+        const loops = opts.includeLoops ? await store.listLoopSummaries(project, { includeRuns: opts.includeRuns }) : [];
         const payload = buildProjectCanvasPayload({
           project,
           canvas,
           loops,
-          dataModels: listProjectDataModels(project),
+          dataModels: await store.listDataModels(project),
         });
         if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
         if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
@@ -2669,10 +2665,11 @@ function registerProjectCanvasCommands(program: Command): void {
     .option("--metadata-json <json>", "Canvas metadata JSON object")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const canvas = createProjectCanvas(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const canvas = await store.createCanvas(project, {
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
@@ -2681,16 +2678,16 @@ function registerProjectCanvasCommands(program: Command): void {
           edges: parseJsonArray<ProjectCanvasEdge>(opts.edgesJson, "--edges-json"),
           data: parseJsonObject(opts.dataJson, "--data-json"),
           metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
-        });
+        }, { agentId: mutationAgentId(store, opts.agent), source: "cli", command: process.argv.join(" ") });
         const payload = buildProjectCanvasPayload({
           project,
           canvas,
-          dataModels: listProjectDataModels(project),
+          dataModels: await store.listDataModels(project),
         });
         if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
         if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
         console.log(chalk.green(`✓ Canvas created: ${canvas.slug}`));
-        console.log(`  ${chalk.dim("project db:")} ${inspectProjectAppStore(project).paths.db_path}`);
+        console.log(`  ${chalk.dim("project db:")} ${(await store.inspectAppStore(project)).paths.db_path}`);
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2698,7 +2695,7 @@ function registerProjectCanvasCommands(program: Command): void {
     });
 }
 
-function canvasRows(canvases: ReturnType<typeof listProjectCanvases>): Array<Record<string, unknown>> {
+function canvasRows(canvases: ProjectCanvas[]): Array<Record<string, unknown>> {
   return canvases.map((canvas) => ({
     slug: canvas.slug,
     name: canvas.name,
@@ -2720,15 +2717,16 @@ function registerProjectLoopCommands(program: Command): void {
     .option("--role <role>", "Project-specific loop role", "project-loop")
     .option("--metadata-json <json>", "Loop link metadata JSON object")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, loopId, opts) => {
+    .action(async (projectIdOrSlug, loopId, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const link = linkProjectLoop(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const link = await store.linkLoop(project, {
           loop_id: loopId,
           loop_name: opts.name,
           role: opts.role,
           metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
-        });
+        }, { agentId: mutationAgentId(store), source: "cli", command: process.argv.join(" ") });
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), link }, opts); return; }
         console.log(chalk.green(`✓ Linked OpenLoops loop ${link.loop_id} to ${project.slug}`));
       } catch (err) {
@@ -2744,8 +2742,9 @@ function registerProjectLoopCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const loops = await listProjectLoopSummaries(project, { includeRuns: opts.includeRuns });
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const loops = await store.listLoopSummaries(project, { includeRuns: opts.includeRuns });
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), loops }, opts); return; }
         printRows(loops.map((item) => ({
           loop_id: item.link.loop_id,

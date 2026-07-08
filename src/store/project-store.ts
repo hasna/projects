@@ -63,6 +63,52 @@ import {
   type QueryParams,
 } from "../http/client.js";
 import { resolveRegisteredProjectTargetOrThrow, type ProjectResolverOptions } from "../lib/project-resolver.js";
+import {
+  createProjectCanvas as dbCreateProjectCanvas,
+  createProjectDataModel as dbCreateProjectDataModel,
+  createProjectDataRecord as dbCreateProjectDataRecord,
+  ensureDefaultProjectCanvas as dbEnsureDefaultProjectCanvas,
+  getProjectCanvas as dbGetProjectCanvas,
+  getProjectStorePaths,
+  inspectProjectStore as dbInspectProjectStore,
+  inspectProjectStoreWithLoops as dbInspectProjectStoreWithLoops,
+  linkProjectLoop as dbLinkProjectLoop,
+  listProjectCanvases as dbListProjectCanvases,
+  listProjectDataModels as dbListProjectDataModels,
+  listProjectDataRecords as dbListProjectDataRecords,
+  listProjectLoopLinks as dbListProjectLoopLinks,
+  listProjectLoopSummaries as dbListProjectLoopSummaries,
+  PROJECT_STORE_SCHEMA_VERSION,
+  type CreateProjectCanvasInput,
+  type CreateProjectDataModelInput,
+  type CreateProjectDataRecordInput,
+  type LinkProjectLoopInput,
+  type ProjectCanvas,
+  type ProjectDataModel,
+  type ProjectDataRecord,
+  type ProjectLoopLink,
+  type ProjectLoopSummary,
+  type ProjectStoreProject,
+  type ProjectStoreSummary,
+} from "../db/project-store.js";
+import {
+  createProjectBudget as dbCreateProjectBudget,
+  getProjectBudgetStatuses as dbGetProjectBudgetStatuses,
+  listProjectBudgets as dbListProjectBudgets,
+  recordProjectSpend as dbRecordProjectSpend,
+  resetProjectBudget as dbResetProjectBudget,
+  type CreateProjectBudgetInput,
+  type ProjectBudget,
+  type ProjectBudgetContext,
+  type ProjectBudgetSpend,
+  type ProjectBudgetStatus,
+  type ProjectSpendInput,
+} from "../lib/budget.js";
+import {
+  ensureProjectChannelViaStore,
+  type ProjectChannelEnsureResult,
+  type StoreEnsureChannelOptions,
+} from "../lib/project-channel.js";
 import type {
   Agent,
   CreateAgentInput,
@@ -228,6 +274,41 @@ export interface ProjectStore {
   listRecipes(): Promise<Recipe[]>;
   getRecipe(idOrSlug: string): Promise<Recipe | null>;
   createRecipe(input: CreateRecipeInput): Promise<Recipe>;
+
+  // ---- Per-project React Flow canvases (on-box project.db sub-resource) ----
+  // The api transport does not model the per-project store server-side: reads
+  // return empty, writes throw LocalOnlyOperationError. This is what stops the
+  // silent local-sqlite write when the project itself lives in the cloud.
+  listCanvases(project: Workspace): Promise<ProjectCanvas[]>;
+  getCanvas(project: Workspace, idOrSlug: string): Promise<ProjectCanvas | null>;
+  createCanvas(project: Workspace, input: CreateProjectCanvasInput, ctx?: MutationContext): Promise<ProjectCanvas>;
+  ensureDefaultCanvas(project: ProjectStoreProject): Promise<ProjectCanvas>;
+
+  // ---- Per-project data models & records (on-box project.db sub-resource) ----
+  listDataModels(project: Workspace): Promise<ProjectDataModel[]>;
+  createDataModel(project: Workspace, input: CreateProjectDataModelInput, ctx?: MutationContext): Promise<ProjectDataModel>;
+  listDataRecords(project: Workspace, modelId: string): Promise<ProjectDataRecord[]>;
+  createDataRecord(project: Workspace, input: CreateProjectDataRecordInput, ctx?: MutationContext): Promise<ProjectDataRecord>;
+
+  // ---- Project <-> OpenLoops links (on-box project.db sub-resource) ----
+  listLoopLinks(project: Workspace): Promise<ProjectLoopLink[]>;
+  linkLoop(project: Workspace, input: LinkProjectLoopInput, ctx?: MutationContext): Promise<ProjectLoopLink>;
+  listLoopSummaries(project: Workspace, options?: { includeRuns?: boolean; runLimit?: number }): Promise<ProjectLoopSummary[]>;
+  inspectAppStore(project: Workspace): Promise<ProjectStoreSummary>;
+  inspectAppStoreWithLoops(project: Workspace, options?: { includeRuns?: boolean }): Promise<ProjectStoreSummary>;
+
+  // ---- Project/run budgets & audited spend (on-box governance sub-resource) ----
+  createBudget(input: CreateProjectBudgetInput): Promise<ProjectBudget>;
+  listBudgets(context?: ProjectBudgetContext): Promise<ProjectBudget[]>;
+  getBudgetStatuses(context?: ProjectBudgetContext): Promise<ProjectBudgetStatus[]>;
+  resetBudget(id: string): Promise<ProjectBudget>;
+  recordSpend(input: ProjectSpendInput): Promise<ProjectBudgetSpend>;
+
+  // ---- Conversations channel link (works in BOTH transports) ----
+  // Channel derivation is pure and channel creation is a machine-local side
+  // effect, but the integration link + audit event persist through the Store so
+  // they land on the project record wherever it lives (local or cloud).
+  ensureChannel(project: Workspace, options?: StoreEnsureChannelOptions): Promise<ProjectChannelEnsureResult>;
 }
 
 // --------------------------------------------------------------------------
@@ -441,6 +522,87 @@ class LocalProjectStore implements ProjectStore {
   async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
     return dbCreateRecipe(input);
   }
+
+  // ---- Canvases ----
+  async listCanvases(project: Workspace): Promise<ProjectCanvas[]> {
+    return dbListProjectCanvases(project);
+  }
+
+  async getCanvas(project: Workspace, idOrSlug: string): Promise<ProjectCanvas | null> {
+    return dbGetProjectCanvas(project, idOrSlug);
+  }
+
+  async createCanvas(project: Workspace, input: CreateProjectCanvasInput, ctx?: MutationContext): Promise<ProjectCanvas> {
+    return withLock(project.id, ctx, "project canvas create", () => dbCreateProjectCanvas(project, input));
+  }
+
+  async ensureDefaultCanvas(project: ProjectStoreProject): Promise<ProjectCanvas> {
+    return dbEnsureDefaultProjectCanvas(project);
+  }
+
+  // ---- Data models & records ----
+  async listDataModels(project: Workspace): Promise<ProjectDataModel[]> {
+    return dbListProjectDataModels(project);
+  }
+
+  async createDataModel(project: Workspace, input: CreateProjectDataModelInput, ctx?: MutationContext): Promise<ProjectDataModel> {
+    return withLock(project.id, ctx, "project data model create", () => dbCreateProjectDataModel(project, input));
+  }
+
+  async listDataRecords(project: Workspace, modelId: string): Promise<ProjectDataRecord[]> {
+    return dbListProjectDataRecords(project, modelId);
+  }
+
+  async createDataRecord(project: Workspace, input: CreateProjectDataRecordInput, ctx?: MutationContext): Promise<ProjectDataRecord> {
+    return withLock(project.id, ctx, "project data record create", () => dbCreateProjectDataRecord(project, input));
+  }
+
+  // ---- Loop links ----
+  async listLoopLinks(project: Workspace): Promise<ProjectLoopLink[]> {
+    return dbListProjectLoopLinks(project);
+  }
+
+  async linkLoop(project: Workspace, input: LinkProjectLoopInput, ctx?: MutationContext): Promise<ProjectLoopLink> {
+    return withLock(project.id, ctx, "project OpenLoops link", () => dbLinkProjectLoop(project, input));
+  }
+
+  async listLoopSummaries(project: Workspace, options?: { includeRuns?: boolean; runLimit?: number }): Promise<ProjectLoopSummary[]> {
+    return dbListProjectLoopSummaries(project, options);
+  }
+
+  async inspectAppStore(project: Workspace): Promise<ProjectStoreSummary> {
+    return dbInspectProjectStore(project);
+  }
+
+  async inspectAppStoreWithLoops(project: Workspace, options?: { includeRuns?: boolean }): Promise<ProjectStoreSummary> {
+    return dbInspectProjectStoreWithLoops(project, options);
+  }
+
+  // ---- Budgets & spend ----
+  async createBudget(input: CreateProjectBudgetInput): Promise<ProjectBudget> {
+    return dbCreateProjectBudget(input);
+  }
+
+  async listBudgets(context?: ProjectBudgetContext): Promise<ProjectBudget[]> {
+    return dbListProjectBudgets(context);
+  }
+
+  async getBudgetStatuses(context?: ProjectBudgetContext): Promise<ProjectBudgetStatus[]> {
+    return dbGetProjectBudgetStatuses(context);
+  }
+
+  async resetBudget(id: string): Promise<ProjectBudget> {
+    return dbResetProjectBudget(id);
+  }
+
+  async recordSpend(input: ProjectSpendInput): Promise<ProjectBudgetSpend> {
+    return dbRecordProjectSpend(input);
+  }
+
+  // ---- Channel ----
+  async ensureChannel(project: Workspace, options?: StoreEnsureChannelOptions): Promise<ProjectChannelEnsureResult> {
+    return ensureProjectChannelViaStore(this, project, options);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -630,6 +792,102 @@ class ApiProjectStore implements ProjectStore {
   async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
     return this.client.create<Recipe>("recipes", input);
   }
+
+  // The per-project React Flow store, custom data models/records, OpenLoops
+  // links and budgets/spend are on-box sub-resources under
+  // $HASNA_PROJECTS_HOME/data/<id>; the projects API server does not model
+  // them. Reads return empty and writes throw rather than silently reading or
+  // writing a local sqlite file that does not hold the cloud project's data.
+  async listCanvases(): Promise<ProjectCanvas[]> {
+    return [];
+  }
+
+  async getCanvas(): Promise<ProjectCanvas | null> {
+    return null;
+  }
+
+  async createCanvas(): Promise<ProjectCanvas> {
+    throw new LocalOnlyOperationError("create project canvas");
+  }
+
+  async ensureDefaultCanvas(): Promise<ProjectCanvas> {
+    throw new LocalOnlyOperationError("ensure default project canvas");
+  }
+
+  async listDataModels(): Promise<ProjectDataModel[]> {
+    return [];
+  }
+
+  async createDataModel(): Promise<ProjectDataModel> {
+    throw new LocalOnlyOperationError("create project data model");
+  }
+
+  async listDataRecords(): Promise<ProjectDataRecord[]> {
+    return [];
+  }
+
+  async createDataRecord(): Promise<ProjectDataRecord> {
+    throw new LocalOnlyOperationError("create project data record");
+  }
+
+  async listLoopLinks(): Promise<ProjectLoopLink[]> {
+    return [];
+  }
+
+  async linkLoop(): Promise<ProjectLoopLink> {
+    throw new LocalOnlyOperationError("link project OpenLoops loop");
+  }
+
+  async listLoopSummaries(): Promise<ProjectLoopSummary[]> {
+    return [];
+  }
+
+  async inspectAppStore(project: Workspace): Promise<ProjectStoreSummary> {
+    return emptyAppStoreSummary(project);
+  }
+
+  async inspectAppStoreWithLoops(project: Workspace): Promise<ProjectStoreSummary> {
+    return { ...emptyAppStoreSummary(project), loops: [] };
+  }
+
+  async createBudget(): Promise<ProjectBudget> {
+    throw new LocalOnlyOperationError("create project budget");
+  }
+
+  async listBudgets(): Promise<ProjectBudget[]> {
+    return [];
+  }
+
+  async getBudgetStatuses(): Promise<ProjectBudgetStatus[]> {
+    return [];
+  }
+
+  async resetBudget(): Promise<ProjectBudget> {
+    throw new LocalOnlyOperationError("reset project budget");
+  }
+
+  async recordSpend(): Promise<ProjectBudgetSpend> {
+    throw new LocalOnlyOperationError("record project spend");
+  }
+
+  // Channel derivation is pure; persistence routes through this same api
+  // transport (updateProject/recordEvent) so the link lands on the cloud
+  // project record.
+  async ensureChannel(project: Workspace, options?: StoreEnsureChannelOptions): Promise<ProjectChannelEnsureResult> {
+    return ensureProjectChannelViaStore(this, project, options);
+  }
+}
+
+/** Empty on-box store summary reported by the api transport (nothing local). */
+function emptyAppStoreSummary(project: Workspace): ProjectStoreSummary {
+  const paths = getProjectStorePaths(project);
+  return {
+    project_id: paths.project_id,
+    paths,
+    exists: false,
+    schema_version: PROJECT_STORE_SCHEMA_VERSION,
+    counts: { canvases: 0, data_models: 0, data_records: 0, loop_links: 0 },
+  };
 }
 
 // --------------------------------------------------------------------------

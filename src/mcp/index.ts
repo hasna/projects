@@ -33,24 +33,11 @@ import { projectTmuxStatus } from "../lib/project-tmux-status.js";
 import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildRecipesRender, buildRootsRender } from "../lib/project-render.js";
 import { inspectProjectStore as inspectCanonicalProjectStore } from "../lib/project-store.js";
 import {
-  createProjectCanvas,
-  ensureDefaultProjectCanvas,
-  inspectProjectStore as inspectProjectAppStore,
-  inspectProjectStoreWithLoops as inspectProjectAppStoreWithLoops,
-  linkProjectLoop,
-  listProjectCanvases,
-  listProjectDataModels,
-  listProjectLoopSummaries,
-} from "../db/project-store.js";
-import {
-  createProjectBudget,
-  getProjectBudgetStatuses,
-  recordProjectSpend,
   type ProjectBudget,
   type ProjectBudgetStatus,
 } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
-import { ensureProjectChannel, resolveProjectChannel } from "../lib/project-channel.js";
+import { resolveProjectChannelForProject } from "../lib/project-channel.js";
 import {
   PROJECT_PRIORITIES,
   PROJECT_STAGES,
@@ -61,6 +48,7 @@ import {
   hasProjectManagementFields,
   mergeProjectIntegrationFields,
   mergeProjectManagementMetadata,
+  mergeProjectIntegrations,
   mergeProjectTags,
   projectDashboardSummary,
   projectExternalLinksSummary,
@@ -83,7 +71,7 @@ import { builtInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
   syncWorkspaceGitHubRoots,
-  linkWorkspaceExternalIntegrations,
+  normalizeWorkspaceIntegrations,
   publishWorkspaceToGitHub,
   unpublishWorkspaceFromGitHub,
   type GitHubRemoteProtocol,
@@ -1081,14 +1069,15 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = await findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
     return jsonText({
       project: projectWithManagement(project),
       store: inspectCanonicalProjectStore(project),
       app_store: input.include_loops
-        ? await inspectProjectAppStoreWithLoops(project, { includeRuns: input.include_runs })
-        : inspectProjectAppStore(project),
+        ? await store.inspectAppStoreWithLoops(project, { includeRuns: input.include_runs })
+        : await store.inspectAppStore(project),
     });
   },
 );
@@ -1102,10 +1091,11 @@ server.tool(
     render_spec: z.boolean().optional(),
   },
   async (input) => {
-    const project = await findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    if (input.ensure_default) ensureDefaultProjectCanvas(project);
-    const payload = buildProjectCanvasesPayload({ project, canvases: listProjectCanvases(project) });
+    if (input.ensure_default) await store.ensureDefaultCanvas(project);
+    const payload = buildProjectCanvasesPayload({ project, canvases: await store.listCanvases(project) });
     return jsonText(input.render_spec ? payload.render : withoutRender(payload));
   },
 );
@@ -1128,10 +1118,11 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = await findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      const canvas = withWorkspaceMutationLock(project, owner, "project canvas create", () => createProjectCanvas(project, {
+      const owner = mcpMutationAgent(store, input.agent);
+      const canvas = await store.createCanvas(project, {
         name: input.name,
         slug: input.slug,
         description: input.description,
@@ -1140,11 +1131,11 @@ server.tool(
         edges: input.edges as never,
         data: input.data as JsonObject | undefined,
         metadata: input.metadata as JsonObject | undefined,
-      }));
+      }, { agentId: owner, source: "mcp", command: "projects_canvases_create" });
       const payload = buildProjectCanvasPayload({
         project,
         canvas,
-        dataModels: listProjectDataModels(project),
+        dataModels: await store.listDataModels(project),
       });
       return jsonText(input.render_spec ? payload.render : withoutRender(payload));
     } catch (err) {
@@ -1163,16 +1154,17 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = await findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
     const target = input.canvas ?? "dashboard";
-    const canvas = listProjectCanvases(project).find((item) => item.id === target || item.slug === target);
+    const canvas = (await store.listCanvases(project)).find((item) => item.id === target || item.slug === target);
     if (!canvas) return errorText(`Project canvas not found: ${target}`);
     const payload = buildProjectCanvasPayload({
       project,
       canvas,
-      loops: input.include_loops ? await listProjectLoopSummaries(project, { includeRuns: input.include_runs }) : [],
-      dataModels: listProjectDataModels(project),
+      loops: input.include_loops ? await store.listLoopSummaries(project, { includeRuns: input.include_runs }) : [],
+      dataModels: await store.listDataModels(project),
     });
     return jsonText(payload.render);
   },
@@ -1191,15 +1183,16 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = await findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      const link = withWorkspaceMutationLock(project, owner, "project OpenLoops link", () => linkProjectLoop(project, {
+      const owner = mcpMutationAgent(store, input.agent);
+      const link = await store.linkLoop(project, {
         loop_id: input.loop,
         loop_name: input.name,
         role: input.role,
         metadata: input.metadata as JsonObject | undefined,
-      }));
+      }, { agentId: owner, source: "mcp", command: "projects_loops_link" });
       return jsonText({ project: projectWithManagement(project), link });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1215,11 +1208,12 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = await findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
     return jsonText({
       project: projectWithManagement(project),
-      loops: await listProjectLoopSummaries(project, { includeRuns: input.include_runs }),
+      loops: await store.listLoopSummaries(project, { includeRuns: input.include_runs }),
     });
   },
 );
@@ -1811,14 +1805,18 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = await findProjectTarget(input.project);
-      if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      return jsonText({ project: linkWorkspaceExternalIntegrations(project, input.integrations as WorkspaceIntegrations, {
-        agent_id: owner,
+      const store = resolveProjectStore();
+      const project = await store.resolveTarget(input.project);
+      const updated = await store.updateProject(project.id, {
+        integrations: mergeProjectIntegrations(
+          project.integrations,
+          normalizeWorkspaceIntegrations(input.integrations as WorkspaceIntegrations),
+        ),
+        agent_id: mcpMutationAgent(store, input.agent),
         source: "mcp",
         command: "projects_link",
-      }) });
+      });
+      return jsonText({ project: projectWithManagement(updated) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -2211,14 +2209,15 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? await findProjectTarget(input.project) : null;
+      const store = resolveProjectStore();
+      const project = input.project ? await findProjectTarget(input.project, store) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
       if (!project && !input.run_id) return errorText("Pass project or run_id");
       if (project && input.run_id) return errorText("Choose only one scope: project or run_id");
       const scopeType = project ? "project" : "run";
       const scopeId = project?.id ?? input.run_id!;
       return jsonText({
-        budget: createProjectBudget({
+        budget: await store.createBudget({
           id: input.id ?? `${scopeType}-${scopeId}`,
           scope_type: scopeType,
           scope_id: scopeId,
@@ -2251,9 +2250,10 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? await findProjectTarget(input.project) : null;
+      const store = resolveProjectStore();
+      const project = input.project ? await findProjectTarget(input.project, store) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
-      const statuses = getProjectBudgetStatuses({
+      const statuses = await store.getBudgetStatuses({
         workspace_id: project?.id,
         run_id: input.run_id,
         budget_id: input.budget_id,
@@ -2282,11 +2282,12 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? await findProjectTarget(input.project) : null;
+      const store = resolveProjectStore();
+      const project = input.project ? await findProjectTarget(input.project, store) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
       if (!project && !input.run_id) return errorText("Pass project or run_id");
       return jsonText({
-        spend: recordProjectSpend({
+        spend: await store.recordSpend({
           workspace_id: project?.id,
           run_id: input.run_id,
           provider: input.provider,
@@ -2385,14 +2386,15 @@ server.tool(
   },
   async (input) => {
     try {
+      const store = resolveProjectStore();
       const effectiveTarget = input.target?.trim() || input.cwd?.trim() || ".";
-      if (!input.ensure) return jsonText(resolveProjectChannel(effectiveTarget));
-      const project = await findProjectTarget(effectiveTarget);
+      const project = await findProjectTarget(effectiveTarget, store);
       if (!project) return errorText(`Project not found: ${effectiveTarget}`);
-      return jsonText(ensureProjectChannel(project, {
+      if (!input.ensure) return jsonText(resolveProjectChannelForProject(project));
+      return jsonText(await store.ensureChannel(project, {
         source: "mcp",
         command: "projects_channel",
-        agentId: ensureCliAgent().id,
+        agentId: mcpMutationAgent(store),
         from: input.from,
         dryRun: input.dry_run,
       }));
