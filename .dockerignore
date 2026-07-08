@@ -1,0 +1,12 @@
+node_modules
+.git
+dist
+pnpm-lock.yaml
+pnpm-workspace.yaml
+*.log
+.DS_Store
+.claude
+.cursor
+.codewith
+.takumi
+.github
