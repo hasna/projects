@@ -154,6 +154,7 @@ describe("projects store api transport (roots/agents/recipes)", () => {
     expect(await store.getProjectAgents("p")).toEqual([]);
     expect(await store.getProjectLocations("p")).toEqual([]);
     expect(await store.listLocks()).toEqual([]);
+    expect(await store.listAgentRuns({ workspace_id: "p" })).toEqual([]);
     expect(await store.releaseLock("k")).toBe(false);
     expect(calls).toHaveLength(0); // never hit the network or local sqlite
   });

@@ -9,10 +9,6 @@ import {
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
-  getRecipe,
-  getRecipeBySlug,
-  getRoot,
-  getRootBySlug,
   listTmuxProfileWindows,
   listTmuxProfiles,
   releaseWorkspaceLock,
@@ -285,16 +281,20 @@ function withWorkspaceLock<T>(workspace: Workspace, agentId: string | undefined,
   }
 }
 
-function resolveRootId(idOrSlug: string | undefined): string | undefined {
+// Root/recipe are shared registry resources reachable through the Store in
+// BOTH transports (local sqlite or `/v1/roots` + `/v1/recipes` over HTTP), so
+// slug->id resolution must route through the Store — never straight to local
+// sqlite, which would resolve stale local ids on a flipped machine.
+async function resolveRootId(store: ProjectStore, idOrSlug: string | undefined): Promise<string | undefined> {
   if (!idOrSlug) return undefined;
-  const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
+  const root = await store.getRoot(idOrSlug);
   if (!root) throw new Error(`Root not found: ${idOrSlug}`);
   return root.id;
 }
 
-function resolveRecipeId(idOrSlug: string | undefined): string | undefined {
+async function resolveRecipeId(store: ProjectStore, idOrSlug: string | undefined): Promise<string | undefined> {
   if (!idOrSlug) return undefined;
-  const recipe = getRecipe(idOrSlug) ?? getRecipeBySlug(idOrSlug);
+  const recipe = await store.getRecipe(idOrSlug);
   if (!recipe) throw new Error(`Recipe not found: ${idOrSlug}`);
   return recipe.id;
 }
@@ -688,9 +688,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--siblings-limit <n>", "Maximum sibling projects to include", "12")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const context = buildProjectAgentContext({
+        const context = await buildProjectAgentContext(resolveProjectStore(), {
           target,
           cwd: resolveCwdOption(opts),
           eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 8,
@@ -712,9 +712,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--limit <n>", "Maximum suggestions", "6")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = suggestProjectNextActions({
+        const result = await suggestProjectNextActions(resolveProjectStore(), {
           target,
           cwd: resolveCwdOption(opts),
           limit: parsePositiveInteger(opts.limit, "--limit") ?? 6,
@@ -743,9 +743,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--cwd <path>", "Working directory used when target is omitted")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = explainProjectResolution(target, { cwd: resolveCwdOption(opts) });
+        const result = await explainProjectResolution(resolveProjectStore(), target, { cwd: resolveCwdOption(opts) });
         if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(toAgentText(result));
@@ -817,9 +817,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--runs-limit <n>", "Maximum recent agent runs to include", "5")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const handoff = buildProjectHandoff({
+        const handoff = await buildProjectHandoff(resolveProjectStore(), {
           target,
           cwd: resolveCwdOption(opts),
           eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 10,
@@ -844,9 +844,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--status <status>", "Filter by status: planned, running, completed, failed")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = listProjectAgentRunsView({
+        const result = await listProjectAgentRunsView(resolveProjectStore(), {
           target,
           cwd: resolveCwdOption(opts),
           limit: parsePositiveInteger(opts.limit, "--limit") ?? 20,
@@ -877,9 +877,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--cwd <path>", "Working directory used when target is omitted")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((runId, target, opts) => {
+    .action(async (runId, target, opts) => {
       try {
-        const detail = getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
+        const detail = await getProjectAgentRunDetail(resolveProjectStore(), { runId, target, cwd: resolveCwdOption(opts) });
         if (wantsJson(opts)) {
           printObject(detail, opts);
           return;
@@ -1399,11 +1399,15 @@ function registerProjectCommands(program: Command): void {
         if (store.mode === "api") {
           // Cloud project rows are created through the Store; machine-local
           // runtime (directory/git/tmux/marker) does not apply to a remote row.
+          // Root/recipe are shared registry resources: resolve slug->id through
+          // the Store so the intent is honored (not silently dropped) in api mode.
           const project = await store.createProject({
             name: opts.name,
             slug: opts.slug,
             description: opts.description,
             kind: parseKind(opts.kind),
+            root_id: await resolveRootId(store, opts.root),
+            recipe_id: await resolveRecipeId(store, opts.recipe),
             tags: splitList(opts.tags),
             metadata: parseJsonObject(opts.metadataJson, "--metadata-json") ?? undefined,
             integrations: parseIntegrationsJson(opts.integrationsJson) ?? undefined,
@@ -1438,8 +1442,8 @@ function registerProjectCommands(program: Command): void {
           slug: opts.slug,
           description: opts.description,
           kind: parseKind(opts.kind),
-          root_id: resolveRootId(opts.root),
-          recipe_id: resolveRecipeId(opts.recipe),
+          root_id: await resolveRootId(store, opts.root),
+          recipe_id: await resolveRecipeId(store, opts.recipe),
           primary_path: opts.path,
           git_remote: opts.gitRemote,
           tags: splitList(opts.tags),
@@ -2068,10 +2072,13 @@ function registerProjectCommands(program: Command): void {
         const mergedIntegrations = hasProjectIntegrationFields(integrationFields)
           ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
           : opts.integrationsJson === undefined ? undefined : integrationsBase;
-        // Root/recipe are resolved from on-box slugs; api mode leaves them to the server input as-is.
-        const rootPatch = store.mode === "local"
-          ? { root_id: opts.clearRoot ? null : resolveRootId(opts.root), recipe_id: opts.clearRecipe ? null : resolveRecipeId(opts.recipe) }
-          : {};
+        // Root/recipe are shared registry resources; resolve slug->id through
+        // the Store in BOTH transports so --root/--recipe are never silently
+        // dropped on a flipped machine.
+        const rootPatch = {
+          root_id: opts.clearRoot ? null : await resolveRootId(store, opts.root),
+          recipe_id: opts.clearRecipe ? null : await resolveRecipeId(store, opts.recipe),
+        };
         const updated = await store.updateProject(project.id, {
           name: opts.name,
           slug: opts.slug,

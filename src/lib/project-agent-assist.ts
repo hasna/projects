@@ -10,24 +10,17 @@
 //   6. toAgentText               -> `--for-agent`       (LLM-friendly text mode)
 //
 // All functions are pure derivations over existing storage state; none mutate.
+//
+// STORE ROUTING: every registry read goes through the active ProjectStore, so
+// on a machine flipped to api/cloud these agent-orientation surfaces read the
+// SHARED cloud dataset (over HTTP + bearer key) instead of the stale local
+// sqlite island. Machine-local side effects (tmux inspection, on-disk doctor
+// checks, path/marker resolution) are NOT shared state and are gated on
+// `store.mode === "local"` by design — they describe THIS machine.
 
-import type { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import {
-  getAgent,
-  getRecipe,
-  getRoot,
-  listAgentRuns,
-  listWorkspaces,
-  listWorkspacesByPath,
-  listWorkspaceAgents,
-  listWorkspaceEvents,
-  listWorkspaceLocations,
-  listWorkspaceLocks,
-  resolveWorkspace,
-} from "../db/workspaces.js";
-import { getProjectBudgetStatuses } from "./budget.js";
+import { listWorkspacesByPath } from "../db/workspaces.js";
 import { doctorWorkspace, type WorkspaceDoctorResult } from "./workspace-doctor.js";
 import {
   projectExternalLinksSummary,
@@ -44,6 +37,7 @@ import {
   type ProjectTargetResolution,
 } from "./project-resolver.js";
 import { PROJECT_RENDER_SCHEMA_VERSION } from "./project-render.js";
+import type { ProjectStore } from "../store/project-store.js";
 import { listSessions } from "./tmux.js";
 import type {
   AgentRun,
@@ -63,15 +57,38 @@ const MACHINE_ID = (() => {
   }
 })();
 
+interface ResolvedTarget {
+  project: Workspace;
+  source: ProjectResolverSource;
+  marker: ProjectMarkerReference | null;
+  /** Full local resolution detail (local mode only); synthesized in api mode. */
+  resolution: ProjectTargetResolution;
+}
+
 // Resolution can throw (ambiguous name, missing path). For agent-assist
 // surfaces we prefer an "unresolved" result over a thrown error so agents get
 // actionable output instead of a stack trace.
-function safeResolveProjectTarget(
-  target: string,
-  db?: Database,
-): ProjectTargetResolution | null {
+//
+// In api/cloud mode we resolve through the Store (server-side id/slug lookup);
+// in local mode we use the richer on-disk resolver so path/marker sources and
+// marker references remain available in the trace.
+async function safeResolveProjectTarget(
+  store: ProjectStore,
+  target: string | undefined,
+): Promise<ResolvedTarget | null> {
   try {
-    return resolveRegisteredProjectTarget(target, { allowPath: true, allowMarker: true, db });
+    if (store.mode === "local") {
+      const res = resolveRegisteredProjectTarget(target, { allowPath: true, allowMarker: true });
+      if (!res) return null;
+      return { project: res.project, source: res.source, marker: res.marker ?? null, resolution: res };
+    }
+    const project = await store.resolveTarget(target, { allowPath: true, allowMarker: true });
+    return {
+      project,
+      source: "id-or-slug",
+      marker: null,
+      resolution: { target: target?.trim() || ".", source: "id-or-slug", registered: true, project },
+    };
   } catch {
     return null;
   }
@@ -82,7 +99,6 @@ export interface ProjectAgentContextOptions {
   cwd?: string;
   eventsLimit?: number;
   siblingsLimit?: number;
-  db?: Database;
 }
 
 export interface ProjectAgentContext {
@@ -103,13 +119,16 @@ export interface ProjectAgentContext {
   marker?: ProjectMarkerReference | null;
 }
 
-export function buildProjectAgentContext(options: ProjectAgentContextOptions = {}): ProjectAgentContext {
+export async function buildProjectAgentContext(
+  store: ProjectStore,
+  options: ProjectAgentContextOptions = {},
+): Promise<ProjectAgentContext> {
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
   const eventsLimit = options.eventsLimit ?? 8;
   const siblingsLimit = options.siblingsLimit ?? 12;
 
-  const resolution = safeResolveProjectTarget(target, options.db);
+  const resolution = await safeResolveProjectTarget(store, target);
   const base: ProjectAgentContext = {
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.agent_context",
@@ -125,14 +144,14 @@ export function buildProjectAgentContext(options: ProjectAgentContextOptions = {
   if (!resolution) return base;
 
   const project = resolution.project;
-  const root = project.root_id ? getRoot(project.root_id, options.db) : null;
-  const recipe = project.recipe_id ? getRecipe(project.recipe_id, options.db) : null;
-  const agents = listWorkspaceAgents(project.id, options.db);
-  const events = listWorkspaceEvents(project.id, options.db).slice(0, eventsLimit);
-  const locations = listWorkspaceLocations(project.id, options.db);
+  const root = project.root_id ? await store.getRoot(project.root_id) : null;
+  const recipe = project.recipe_id ? await store.getRecipe(project.recipe_id) : null;
+  const agents = await store.getProjectAgents(project.id);
+  const events = (await store.listEvents(project.id, eventsLimit)).slice(0, eventsLimit);
+  const locations = await store.getProjectLocations(project.id);
 
   const siblings = root
-    ? listWorkspaces({ root_id: root.id, limit: siblingsLimit + 1 }, options.db)
+    ? (await store.listProjects({ root_id: root.id, limit: siblingsLimit + 1 }))
         .filter((w) => w.id !== project.id && w.status !== "deleted")
         .slice(0, siblingsLimit)
     : [];
@@ -148,20 +167,25 @@ export function buildProjectAgentContext(options: ProjectAgentContextOptions = {
     tmuxBlock = { available: false, session_names: [] };
   }
 
+  // Doctor inspects THIS machine's on-disk project directory + local db; it is
+  // meaningless for a cloud project that does not live on this box, so it is
+  // gated on local mode.
   let doctorBlock: ProjectAgentContext["doctor"] | undefined;
-  try {
-    const doc = doctorWorkspace(project, {}, options.db) as WorkspaceDoctorResult;
-    doctorBlock = {
-      ok: doc.ok,
-      checks: doc.checks.map((c) => ({ code: c.code, status: c.status, message: c.message })),
-    };
-  } catch {
-    doctorBlock = undefined;
+  if (store.mode === "local") {
+    try {
+      const doc = doctorWorkspace(project, {}) as WorkspaceDoctorResult;
+      doctorBlock = {
+        ok: doc.ok,
+        checks: doc.checks.map((c) => ({ code: c.code, status: c.status, message: c.message })),
+      };
+    } catch {
+      doctorBlock = undefined;
+    }
   }
 
   let budgetBlock: ProjectAgentContext["budgets"] | undefined;
   try {
-    const statuses = getProjectBudgetStatuses({ workspace_id: project.id }, options.db);
+    const statuses = await store.getBudgetStatuses({ workspace_id: project.id });
     budgetBlock = statuses.map((s) => ({ exhausted: s.exhausted, warnings: s.warnings }));
   } catch {
     budgetBlock = undefined;
@@ -256,7 +280,6 @@ export interface ProjectNextOptions {
   target?: string;
   cwd?: string;
   limit?: number;
-  db?: Database;
 }
 
 export interface ProjectNextResult {
@@ -267,13 +290,16 @@ export interface ProjectNextResult {
   actions: ProjectNextAction[];
 }
 
-export function suggestProjectNextActions(options: ProjectNextOptions = {}): ProjectNextResult {
+export async function suggestProjectNextActions(
+  store: ProjectStore,
+  options: ProjectNextOptions = {},
+): Promise<ProjectNextResult> {
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
   const limit = options.limit ?? 6;
   const actions: ProjectNextAction[] = [];
 
-  const resolution = safeResolveProjectTarget(target, options.db);
+  const resolution = await safeResolveProjectTarget(store, target);
   const result: ProjectNextResult = {
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.next",
@@ -301,27 +327,29 @@ export function suggestProjectNextActions(options: ProjectNextOptions = {}): Pro
     }
   }
 
-  // 2. doctor findings -> doctor --fix
-  try {
-    const doc = doctorWorkspace(project, {}, options.db) as WorkspaceDoctorResult;
-    const fixable = doc.checks.filter((c) => c.fixable);
-    const errors = doc.checks.filter((c) => c.status === "error");
-    if (fixable.length > 0 || errors.length > 0) {
-      actions.push({
-        id: "doctor-fix",
-        priority: errors.length > 0 ? "high" : "medium",
-        title: `Run doctor${fixable.length ? " and apply fixes" : ""} for ${project.name}`,
-        rationale: `doctor reported ${errors.length} error(s) and ${fixable.length} fixable check(s).`,
-        command: `projects doctor ${slug} --fix`,
-      });
+  // 2. doctor findings -> doctor --fix (machine-local; local mode only)
+  if (store.mode === "local") {
+    try {
+      const doc = doctorWorkspace(project, {}) as WorkspaceDoctorResult;
+      const fixable = doc.checks.filter((c) => c.fixable);
+      const errors = doc.checks.filter((c) => c.status === "error");
+      if (fixable.length > 0 || errors.length > 0) {
+        actions.push({
+          id: "doctor-fix",
+          priority: errors.length > 0 ? "high" : "medium",
+          title: `Run doctor${fixable.length ? " and apply fixes" : ""} for ${project.name}`,
+          rationale: `doctor reported ${errors.length} error(s) and ${fixable.length} fixable check(s).`,
+          command: `projects doctor ${slug} --fix`,
+        });
+      }
+    } catch {
+      // doctor may fail when path is missing; ignore.
     }
-  } catch {
-    // doctor may fail when path is missing; ignore.
   }
 
   // 3. near-limit budget -> budgets remaining
   try {
-    const statuses = getProjectBudgetStatuses({ workspace_id: project.id }, options.db);
+    const statuses = await store.getBudgetStatuses({ workspace_id: project.id });
     const concerning = statuses.filter((s) => s.exhausted || s.warnings.length > 0);
     if (concerning.length > 0) {
       actions.push({
@@ -336,9 +364,10 @@ export function suggestProjectNextActions(options: ProjectNextOptions = {}): Pro
     // budgets optional
   }
 
+  const events = await store.listEvents(project.id);
+
   // 4. unresolved rename report from last start -> sessions --unrenamed
-  const startEvents = listWorkspaceEvents(project.id, options.db)
-    .filter((e) => e.event_type === "started");
+  const startEvents = events.filter((e) => e.event_type === "started");
   if (startEvents.length > 0) {
     const last = startEvents.at(-1)!;
     const after = (last.after_json ?? {}) as JsonObject;
@@ -356,7 +385,7 @@ export function suggestProjectNextActions(options: ProjectNextOptions = {}): Pro
   }
 
   // 5. stale partial create with rollback records -> cleanup-create
-  const createEvents = listWorkspaceEvents(project.id, options.db).filter((e) => e.event_type === "created");
+  const createEvents = events.filter((e) => e.event_type === "created");
   if (createEvents.length > 0) {
     const lastCreate = createEvents.at(-1)!;
     const after = (lastCreate.after_json ?? {}) as JsonObject;
@@ -375,7 +404,7 @@ export function suggestProjectNextActions(options: ProjectNextOptions = {}): Pro
   }
 
   // 6. open locks -> unlock
-  const locks = listWorkspaceLocks(options.db).filter((l) => l.workspace_id === project.id);
+  const locks = (await store.listLocks()).filter((l) => l.workspace_id === project.id);
   if (locks.length > 0) {
     actions.push({
       id: "release-locks",
@@ -436,15 +465,19 @@ export interface ProjectWhyResult {
   suggestions: string[];
 }
 
-export function explainProjectResolution(target: string | undefined, options: { cwd?: string; db?: Database } = {}): ProjectWhyResult {
+export async function explainProjectResolution(
+  store: ProjectStore,
+  target: string | undefined,
+  options: { cwd?: string } = {},
+): Promise<ProjectWhyResult> {
   const cwd = options.cwd ?? process.cwd();
   const normalizedTarget = target?.trim() || cwd;
-  const db = options.db;
   const steps: ProjectWhyStep[] = [];
   const suggestions: string[] = [];
+  const local = store.mode === "local";
 
-  // id-or-slug
-  const byIdOrSlug = resolveWorkspace(normalizedTarget, db);
+  // id-or-slug (routes through the Store: local sqlite or cloud API)
+  const byIdOrSlug = await store.getProject(normalizedTarget);
   steps.push({
     source: "id-or-slug",
     tried: true,
@@ -454,7 +487,7 @@ export function explainProjectResolution(target: string | undefined, options: { 
 
   // name (exact, case-insensitive)
   const lower = normalizedTarget.toLowerCase();
-  const nameMatches = listWorkspaces({ query: normalizedTarget, limit: 200 }, db)
+  const nameMatches = (await store.listProjects({ query: normalizedTarget, limit: 200 }))
     .filter((w) => w.status !== "deleted")
     .filter((w) => w.name.toLowerCase() === lower);
   steps.push({
@@ -469,62 +502,65 @@ export function explainProjectResolution(target: string | undefined, options: { 
           : `ambiguous: ${nameMatches.map((w) => w.slug).join(", ")}`,
   });
 
-  // path
+  // path + marker are on-disk (machine-local) resolution steps; in api/cloud
+  // mode the client does not resolve cloud projects by this machine's paths.
   let pathMatched: Workspace[] = [];
-  let pathTried = false;
-  if (isProjectPathLike(normalizedTarget)) {
-    pathTried = true;
-    const path = normalizeProjectPath(normalizedTarget);
-    if (existsSync(path) && existsSync(path) && statIsDir(path)) {
-      pathMatched = listWorkspacesByPath(path, db).filter((w) => w.status !== "deleted");
-      steps.push({
-        source: "path",
-        tried: true,
-        matched: pathMatched.length === 1,
-        detail:
-          pathMatched.length === 0
-            ? `directory exists at ${path} but no project registers it`
-            : pathMatched.length === 1
-              ? `matched ${pathMatched[0]!.slug} by path`
-              : `ambiguous path: ${pathMatched.map((w) => w.slug).join(", ")}`,
-      });
-    } else {
-      steps.push({
-        source: "path",
-        tried: true,
-        matched: false,
-        detail: `path-like target ${path} does not exist or is not a directory`,
-      });
-    }
-  } else {
-    steps.push({ source: "path", tried: false, matched: false, detail: "target is not path-like" });
-  }
-
-  // marker
   let marker: ProjectMarkerReference | null = null;
-  if (isProjectPathLike(normalizedTarget)) {
-    const path = normalizeProjectPath(normalizedTarget);
-    if (statIsDir(path)) {
-      marker = readProjectMarker(path);
-      steps.push({
-        source: "marker",
-        tried: true,
-        matched: Boolean(marker),
-        detail: marker
-          ? `marker found at ${marker.path} (id=${marker.id ?? "—"}, slug=${marker.slug ?? "—"}, legacy=${marker.legacy})`
-          : `no project marker in ${path}`,
-      });
-      if (marker && (!marker.id || !marker.slug)) {
-        suggestions.push("Marker is missing id/slug; recreate it via `projects import <path>` or `projects create`.");
+  if (!local) {
+    steps.push({ source: "path", tried: false, matched: false, detail: "path resolution is machine-local (not used in api/cloud mode)" });
+    steps.push({ source: "marker", tried: false, matched: false, detail: "marker resolution is machine-local (not used in api/cloud mode)" });
+  } else {
+    if (isProjectPathLike(normalizedTarget)) {
+      const path = normalizeProjectPath(normalizedTarget);
+      if (existsSync(path) && statIsDir(path)) {
+        pathMatched = listWorkspacesByPath(path).filter((w) => w.status !== "deleted");
+        steps.push({
+          source: "path",
+          tried: true,
+          matched: pathMatched.length === 1,
+          detail:
+            pathMatched.length === 0
+              ? `directory exists at ${path} but no project registers it`
+              : pathMatched.length === 1
+                ? `matched ${pathMatched[0]!.slug} by path`
+                : `ambiguous path: ${pathMatched.map((w) => w.slug).join(", ")}`,
+        });
+      } else {
+        steps.push({
+          source: "path",
+          tried: true,
+          matched: false,
+          detail: `path-like target ${path} does not exist or is not a directory`,
+        });
       }
     } else {
-      steps.push({ source: "marker", tried: false, matched: false, detail: "cannot read marker from a non-directory path" });
+      steps.push({ source: "path", tried: false, matched: false, detail: "target is not path-like" });
     }
-  } else {
-    steps.push({ source: "marker", tried: false, matched: false, detail: "target is not path-like" });
+
+    if (isProjectPathLike(normalizedTarget)) {
+      const path = normalizeProjectPath(normalizedTarget);
+      if (statIsDir(path)) {
+        marker = readProjectMarker(path);
+        steps.push({
+          source: "marker",
+          tried: true,
+          matched: Boolean(marker),
+          detail: marker
+            ? `marker found at ${marker.path} (id=${marker.id ?? "—"}, slug=${marker.slug ?? "—"}, legacy=${marker.legacy})`
+            : `no project marker in ${path}`,
+        });
+        if (marker && (!marker.id || !marker.slug)) {
+          suggestions.push("Marker is missing id/slug; recreate it via `projects import <path>` or `projects create`.");
+        }
+      } else {
+        steps.push({ source: "marker", tried: false, matched: false, detail: "cannot read marker from a non-directory path" });
+      }
+    } else {
+      steps.push({ source: "marker", tried: false, matched: false, detail: "target is not path-like" });
+    }
   }
 
-  const resolution = safeResolveProjectTarget(normalizedTarget, db);
+  const resolution = await safeResolveProjectTarget(store, normalizedTarget);
 
   if (!resolution) {
     if (nameMatches.length > 1) suggestions.push("Disambiguate by slug or id instead of name.");
@@ -540,7 +576,7 @@ export function explainProjectResolution(target: string | undefined, options: { 
     kind: "projects.why",
     target: normalizedTarget,
     resolved: Boolean(resolution),
-    resolution: resolution ?? undefined,
+    resolution: resolution?.resolution ?? undefined,
     steps,
     marker: marker ?? undefined,
     suggestions,
@@ -564,7 +600,6 @@ export interface ProjectHandoffOptions {
   cwd?: string;
   eventsLimit?: number;
   runsLimit?: number;
-  db?: Database;
 }
 
 export interface ProjectHandoff {
@@ -581,22 +616,26 @@ export interface ProjectHandoff {
   handoff_instructions: string;
 }
 
-export function buildProjectHandoff(options: ProjectHandoffOptions = {}): ProjectHandoff {
+export async function buildProjectHandoff(
+  store: ProjectStore,
+  options: ProjectHandoffOptions = {},
+): Promise<ProjectHandoff> {
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
   const eventsLimit = options.eventsLimit ?? 10;
   const runsLimit = options.runsLimit ?? 5;
 
-  const resolution = safeResolveProjectTarget(target, options.db);
+  const resolution = await safeResolveProjectTarget(store, target);
   if (!resolution) throw new Error(`Project not found for handoff: ${target}`);
 
   const project = resolution.project;
-  const root = project.root_id ? getRoot(project.root_id, options.db) : null;
-  const events = listWorkspaceEvents(project.id, options.db).slice(0, eventsLimit);
-  const runs = listAgentRuns({ workspace_id: project.id, limit: runsLimit }, options.db);
-  const locks = listWorkspaceLocks(options.db)
+  const root = project.root_id ? await store.getRoot(project.root_id) : null;
+  const events = (await store.listEvents(project.id, eventsLimit)).slice(0, eventsLimit);
+  const runs = await store.listAgentRuns({ workspace_id: project.id, limit: runsLimit });
+  const locks = (await store.listLocks())
     .filter((l) => l.workspace_id === project.id)
     .map((l) => ({ lock_key: l.lock_key, reason: l.reason, created_at: l.created_at }));
+  const locations = await store.getProjectLocations(project.id);
 
   const links = projectExternalLinksSummary(project);
   const integrations: JsonObject = {
@@ -625,7 +664,7 @@ export function buildProjectHandoff(options: ProjectHandoffOptions = {}): Projec
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.handoff",
     machine: { hostname: MACHINE_ID },
-    project: compactProject(project, listWorkspaceLocations(project.id, options.db)),
+    project: compactProject(project, locations),
     root: root ? compactRoot(root) : undefined,
     integrations,
     tmux: { available: tmuxSessions.length > 0 || tmuxAvailableRaw(), session_names: tmuxSessions },
@@ -654,7 +693,6 @@ export interface ProjectRunsOptions {
   cwd?: string;
   limit?: number;
   status?: AgentRun["status"];
-  db?: Database;
 }
 
 export interface ProjectRunsResult {
@@ -674,11 +712,14 @@ export interface ProjectRunsResult {
   }>;
 }
 
-export function listProjectAgentRunsView(options: ProjectRunsOptions = {}): ProjectRunsResult {
+export async function listProjectAgentRunsView(
+  store: ProjectStore,
+  options: ProjectRunsOptions = {},
+): Promise<ProjectRunsResult> {
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
   const limit = options.limit ?? 20;
-  const resolution = safeResolveProjectTarget(target, options.db);
+  const resolution = await safeResolveProjectTarget(store, target);
   const result: ProjectRunsResult = {
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.runs",
@@ -687,10 +728,7 @@ export function listProjectAgentRunsView(options: ProjectRunsOptions = {}): Proj
   };
   if (!resolution) return result;
 
-  const runs = listAgentRuns(
-    { workspace_id: resolution.project.id, limit, status: options.status },
-    options.db,
-  );
+  const runs = await store.listAgentRuns({ workspace_id: resolution.project.id, limit, status: options.status });
   result.runs = runs.map((r) => ({
     id: r.id,
     status: r.status,
@@ -709,7 +747,6 @@ export interface ProjectRunDetailOptions {
   target?: string;
   cwd?: string;
   runId: string;
-  db?: Database;
 }
 
 export interface ProjectRunDetail {
@@ -719,18 +756,18 @@ export interface ProjectRunDetail {
   agent?: JsonObject;
 }
 
-export function getProjectAgentRunDetail(options: ProjectRunDetailOptions): ProjectRunDetail {
+export async function getProjectAgentRunDetail(
+  store: ProjectStore,
+  options: ProjectRunDetailOptions,
+): Promise<ProjectRunDetail> {
   const cwd = options.cwd ?? process.cwd();
   const target = options.target ?? cwd;
-  const resolution = safeResolveProjectTarget(target, options.db);
+  const resolution = await safeResolveProjectTarget(store, target);
   if (!resolution) throw new Error(`Project not found for run detail: ${target}`);
-  const runs = listAgentRuns(
-    { workspace_id: resolution.project.id, limit: 200 },
-    options.db,
-  );
+  const runs = await store.listAgentRuns({ workspace_id: resolution.project.id, limit: 200 });
   const run = runs.find((r) => r.id === options.runId);
   if (!run) throw new Error(`Agent run not found for project: ${options.runId}`);
-  const agent = run.agent_id ? getAgent(run.agent_id, options.db) : null;
+  const agent = run.agent_id ? await store.getAgent(run.agent_id) : null;
   return {
     schema_version: PROJECT_RENDER_SCHEMA_VERSION,
     kind: "projects.run_detail",

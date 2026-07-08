@@ -13,10 +13,6 @@ import {
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
-  getRecipe,
-  getRecipeBySlug,
-  getRoot,
-  getRootBySlug,
   listTmuxProfileWindows,
   listTmuxProfiles,
   releaseWorkspaceLock,
@@ -297,16 +293,19 @@ function withoutRender<T extends Record<string, unknown>>(value: T): Omit<T, "re
   return rest;
 }
 
-function rootId(idOrSlug: string | undefined): string | undefined {
+// Root/recipe are shared registry resources reachable through the Store in
+// BOTH transports; resolve slug->id through the Store so intent is never
+// silently dropped (and never resolved against stale local sqlite) in api mode.
+async function rootId(store: ProjectStore, idOrSlug: string | undefined): Promise<string | undefined> {
   if (!idOrSlug) return undefined;
-  const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
+  const root = await store.getRoot(idOrSlug);
   if (!root) throw new Error(`Root not found: ${idOrSlug}`);
   return root.id;
 }
 
-function recipeId(idOrSlug: string | undefined): string | undefined {
+async function recipeId(store: ProjectStore, idOrSlug: string | undefined): Promise<string | undefined> {
   if (!idOrSlug) return undefined;
-  const recipe = getRecipe(idOrSlug) ?? getRecipeBySlug(idOrSlug);
+  const recipe = await store.getRecipe(idOrSlug);
   if (!recipe) throw new Error(`Recipe not found: ${idOrSlug}`);
   return recipe.id;
 }
@@ -1325,12 +1324,16 @@ server.tool(
       const store = resolveProjectStore();
       if (store.mode === "api") {
         // Cloud rows are created through the Store; machine-local runtime
-        // (directory/git/tmux) does not apply to a remote project row.
+        // (directory/git/tmux) does not apply to a remote project row. Root/
+        // recipe are shared registry resources: resolve slug->id through the
+        // Store so intent is honored (not silently dropped) in api mode.
         const project = await store.createProject({
           name: input.name,
           slug: input.slug,
           description: input.description,
           kind: input.kind as WorkspaceKind | undefined,
+          root_id: await rootId(store, input.root),
+          recipe_id: await recipeId(store, input.recipe),
           tags: input.tags,
           integrations: input.integrations as WorkspaceIntegrations | undefined,
           metadata: input.metadata as JsonObject | undefined,
@@ -1361,8 +1364,8 @@ server.tool(
         slug: input.slug,
         description: input.description,
         kind: input.kind as WorkspaceKind | undefined,
-        root_id: rootId(input.root),
-        recipe_id: recipeId(input.recipe),
+        root_id: await rootId(store, input.root),
+        recipe_id: await recipeId(store, input.recipe),
         primary_path: input.path,
         tags: input.tags,
         integrations,
@@ -1766,10 +1769,13 @@ server.tool(
       const integrations = hasProjectIntegrationFields(integrationFields)
         ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
         : input.integrations === undefined ? undefined : integrationsBase;
-      // Root/recipe are resolved from on-box slugs; api mode leaves them to the server.
-      const rootPatch = store.mode === "local"
-        ? { root_id: input.clear_root ? null : rootId(input.root), recipe_id: input.clear_recipe ? null : recipeId(input.recipe) }
-        : {};
+      // Root/recipe are shared registry resources; resolve slug->id through the
+      // Store in BOTH transports so root/recipe are never silently dropped on a
+      // flipped machine.
+      const rootPatch = {
+        root_id: input.clear_root ? null : await rootId(store, input.root),
+        recipe_id: input.clear_recipe ? null : await recipeId(store, input.recipe),
+      };
       const updated = await store.updateProject(project.id, {
         name: input.name,
         slug: input.slug,
@@ -2317,7 +2323,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const ctx = buildProjectAgentContext({
+      const ctx = await buildProjectAgentContext(resolveProjectStore(), {
         target: input.target,
         cwd: input.cwd,
         eventsLimit: input.events_limit,
@@ -2342,7 +2348,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const res = suggestProjectNextActions({
+      const res = await suggestProjectNextActions(resolveProjectStore(), {
         target: input.target,
         cwd: input.cwd,
         limit: input.limit,
@@ -2365,7 +2371,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const res = explainProjectResolution(input.target, { cwd: input.cwd });
+      const res = await explainProjectResolution(resolveProjectStore(), input.target, { cwd: input.cwd });
       if (input.for_agent) return jsonText({ text: toAgentText(res) });
       return jsonText(res);
     } catch (err) {
@@ -2416,7 +2422,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const h = buildProjectHandoff({
+      const h = await buildProjectHandoff(resolveProjectStore(), {
         target: input.target,
         cwd: input.cwd,
         eventsLimit: input.events_limit,
@@ -2442,7 +2448,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const res = listProjectAgentRunsView({
+      const res = await listProjectAgentRunsView(resolveProjectStore(), {
         target: input.target,
         cwd: input.cwd,
         limit: input.limit,
@@ -2467,7 +2473,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const detail = getProjectAgentRunDetail({ runId: input.run_id, target: input.target, cwd: input.cwd });
+      const detail = await getProjectAgentRunDetail(resolveProjectStore(), { runId: input.run_id, target: input.target, cwd: input.cwd });
       if (input.for_agent) return jsonText({ text: toAgentText(detail) });
       return jsonText(detail);
     } catch (err) {

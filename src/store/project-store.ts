@@ -36,6 +36,7 @@ import {
   getRecipeBySlug as dbGetRecipeBySlug,
   getRoot as dbGetRoot,
   getRootBySlug as dbGetRootBySlug,
+  listAgentRuns as dbListAgentRuns,
   listAgents as dbListAgents,
   listRecipes as dbListRecipes,
   listRoots as dbListRoots,
@@ -111,6 +112,7 @@ import {
 } from "../lib/project-channel.js";
 import type {
   Agent,
+  AgentRun,
   CreateAgentInput,
   CreateRecipeInput,
   CreateRootInput,
@@ -165,6 +167,14 @@ export interface RecordEventInput {
   before?: JsonObject | null;
   after?: JsonObject | null;
   metadata?: JsonObject;
+}
+
+/** Filter for the prompt-agent run ledger read (on-box sub-resource). */
+export interface AgentRunFilter {
+  workspace_id?: string;
+  agent_id?: string;
+  status?: AgentRun["status"];
+  limit?: number;
 }
 
 /** Assign a registered agent to a project role (on-box sub-resource). */
@@ -274,6 +284,13 @@ export interface ProjectStore {
   listRecipes(): Promise<Recipe[]>;
   getRecipe(idOrSlug: string): Promise<Recipe | null>;
   createRecipe(input: CreateRecipeInput): Promise<Recipe>;
+
+  // ---- Prompt-agent run ledger (on-box sub-resource) ----
+  // Agent runs are recorded on-box during local prompt-agent execution; the
+  // projects API server does not model them, so the api transport returns an
+  // empty list rather than reading a local sqlite file the cloud project does
+  // not own. This keeps the runs/handoff surfaces from split-brain reads.
+  listAgentRuns(filter?: AgentRunFilter): Promise<AgentRun[]>;
 
   // ---- Per-project React Flow canvases (on-box project.db sub-resource) ----
   // The api transport does not model the per-project store server-side: reads
@@ -521,6 +538,10 @@ class LocalProjectStore implements ProjectStore {
 
   async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
     return dbCreateRecipe(input);
+  }
+
+  async listAgentRuns(filter?: AgentRunFilter): Promise<AgentRun[]> {
+    return dbListAgentRuns(filter ?? {});
   }
 
   // ---- Canvases ----
@@ -791,6 +812,13 @@ class ApiProjectStore implements ProjectStore {
 
   async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
     return this.client.create<Recipe>("recipes", input);
+  }
+
+  // Agent runs are an on-box ledger the projects API server does not model;
+  // returning empty avoids reading a local sqlite file the cloud project does
+  // not own (the split-brain the runs/handoff surfaces would otherwise hit).
+  async listAgentRuns(): Promise<AgentRun[]> {
+    return [];
   }
 
   // The per-project React Flow store, custom data models/records, OpenLoops
