@@ -48,7 +48,6 @@ import {
 } from "../../lib/oss-project-matrix.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../../lib/workspace-agent-eval.js";
 import { cleanupProjectEvalArtifacts, filterProjectEvalArtifacts } from "../../lib/project-eval-artifacts.js";
-import { resolveRegisteredProjectTargetOrThrow } from "../../lib/project-resolver.js";
 import { resolveProjectChannelForProject } from "../../lib/project-channel.js";
 import {
   parseProjectStartAgent,
@@ -307,10 +306,6 @@ function resolveAgentId(idOrSlug: string | undefined): string {
   const agent = getAgent(idOrSlug) ?? getAgentBySlug(idOrSlug);
   if (!agent) throw new Error(`Agent not found: ${idOrSlug}`);
   return agent.id;
-}
-
-function resolveProjectTarget(target: string | undefined): Workspace {
-  return resolveRegisteredProjectTargetOrThrow(target).project;
 }
 
 /**
@@ -2543,7 +2538,7 @@ function registerStoreCommand(program: Command): void {
     .action(async (projectIdOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const project = await store.resolveTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const ensure = () => ensureCanonicalProjectStore(project, {
           dryRun: opts.dryRun,
@@ -2575,7 +2570,7 @@ function registerStoreCommand(program: Command): void {
     .action(async (projectIdOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const project = await store.resolveTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const apply = Boolean(opts.apply || opts.yes);
         const result = apply

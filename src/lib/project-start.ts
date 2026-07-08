@@ -325,16 +325,37 @@ export async function resolveProjectStartTarget(
   options: Pick<ProjectStartOptions, "register" | "dryRun" | "agentId" | "db" | "importTags" | "importMetadata" | "source" | "auditCommand"> = {},
 ): Promise<{ project: Workspace; resolution: ProjectStartResolution }> {
   const normalizedTarget = target?.trim() || ".";
-  const existing = resolveRegisteredProjectTarget(normalizedTarget, { db: options.db });
-  if (existing) {
-    return {
-      project: existing.project,
-      resolution: {
-        target: existing.target,
-        source: existing.source,
-        registered: true,
-      },
-    };
+  const store = resolveProjectStore();
+
+  // Resolve an already-registered project through the active Store. In api/cloud
+  // mode this resolves the target by id/slug against the shared cloud registry
+  // (so cloud-only projects resolve). In local mode we keep the richer on-disk
+  // path/marker resolution, which is a machine-local convenience that the cloud
+  // registry does not model.
+  if (store.mode === "local") {
+    const existing = resolveRegisteredProjectTarget(normalizedTarget, { db: options.db });
+    if (existing) {
+      return {
+        project: existing.project,
+        resolution: {
+          target: existing.target,
+          source: existing.source,
+          registered: true,
+        },
+      };
+    }
+  } else {
+    const project = await store.getProject(normalizedTarget);
+    if (project) {
+      return {
+        project,
+        resolution: {
+          target: normalizedTarget,
+          source: "id-or-slug",
+          registered: true,
+        },
+      };
+    }
   }
 
   const path = normalizeProjectPath(normalizedTarget);
@@ -343,7 +364,6 @@ export async function resolveProjectStartTarget(
       throw new Error(`Project is not registered: ${path}`);
     }
 
-    const store = resolveProjectStore();
     if (options.dryRun) {
       const preview = await planWorkspaceImport(store, path, {
         tags: options.importTags,

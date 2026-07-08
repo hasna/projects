@@ -12,7 +12,7 @@ import {
   buildProjectCanvasPayload,
   type ProjectsJsonRenderSpec,
 } from "./project-render.js";
-import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
+import { resolveProjectStore } from "../store/project-store.js";
 import {
   getProjectCanvas,
   listProjectCanvases,
@@ -92,12 +92,12 @@ export async function serveProjectDashboard(
   const token = explicitToken ?? randomBytes(24).toString("base64url");
   const selfIssueCookie = loopback || trustNetwork;
   const target = options.target ?? ".";
-  const resolution = resolveRegisteredProjectTargetOrThrow(target, {
+  const project = await resolveProjectStore().resolveTarget(target, {
     db: options.db,
   });
-  let dashboard = await buildProjectDashboard(target, options);
+  let dashboard = await buildProjectDashboard(target, { ...options, project });
   const canonicalDashboardPath = dashboardCanvasPath(
-    resolution.project.slug,
+    project.slug,
     "dashboard",
   );
 
@@ -107,10 +107,10 @@ export async function serveProjectDashboard(
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/health") {
-        return Response.json({ ok: true, project: resolution.project.slug });
+        return Response.json({ ok: true, project: project.slug });
       }
 
-      const route = dashboardRoute(url.pathname, resolution.project.slug);
+      const route = dashboardRoute(url.pathname, project.slug);
       if (route.kind === "redirect") {
         return Response.redirect(new URL(route.location, url).toString(), 302);
       }
@@ -123,7 +123,7 @@ export async function serveProjectDashboard(
       if (route.kind === "page") {
         return new Response(
           projectDashboardHtml({
-            projectSlug: resolution.project.slug,
+            projectSlug: project.slug,
             canvasRef: route.canvasRef,
             canonicalPath: route.canonicalPath,
           }),
@@ -166,7 +166,7 @@ export async function serveProjectDashboard(
       }
       if (route.api === "render") {
         const context = buildDashboardCanvasContext(
-          resolution.project,
+          project,
           route.canvasRef,
           dashboard.snapshot,
         );
@@ -179,7 +179,7 @@ export async function serveProjectDashboard(
       }
       if (route.api === "layout" && request.method === "PATCH") {
         const updated = await saveDashboardCanvasLayout(
-          resolution.project,
+          project,
           route.canvasRef,
           request,
         );
@@ -192,9 +192,9 @@ export async function serveProjectDashboard(
       }
       if (route.api === "canvases") {
         return Response.json({
-          project: projectPayload(resolution.project),
+          project: projectPayload(project),
           canvases: listDashboardCanvasSummaries(
-            resolution.project,
+            project,
             route.canvasRef,
           ),
         });
@@ -203,7 +203,7 @@ export async function serveProjectDashboard(
         if (url.searchParams.get("refresh") === "1")
           dashboard = await buildProjectDashboard(target, options);
         const context = buildDashboardCanvasContext(
-          resolution.project,
+          project,
           route.canvasRef,
           dashboard.snapshot,
         );
@@ -213,7 +213,7 @@ export async function serveProjectDashboard(
             { status: 404 },
           );
         return Response.json({
-          project: projectPayload(resolution.project),
+          project: projectPayload(project),
           canvas: context.canvas,
           canvases: context.canvases,
           snapshot: dashboard.snapshot,
