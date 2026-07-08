@@ -176,6 +176,25 @@ async function route(
       const events = await store.listWorkspaceEvents(ws.id, limit ? Number(limit) : undefined);
       return jsonResponse({ events, count: events.length });
     }
+    if (sub === "events" && method === "POST") {
+      const ws = await store.requireWorkspace(id);
+      const body = await readJsonBody(req);
+      if (typeof body.event_type !== "string" || !body.event_type.trim()) {
+        throw new ValidationError("event_type is required");
+      }
+      const event = await store.recordEvent({
+        workspace_id: ws.id,
+        agent_id: typeof body.agent_id === "string" ? body.agent_id : undefined,
+        event_type: body.event_type,
+        source: (typeof body.source === "string" ? body.source : "system") as never,
+        prompt: typeof body.prompt === "string" ? body.prompt : undefined,
+        command: typeof body.command === "string" ? body.command : undefined,
+        before: (body.before ?? undefined) as never,
+        after: (body.after ?? undefined) as never,
+        metadata: (body.metadata ?? undefined) as never,
+      });
+      return jsonResponse({ event }, 201);
+    }
     return errorResponse("Not found", 404);
   }
 

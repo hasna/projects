@@ -4,14 +4,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   acquireWorkspaceLock,
-  addWorkspaceLocation,
   addTmuxProfileWindow,
-  assignAgentToWorkspace,
-  createAgent,
-  createRecipe,
-  createRoot,
   createTmuxProfile,
-  deleteRoot,
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
@@ -19,23 +13,10 @@ import {
   getRecipeBySlug,
   getRoot,
   getRootBySlug,
-  listAgents,
-  listRecipes,
-  listRoots,
   listTmuxProfileWindows,
   listTmuxProfiles,
-  listWorkspaceEvents,
-  listWorkspaceAgents,
-  listWorkspaceLocations,
-  listWorkspaceLocks,
-  listWorkspaces,
-  recordWorkspaceEvent,
-  scoreRoots,
   releaseWorkspaceLock,
-  resolveWorkspace,
   resolveTmuxProfile,
-  updateWorkspace,
-  updateRoot,
 } from "../../db/workspaces.js";
 import {
   applyWorkspaceTmuxProfile,
@@ -49,18 +30,11 @@ import {
   type WorkspaceCreationPlanAction,
 } from "../../lib/workspace-plan.js";
 import { doctorWorkspace } from "../../lib/workspace-doctor.js";
-import { resolveProjectStore } from "../../store/project-store.js";
+import { resolveProjectStore, type ProjectStore } from "../../store/project-store.js";
 
 // Drop keys whose value is `undefined` so a cloud PATCH only carries fields the
 // caller actually set (an explicit `null` still clears the field server-side).
-function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) out[k] = v;
-  }
-  return out as Partial<T>;
-}
-import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
+import { builtInWorkspaceRecipes } from "../../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
   syncWorkspaceGitHubRoots,
@@ -347,6 +321,16 @@ function resolveAgentId(idOrSlug: string | undefined): string {
 
 function resolveProjectTarget(target: string | undefined): Workspace {
   return resolveRegisteredProjectTargetOrThrow(target).project;
+}
+
+/**
+ * Resolve the attributing agent for a mutation. Local resolves/creates an
+ * on-box agent identity; api mode leaves attribution to the server (derived
+ * from the bearer key), so we never create a local agent row in api mode.
+ */
+function mutationAgentId(store: ProjectStore, optAgent?: string): string | undefined {
+  if (store.mode !== "local") return undefined;
+  return optAgent ? resolveAgentId(optAgent) : ensureCliAgent().id;
 }
 
 function printRows(rows: Array<Record<string, unknown>>, columns: string[]): void {
@@ -650,8 +634,8 @@ function cleanupTargetFromPlanFile(path: string): WorkspaceCreationCleanupTarget
   };
 }
 
-function cleanupTargetFromWorkspace(workspace: Workspace): WorkspaceCreationCleanupTarget {
-  for (const event of listWorkspaceEvents(workspace.id).slice().reverse()) {
+function cleanupTargetFromWorkspace(workspace: Workspace, events: WorkspaceEvent[]): WorkspaceCreationCleanupTarget {
+  for (const event of events.slice().reverse()) {
     const fromMetadata = parseRollbackActions(event.metadata.rollback_actions);
     if (fromMetadata) {
       return {
@@ -1154,13 +1138,14 @@ function registerProjectSessionsCommand(program: Command): void {
     .option("--limit <n>", "Maximum session records to return", "20")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const project = resolveProjectTarget(target);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(target);
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 20;
         const payload = buildProjectSessionsPayload({
           project,
-          events: listWorkspaceEvents(project.id),
+          events: await store.listEvents(project.id),
           limit,
           unrenamedOnly: opts.unrenamed,
         });
@@ -1286,11 +1271,11 @@ function registerProjectStartCommand(program: Command): void {
     .action(async (targets, opts) => {
       try {
         const labelFilters = splitLabelFilters(opts.label, opts.labels);
-        const startTargets = (() => {
+        const startTargets = await (async () => {
           const explicitTargets = collectStartTargets(targets, opts.bulkFile);
           const hasExplicitTargets = (targets?.length ?? 0) > 0 || Boolean(opts.bulkFile);
           if (hasExplicitTargets || labelFilters.length === 0) return explicitTargets;
-          return listWorkspaces({ status: "active", tags: labelFilters, limit: parseHumanLimit(undefined, MAX_HUMAN_LIMIT) }).map((project) => project.slug);
+          return (await resolveProjectStore().listProjects({ status: "active", tags: labelFilters, limit: parseHumanLimit(undefined, MAX_HUMAN_LIMIT) })).map((project) => project.slug);
         })();
         if (startTargets.length === 0 && labelFilters.length > 0) {
           throw new Error(`No active projects matched label filter: ${labelFilters.join(", ")}`);
@@ -1420,6 +1405,8 @@ function registerProjectCommands(program: Command): void {
       try {
         const store = resolveProjectStore();
         if (store.mode === "api") {
+          // Cloud project rows are created through the Store; machine-local
+          // runtime (directory/git/tmux/marker) does not apply to a remote row.
           const project = await store.createProject({
             name: opts.name,
             slug: opts.slug,
@@ -1454,7 +1441,7 @@ function registerProjectCommands(program: Command): void {
           brief_id: opts.briefId,
           brief_path: opts.briefPath,
         }) ?? baseIntegrations;
-        const result = executeWorkspaceCreation({
+        const result = await executeWorkspaceCreation({
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
@@ -1474,7 +1461,7 @@ function registerProjectCommands(program: Command): void {
           writeMarker: opts.marker,
           tmux: opts.tmuxSession || tmuxWindows ? { session: opts.tmuxSession, windows: tmuxWindows } : undefined,
           tmux_profile: opts.tmuxProfile,
-        }, { dryRun: opts.dryRun, runtimeDryRun: opts.dryRunRuntime });
+        }, { dryRun: opts.dryRun, runtimeDryRun: opts.dryRunRuntime, createProject: (input) => store.createProject(input) });
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         if (result.dry_run) {
           console.log(chalk.dim(`[dry-run] Project plan: ${result.plan.workspace.slug}`));
@@ -1539,14 +1526,15 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview cleanup actions without mutating DB/files")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
+        const store = resolveProjectStore();
         const target = opts.plan
           ? cleanupTargetFromPlanFile(opts.plan)
-          : (() => {
+          : await (async () => {
               if (!idOrSlug) throw new Error("Provide a project id/slug or --plan");
-              const project = resolveProjectTarget(idOrSlug);
-              return cleanupTargetFromWorkspace(project);
+              const project = await store.resolveTarget(idOrSlug);
+              return cleanupTargetFromWorkspace(project, await store.listEvents(project.id));
             })();
         const result = cleanupWorkspaceCreationTarget(target, {
           dryRun: opts.dryRun,
@@ -1792,26 +1780,8 @@ function registerProjectCommands(program: Command): void {
           tags: splitLabelFilters(opts.tags, opts.label, opts.labels),
         };
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const projects = await store.listProjects({
-            ...baseFilter,
-            limit: parsePositiveInteger(opts.limit, "--limit"),
-          });
-          if (json) { printObject(projects, opts); return; }
-          printRows(
-            projects.map((project) => ({
-              slug: project.slug,
-              status: project.status,
-              kind: project.kind,
-              path: compactText(project.primary_path, opts.verbose ? 96 : 56),
-            })),
-            ["slug", "status", "kind", "path"],
-          );
-          printDiscoveryHint(`Showing ${projects.length} project(s) from cloud. Use --json or 'projects show <slug>'.`);
-          return;
-        }
         if (wantsRenderSpec(opts)) {
-          const projects = filterProjectEvalArtifacts(listWorkspaces({
+          const projects = filterProjectEvalArtifacts(await store.listProjects({
             ...baseFilter,
             exclude_eval_artifacts: !opts.includeEvals,
             limit: parsePositiveInteger(opts.limit, "--limit"),
@@ -1820,7 +1790,7 @@ function registerProjectCommands(program: Command): void {
           return;
         }
         if (json) {
-          const projects = filterProjectEvalArtifacts(listWorkspaces({
+          const projects = filterProjectEvalArtifacts(await store.listProjects({
             ...baseFilter,
             exclude_eval_artifacts: !opts.includeEvals,
             limit: parsePositiveInteger(opts.limit, "--limit"),
@@ -1829,7 +1799,7 @@ function registerProjectCommands(program: Command): void {
           return;
         }
         const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
-        const projects = filterProjectEvalArtifacts(listWorkspaces({
+        const projects = filterProjectEvalArtifacts(await store.listProjects({
           ...baseFilter,
           exclude_eval_artifacts: !opts.includeEvals,
           limit: limit + 1,
@@ -1877,24 +1847,13 @@ function registerProjectCommands(program: Command): void {
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
+      try {
       const store = resolveProjectStore();
-      if (store.mode === "api") {
-        const cloudProject = await store.getProject(idOrSlug);
-        if (!cloudProject) { console.error(chalk.red(`Project not found: ${idOrSlug}`)); process.exit(1); return; }
-        const cloudEvents = await store.listEvents(cloudProject.id);
-        if (wantsJson(opts)) { printObject({ project: cloudProject, events: cloudEvents }, opts); return; }
-        console.log(`${chalk.bold(cloudProject.name)} ${chalk.dim(`(${cloudProject.slug})`)} ${chalk.green(`[${cloudProject.status}]`)}`);
-        console.log(`  ${chalk.dim("id:")}   ${cloudProject.id}`);
-        console.log(`  ${chalk.dim("kind:")} ${cloudProject.kind}`);
-        if (cloudProject.primary_path) console.log(`  ${chalk.dim("path:")} ${cloudProject.primary_path}`);
-        if (cloudProject.tags?.length) console.log(`  ${chalk.dim("tags:")} ${cloudProject.tags.join(", ")}`);
-        return;
-      }
-      const project = resolveProjectTarget(idOrSlug);
+      const project = await store.resolveTarget(idOrSlug);
       const dashboard = projectDashboardSummary(project);
-      const agents = listWorkspaceAgents(project.id);
-      const locations = listWorkspaceLocations(project.id);
-      const events = listWorkspaceEvents(project.id);
+      const agents = await store.getProjectAgents(project.id);
+      const locations = await store.getProjectLocations(project.id);
+      const events = await store.listEvents(project.id);
       const payload = buildProjectDetailPayload({ project, agents, locations, events });
       if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
       if (wantsJson(opts)) { printObject(withoutRender(payload), opts); return; }
@@ -1903,7 +1862,7 @@ function registerProjectCommands(program: Command): void {
       console.log(`  ${chalk.dim("kind:")} ${project.kind}`);
       const management = projectManagementSummary(project);
       const externalLinks = projectExternalLinksSummary(project);
-      const duplicateNames = listWorkspaces({ query: project.name, limit: 100 })
+      const duplicateNames = (await store.listProjects({ query: project.name, limit: 100 }))
         .filter((item) => item.id !== project.id && item.name.trim().toLowerCase() === project.name.trim().toLowerCase());
       if (management.stage) console.log(`  ${chalk.dim("stage:")} ${management.stage}`);
       if (management.priority) console.log(`  ${chalk.dim("priority:")} ${management.priority}`);
@@ -1966,6 +1925,10 @@ function registerProjectCommands(program: Command): void {
         }
       }
       printDiscoveryHint(`  Use --json for the full project record${opts.verbose ? "." : ", or --verbose for locations and more recent events."}`);
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
     });
 
   const events = program.command("events").description("Inspect and record project audit events");
@@ -1976,10 +1939,11 @@ function registerProjectCommands(program: Command): void {
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_EVENT_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Include compact prompt, command, and metadata-key columns")
     .option("-j, --json", "Output JSON")
-    .action((projectTarget, opts) => {
+    .action(async (projectTarget, opts) => {
       try {
-        const project = resolveProjectTarget(projectTarget);
-        const events = listWorkspaceEvents(project.id);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectTarget);
+        const events = await store.listEvents(project.id);
         const payload = { project: projectWithManagement(project), events };
         if (wantsJson(opts)) { printObject(payload, opts); return; }
         const limit = parseHumanLimit(opts.limit, DEFAULT_EVENT_LIMIT);
@@ -2004,12 +1968,12 @@ function registerProjectCommands(program: Command): void {
     .option("--prompt <text>", "Prompt or note that led to this event")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectTarget, type, opts) => {
+    .action(async (projectTarget, type, opts) => {
       try {
-        const project = resolveProjectTarget(projectTarget);
-        const event = recordWorkspaceEvent({
-          workspace_id: project.id,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id,
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectTarget);
+        const event = await store.recordEvent(project.id, {
+          agentId: mutationAgentId(store, opts.agent),
           event_type: type,
           source: "cli",
           prompt: opts.prompt,
@@ -2079,62 +2043,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (idOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const current = await store.getProject(idOrSlug);
-          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
-          const metaBase = opts.metadataJson === undefined
-            ? (current.metadata ?? {})
-            : parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
-          const startWindowsC = opts.clearStartWindows
-            ? null
-            : parseTmuxWindowsJson(opts.startWindowsJson, "--start-windows-json");
-          const metaFields = {
-            stage: opts.clearStage ? null : opts.stage,
-            priority: opts.clearPriority ? null : opts.priority,
-            owner: opts.clearOwner ? null : opts.owner,
-            launch_profile: opts.clearLaunchProfile ? null : opts.launchProfile,
-            start_agent: opts.clearStartAgent ? null : opts.startAgent,
-            start_command: opts.clearStartCommand ? null : opts.startCommand,
-            start_session_policy: opts.clearStartSessionPolicy ? null : opts.startSessionPolicy,
-            start_windows: startWindowsC,
-          };
-          const mergedMeta = hasProjectManagementFields(metaFields)
-            ? mergeProjectManagementMetadata(metaBase, metaFields)
-            : opts.metadataJson === undefined ? undefined : metaBase;
-          const integBase = opts.integrationsJson === undefined
-            ? (current.integrations ?? {})
-            : parseIntegrationsJson(opts.integrationsJson) ?? {};
-          const integFields = {
-            todos_project_id: opts.clearTodosProjectId ? null : opts.todosProjectId,
-            todos_task_list_id: opts.clearTodosTaskListId ? null : opts.todosTaskListId,
-            brief_id: opts.clearBriefId ? null : opts.briefId,
-            brief_path: opts.clearBriefPath ? null : opts.briefPath,
-          };
-          const mergedInteg = hasProjectIntegrationFields(integFields)
-            ? mergeProjectIntegrationFields(integBase, integFields)
-            : opts.integrationsJson === undefined ? undefined : integBase;
-          const patch = pruneUndefined({
-            name: opts.name,
-            slug: opts.slug,
-            description: opts.description,
-            kind: parseKind(opts.kind),
-            status: parseStatus(opts.status),
-            primary_path: opts.clearPath ? null : opts.path,
-            tags: opts.tags === undefined ? undefined : splitList(opts.tags),
-            git_remote: opts.clearGitRemote ? null : opts.gitRemote,
-            s3_bucket: opts.clearS3Bucket ? null : opts.s3Bucket,
-            s3_prefix: opts.clearS3Prefix ? null : opts.s3Prefix,
-            integrations: mergedInteg,
-            metadata: mergedMeta,
-          });
-          if (Object.keys(patch).length === 0) throw new Error("No updatable fields provided");
-          const updated = await store.updateProject(current.id, patch);
-          if (wantsJson(opts)) { printObject(updated, opts); return; }
-          console.log(chalk.green(`✓ Project updated (cloud): ${updated.slug}`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const metadataBase = opts.metadataJson === undefined
           ? project.metadata
           : parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
@@ -2166,14 +2076,17 @@ function registerProjectCommands(program: Command): void {
         const mergedIntegrations = hasProjectIntegrationFields(integrationFields)
           ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
           : opts.integrationsJson === undefined ? undefined : integrationsBase;
+        // Root/recipe are resolved from on-box slugs; api mode leaves them to the server input as-is.
+        const rootPatch = store.mode === "local"
+          ? { root_id: opts.clearRoot ? null : resolveRootId(opts.root), recipe_id: opts.clearRecipe ? null : resolveRecipeId(opts.recipe) }
+          : {};
         const updated = await store.updateProject(project.id, {
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
           kind: parseKind(opts.kind),
           status: parseStatus(opts.status),
-          root_id: opts.clearRoot ? null : resolveRootId(opts.root),
-          recipe_id: opts.clearRecipe ? null : resolveRecipeId(opts.recipe),
+          ...rootPatch,
           primary_path: opts.clearPath ? null : opts.path,
           tags: opts.tags === undefined ? undefined : splitList(opts.tags),
           git_remote: opts.clearGitRemote ? null : opts.gitRemote,
@@ -2203,24 +2116,16 @@ function registerProjectCommands(program: Command): void {
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const current = await store.getProject(idOrSlug);
-          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
-          const updated = await store.updateProject(current.id, { tags: mergeProjectTags(current.tags ?? [], requestedTags) });
-          if (wantsJson(opts)) { printObject(updated, opts); return; }
-          console.log(chalk.green(`✓ Tagged project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const updated = await store.updateProject(project.id, {
-          tags: mergeProjectTags(project.tags, requestedTags),
+          tags: mergeProjectTags(project.tags ?? [], requestedTags),
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
         });
         if (wantsJson(opts)) { printObject(projectWithManagement(updated), opts); return; }
-        console.log(chalk.green(`✓ Tagged project: ${updated.slug} (${updated.tags.join(", ")})`));
+        console.log(chalk.green(`✓ Tagged project: ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2237,24 +2142,16 @@ function registerProjectCommands(program: Command): void {
         const requestedTags = splitVariadicList(tags);
         if (requestedTags.length === 0) throw new Error("Provide at least one tag");
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const current = await store.getProject(idOrSlug);
-          if (!current) throw new Error(`Project not found: ${idOrSlug}`);
-          const updated = await store.updateProject(current.id, { tags: removeProjectTags(current.tags ?? [], requestedTags) });
-          if (wantsJson(opts)) { printObject(updated, opts); return; }
-          console.log(chalk.green(`✓ Removed tags from project (cloud): ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const updated = await store.updateProject(project.id, {
-          tags: removeProjectTags(project.tags, requestedTags),
+          tags: removeProjectTags(project.tags ?? [], requestedTags),
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
         });
         if (wantsJson(opts)) { printObject(projectWithManagement(updated), opts); return; }
-        console.log(chalk.green(`✓ Removed tags from project: ${updated.slug} (${updated.tags.join(", ")})`));
+        console.log(chalk.green(`✓ Removed tags from project: ${updated.slug} (${(updated.tags ?? []).join(", ")})`));
       } catch (err) {
         console.error(chalk.red(err instanceof Error ? err.message : String(err)));
         process.exit(1);
@@ -2323,9 +2220,10 @@ function registerProjectCommands(program: Command): void {
     .option("--key <key>", "Integration key or group to clear; repeatable", collectOption, [])
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug);
         const requestedKeys = [
           ...(opts.github ? ["github"] : []),
           ...(opts.todos ? ["todos"] : []),
@@ -2338,13 +2236,12 @@ function registerProjectCommands(program: Command): void {
         const expandedKeys = expandProjectIntegrationUnlinkKeys(requestedKeys);
         if (expandedKeys.length === 0) throw new Error("Provide at least one integration key or group to unlink");
         const nextIntegrations = unlinkProjectIntegrationFields(project.integrations, requestedKeys);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project integration unlink", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           integrations: nextIntegrations,
-          agent_id: agentId,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(updated), unlinked: expandedKeys }, opts); return; }
         console.log(chalk.green(`✓ Unlinked integrations for ${updated.slug}: ${expandedKeys.join(", ")}`));
       } catch (err) {
@@ -2437,14 +2334,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (idOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const archived = await store.archiveProject(idOrSlug);
-          if (wantsJson(opts)) { printObject(archived, opts); return; }
-          console.log(chalk.green(`✓ Archived (cloud) ${archived.slug}`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const archived = await store.archiveProject(project.id, { agentId, source: "cli", command: process.argv.join(" ") });
         if (wantsJson(opts)) { printObject(archived, opts); return; }
         console.log(chalk.green(`✓ Archived ${archived.slug}`));
@@ -2462,14 +2353,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (idOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const unarchived = await store.unarchiveProject(idOrSlug);
-          if (wantsJson(opts)) { printObject(unarchived, opts); return; }
-          console.log(chalk.green(`✓ Unarchived (cloud) ${unarchived.slug}`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const unarchived = await store.unarchiveProject(project.id, { agentId, source: "cli", command: process.argv.join(" ") });
         if (wantsJson(opts)) { printObject(unarchived, opts); return; }
         console.log(chalk.green(`✓ Unarchived ${unarchived.slug}`));
@@ -2488,14 +2373,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (idOrSlug, opts) => {
       try {
         const store = resolveProjectStore();
-        if (store.mode === "api") {
-          const res = await store.deleteProject(idOrSlug, { hard: opts.hard });
-          if (wantsJson(opts)) { printObject(res, opts); return; }
-          console.log(res.hard ? chalk.yellow(`Deleted ${res.id}`) : chalk.green(`✓ Marked deleted ${res.id}`));
-          return;
-        }
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const project = await store.resolveTarget(idOrSlug);
+        const agentId = mutationAgentId(store, opts.agent);
         const result = await store.deleteProject(project.id, { hard: opts.hard }, { agentId, source: "cli", command: process.argv.join(" ") });
         const label = result.workspace?.slug ?? result.id;
         if (wantsJson(opts)) { printObject(projectPayload({ workspace: result.workspace, hard: result.hard }), opts); return; }
@@ -2514,15 +2393,16 @@ function registerProjectCommands(program: Command): void {
     .option("--ttl-seconds <seconds>", "Lock TTL in seconds")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
-        const lock = acquireWorkspaceLock({
-          lock_key: opts.key ?? `workspace:${project.id}`,
-          workspace_id: project.id,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id,
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug);
+        const lock = await store.acquireLock({
+          key: opts.key ?? `workspace:${project.id}`,
+          workspaceId: project.id,
+          agentId: mutationAgentId(store, opts.agent),
           reason: opts.reason,
-          ttl_seconds: parsePositiveInteger(opts.ttlSeconds, "--ttl-seconds"),
+          ttlSeconds: parsePositiveInteger(opts.ttlSeconds, "--ttl-seconds"),
         });
         if (wantsJson(opts)) { printObject(projectLockPayload(lock), opts); return; }
         console.log(chalk.green(`✓ Project lock acquired: ${lock.lock_key}`));
@@ -2539,14 +2419,11 @@ function registerProjectCommands(program: Command): void {
     .option("--project <id-or-slug>", "Filter by project")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const project = opts.project
-          ? (() => {
-              return resolveProjectTarget(opts.project);
-            })()
-          : null;
-        const locks = listWorkspaceLocks()
+        const store = resolveProjectStore();
+        const project = opts.project ? await store.resolveTarget(opts.project) : null;
+        const locks = (await store.listLocks())
           .filter((lock) => !project || lock.workspace_id === project.id)
           .map(projectLockPayload);
         if (wantsJson(opts)) { printObject(locks, opts); return; }
@@ -2570,8 +2447,8 @@ function registerProjectCommands(program: Command): void {
     .command("unlock <key>")
     .description("Release a project mutation lock")
     .option("-j, --json", "Output JSON")
-    .action((key, opts) => {
-      const released = releaseWorkspaceLock(key);
+    .action(async (key, opts) => {
+      const released = await resolveProjectStore().releaseLock(key);
       if (wantsJson(opts)) { printObject({ released }, opts); return; }
       console.log(released ? chalk.green(`✓ Project lock released: ${key}`) : chalk.yellow(`No project lock found: ${key}`));
     });
@@ -2584,19 +2461,17 @@ function registerProjectCommands(program: Command): void {
     .option("--limit <n>", `Max projects for terminal output when no project is provided (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show every check instead of only issue counts")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       const runDoctor = (project: Workspace) => opts.fix && !opts.dryRun
         ? withWorkspaceLock(project, ensureCliAgent().id, "project doctor fix", () => doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun }))
         : doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun });
       try {
+        const store = resolveProjectStore();
         const json = wantsJson(opts);
         const limit = json ? undefined : parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const results = idOrSlug
-          ? (() => {
-              const project = resolveProjectTarget(idOrSlug);
-              return [runDoctor(project)];
-            })()
-          : listWorkspaces({ limit: json ? undefined : limit! + 1 }).map(runDoctor);
+          ? [runDoctor(await store.resolveTarget(idOrSlug))]
+          : (await store.listProjects({ limit: json ? undefined : limit! + 1 })).map(runDoctor);
         if (json) { printObject(results, opts); return; }
         const visible = idOrSlug ? results : results.slice(0, limit);
         for (const result of visible) {
@@ -2896,17 +2771,18 @@ function registerLabelsCommand(program: Command): void {
     .description("List labels on one project, or label counts across projects")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
+        const store = resolveProjectStore();
         if (projectIdOrSlug) {
-          const project = resolveProjectTarget(projectIdOrSlug);
+          const project = await store.resolveTarget(projectIdOrSlug);
           const payload = { project: projectWithManagement(project), labels: project.tags };
           if (wantsJson(opts)) { printObject(payload, opts); return; }
           console.log(`${project.slug}\t${project.tags.join(",")}`);
           return;
         }
         const counts = new Map<string, number>();
-        for (const project of listWorkspaces({ limit: 10000 })) {
+        for (const project of await store.listProjects({ limit: 10000 })) {
           for (const label of project.tags) counts.set(label, (counts.get(label) ?? 0) + 1);
         }
         const rows = [...counts.entries()]
@@ -2927,18 +2803,18 @@ function registerLabelsCommand(program: Command): void {
     .description("Add labels to a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, labels, opts) => {
+    .action(async (projectIdOrSlug, labels, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
         const requestedLabels = splitVariadicList(labels);
         if (requestedLabels.length === 0) throw new Error("Provide at least one label");
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project labels add", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           tags: mergeProjectTags(project.tags, requestedLabels),
-          agent_id: agentId,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         const payload = { project: projectWithManagement(updated), labels: updated.tags };
         if (wantsJson(opts)) { printObject(payload, opts); return; }
         console.log(chalk.green(`✓ Added labels to ${updated.slug}: ${requestedLabels.join(", ")}`));
@@ -2954,18 +2830,18 @@ function registerLabelsCommand(program: Command): void {
     .description("Remove labels from a project")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, labels, opts) => {
+    .action(async (projectIdOrSlug, labels, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
         const requestedLabels = splitVariadicList(labels);
         if (requestedLabels.length === 0) throw new Error("Provide at least one label");
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project labels remove", () => updateWorkspace(project.id, {
+        const updated = await store.updateProject(project.id, {
           tags: removeProjectTags(project.tags, requestedLabels),
-          agent_id: agentId,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         const payload = { project: projectWithManagement(updated), labels: updated.tags };
         if (wantsJson(opts)) { printObject(payload, opts); return; }
         console.log(chalk.green(`✓ Removed labels from ${updated.slug}: ${requestedLabels.join(", ")}`));
@@ -2985,10 +2861,11 @@ function registerLocationsCommand(program: Command): void {
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show full paths and location metadata keys")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const locations = listWorkspaceLocations(project.id);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const locations = await store.getProjectLocations(project.id);
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(project), locations }, opts); return; }
         const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const visible = locations.slice(0, limit);
@@ -3016,22 +2893,20 @@ function registerLocationsCommand(program: Command): void {
     .option("--metadata-json <json>", "Location metadata JSON object")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, path, opts) => {
+    .action(async (projectIdOrSlug, path, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const location = withWorkspaceLock(project, agentId, "project location add", () => addWorkspaceLocation({
-          workspace_id: project.id,
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const { project: updated, location } = await store.addLocation(project.id, {
           path,
           label: opts.label,
           kind: opts.kind,
-          is_primary: Boolean(opts.primary),
+          isPrimary: Boolean(opts.primary),
           metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
-          agent_id: agentId,
+          agentId: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
-        }));
-        const updated = resolveWorkspace(project.id) ?? project;
+        });
         if (wantsJson(opts)) { printObject({ project: projectWithManagement(updated), location }, opts); return; }
         console.log(chalk.green(`✓ Project location registered: ${location.path}`));
       } catch (err) {
@@ -3056,13 +2931,13 @@ function registerRootsCommand(program: Command): void {
     .option("--path-template <template>", "Path template relative to base path")
     .option("--name-template <template>", "Name template for generated names")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
         const visibility = opts.visibility as "public" | "private" | undefined;
         if (visibility && visibility !== "public" && visibility !== "private") {
           throw new Error("Visibility must be public or private");
         }
-        const root = createRoot({
+        const root = await resolveProjectStore().createRoot({
           name: opts.name,
           slug: opts.slug,
           base_path: opts.path,
@@ -3088,8 +2963,8 @@ function registerRootsCommand(program: Command): void {
     .option("--verbose", "Show full paths and tags")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
-      const roots = listRoots();
+    .action(async (opts) => {
+      const roots = await resolveProjectStore().listRoots();
       if (wantsRenderSpec(opts)) { printRenderSpec(buildRootsRender(roots)); return; }
       if (wantsJson(opts)) { printObject(roots, opts); return; }
       const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
@@ -3106,8 +2981,8 @@ function registerRootsCommand(program: Command): void {
   cmd
     .command("show <id-or-slug>")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
-      const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
+    .action(async (idOrSlug, opts) => {
+      const root = await resolveProjectStore().getRoot(idOrSlug);
       if (!root) {
         console.error(chalk.red(`Root not found: ${idOrSlug}`));
         process.exit(1);
@@ -3139,13 +3014,11 @@ function registerRootsCommand(program: Command): void {
     .option("--allowed-agents <ids>", "Comma-separated allowed agent ids/slugs")
     .option("--metadata-json <json>", "Replace metadata with JSON object")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
-        if (!root) throw new Error(`Root not found: ${idOrSlug}`);
         const visibility = opts.clearVisibility ? null : opts.visibility as "public" | "private" | undefined;
         if (visibility && visibility !== "public" && visibility !== "private") throw new Error("Visibility must be public or private");
-        const updated = updateRoot(root.id, {
+        const updated = await resolveProjectStore().updateRoot(idOrSlug, {
           name: opts.name,
           slug: opts.slug,
           base_path: opts.path,
@@ -3171,11 +3044,9 @@ function registerRootsCommand(program: Command): void {
     .command("delete <id-or-slug>")
     .option("--detach-workspaces", "Clear root_id on referencing projects before deleting")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const root = getRoot(idOrSlug) ?? getRootBySlug(idOrSlug);
-        if (!root) throw new Error(`Root not found: ${idOrSlug}`);
-        const result = deleteRoot(root.id, { detachWorkspaces: opts.detachWorkspaces });
+        const result = await resolveProjectStore().deleteRoot(idOrSlug, { detachProjects: opts.detachWorkspaces });
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(chalk.yellow(`✓ Root deleted: ${result.root.slug}`));
       } catch (err) {
@@ -3192,9 +3063,9 @@ function registerRootsCommand(program: Command): void {
     .option("--github-org <org>", "GitHub organization")
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const matches = scoreRoots({
+        const matches = await resolveProjectStore().matchRoots({
           path: opts.path,
           kind: parseKind(opts.kind),
           tags: splitList(opts.tags),
@@ -3229,10 +3100,10 @@ function registerRecipesCommand(program: Command): void {
     .option("--tags <tags>", "Default tags")
     .option("--step-json <json>", "Single JSON recipe step to append")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
         const steps = opts.stepJson ? [JSON.parse(opts.stepJson)] : [];
-        const recipe = createRecipe({
+        const recipe = await resolveProjectStore().createRecipe({
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
@@ -3254,8 +3125,8 @@ function registerRecipesCommand(program: Command): void {
     .option("--verbose", "Show descriptions and recipe step counts")
     .option("--render-spec", "Output a JSON Render spec")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
-      const recipes = listRecipes();
+    .action(async (opts) => {
+      const recipes = await resolveProjectStore().listRecipes();
       if (wantsRenderSpec(opts)) { printRenderSpec(buildRecipesRender(recipes)); return; }
       if (wantsJson(opts)) { printObject(recipes, opts); return; }
       const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
@@ -3301,11 +3172,19 @@ function registerRecipesCommand(program: Command): void {
     .command("seed-defaults")
     .description("Create missing built-in project recipes")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
-      const result = ensureBuiltInWorkspaceRecipes();
+    .action(async (opts) => {
+      const store = resolveProjectStore();
+      const created: unknown[] = [];
+      const existing: unknown[] = [];
+      for (const def of builtInWorkspaceRecipes()) {
+        const current = def.slug ? await store.getRecipe(def.slug) : null;
+        if (current) { existing.push(current); continue; }
+        created.push(await store.createRecipe(def));
+      }
+      const result = { created, existing };
       if (wantsJson(opts)) { printObject(result, opts); return; }
-      console.log(chalk.green(`✓ Created ${result.created.length} built-in recipe(s)`));
-      if (result.existing.length) console.log(chalk.dim(`  existing: ${result.existing.length}`));
+      console.log(chalk.green(`✓ Created ${created.length} built-in recipe(s)`));
+      if (existing.length) console.log(chalk.dim(`  existing: ${existing.length}`));
     });
 }
 
@@ -3322,13 +3201,13 @@ function registerAgentsCommand(program: Command): void {
     .option("--role <role>", "Default role")
     .option("--permissions <permissions>", "Comma-separated permissions")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
         const kind = opts.kind as AgentKind;
         if (!["human", "ai", "service", "cli"].includes(kind)) {
           throw new Error("Agent kind must be human, ai, service, or cli");
         }
-        const agent = createAgent({
+        const agent = await resolveProjectStore().createAgent({
           name: opts.name,
           slug: opts.slug,
           kind,
@@ -3351,10 +3230,13 @@ function registerAgentsCommand(program: Command): void {
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show assignment timestamps and permission summaries")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       if (opts.project) {
-        const project = resolveProjectTarget(opts.project);
-        const assignments = listWorkspaceAgents(project.id);
+        // Per-project assignments are an on-box sub-resource (not modeled by the
+        // /v1 API); this view is local-only, matching the Store contract.
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(opts.project);
+        const assignments = await store.getProjectAgents(project.id);
         if (wantsJson(opts)) { printObject(assignments, opts); return; }
         const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const visible = assignments.slice(0, limit);
@@ -3371,7 +3253,7 @@ function registerAgentsCommand(program: Command): void {
         printDiscoveryHint(`Showing ${visible.length} of ${assignments.length} assignment(s). Use --limit <n>, --verbose, or --json for full records.`);
         return;
       }
-      const agents = listAgents();
+      const agents = await resolveProjectStore().listAgents();
       if (wantsJson(opts)) { printObject(agents, opts); return; }
       const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
       const visible = agents.slice(0, limit);
@@ -3393,31 +3275,19 @@ function registerAgentsCommand(program: Command): void {
     .option("--assigned-by <id-or-slug>", "Agent assigning the role; defaults to CLI agent")
     .option("--metadata-json <json>", "Assignment metadata JSON object")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, agentIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, agentIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const agent = getAgent(agentIdOrSlug) ?? getAgentBySlug(agentIdOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug);
+        const agent = await store.getAgent(agentIdOrSlug);
         if (!agent) throw new Error(`Agent not found: ${agentIdOrSlug}`);
-        const assignedBy = opts.assignedBy ? resolveAgentId(opts.assignedBy) : ensureCliAgent().id;
-        const assignment = assignAgentToWorkspace(
-          project.id,
-          agent.id,
-          parseProjectAgentRole(opts.role),
-          assignedBy,
-          parseJsonObject(opts.metadataJson, "--metadata-json"),
-        );
-        recordWorkspaceEvent({
-          workspace_id: project.id,
-          agent_id: assignedBy,
-          event_type: "agent_assigned",
+        const assignment = await store.assignAgent(project.id, {
+          agentId: agent.id,
+          role: parseProjectAgentRole(opts.role),
+          assignedBy: mutationAgentId(store, opts.assignedBy),
+          metadata: parseJsonObject(opts.metadataJson, "--metadata-json"),
           source: "cli",
           command: process.argv.join(" "),
-          after: {
-            agent_id: agent.id,
-            agent_slug: agent.slug,
-            role: assignment.role,
-            assignment_id: assignment.id,
-          },
         });
         if (wantsJson(opts)) { printObject(assignment, opts); return; }
         console.log(chalk.green(`✓ Assigned ${agent.slug} to ${project.slug} as ${assignment.role}`));

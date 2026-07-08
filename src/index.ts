@@ -39,9 +39,6 @@ export type {
   WorkspaceStatus as ProjectStatus,
 } from "./types/workspace.js";
 export { getDatabase } from "./db/database.js";
-export * from "./db/storage-sync.js";
-export * from "./db/remote-storage.js";
-export * from "./db/pg-migrations.js";
 export {
   PROJECT_STORE_SCHEMA_VERSION,
   PROJECT_STORE_TABLES,

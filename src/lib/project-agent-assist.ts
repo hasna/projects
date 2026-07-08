@@ -27,7 +27,6 @@ import {
   listWorkspaceLocks,
   resolveWorkspace,
 } from "../db/workspaces.js";
-import { getStorageStatus } from "../db/storage-sync.js";
 import { getProjectBudgetStatuses } from "./budget.js";
 import { doctorWorkspace, type WorkspaceDoctorResult } from "./workspace-doctor.js";
 import {
@@ -101,7 +100,6 @@ export interface ProjectAgentContext {
   integrations?: JsonObject;
   doctor?: { ok: boolean; checks: { code: string; status: string; message: string }[] };
   budgets?: { exhausted: boolean; warnings: string[] }[];
-  storage?: { configured: boolean; last_synced_at: string | null };
   marker?: ProjectMarkerReference | null;
 }
 
@@ -169,19 +167,6 @@ export function buildProjectAgentContext(options: ProjectAgentContextOptions = {
     budgetBlock = undefined;
   }
 
-  let storageBlock: ProjectAgentContext["storage"];
-  try {
-    const status = getStorageStatus();
-    const lastSync = status.sync
-      .map((s) => s.last_synced_at)
-      .filter(Boolean)
-      .sort()
-      .at(-1) ?? null;
-    storageBlock = { configured: status.configured, last_synced_at: lastSync };
-  } catch {
-    storageBlock = { configured: false, last_synced_at: null };
-  }
-
   const links = projectExternalLinksSummary(project);
   const integrations: JsonObject = {
     github_repo: project.integrations.github_repo ?? null,
@@ -210,7 +195,6 @@ export function buildProjectAgentContext(options: ProjectAgentContextOptions = {
     integrations,
     doctor: doctorBlock,
     budgets: budgetBlock,
-    storage: storageBlock,
     marker: resolution.marker ?? null,
   };
 }
@@ -813,7 +797,6 @@ function contextToText(ctx: ProjectAgentContext): string {
   if (ctx.integrations) lines.push(`integrations: ${toAgentText(ctx.integrations)}`);
   if (ctx.doctor) lines.push(`doctor: ${ctx.doctor.ok ? "ok" : "issues"} (${ctx.doctor.checks.map((c) => `${c.code}=${c.status}`).join(", ")})`);
   if (ctx.budgets && ctx.budgets.length) lines.push(`budgets: ${ctx.budgets.length} active, ${ctx.budgets.filter((b) => b.exhausted).length} exhausted`);
-  if (ctx.storage) lines.push(`storage: ${ctx.storage.configured ? "configured" : "local-only"}, last sync: ${ctx.storage.last_synced_at ?? "never"}`);
   if (ctx.recent_events && ctx.recent_events.length) {
     lines.push("recent events:");
     for (const e of ctx.recent_events) lines.push(`  ${e.created_at} ${e.event_type} (${e.source})`);

@@ -129,6 +129,14 @@ export interface ExecuteWorkspaceCreationOptions {
   ensureChannel?: boolean;
   /** Conversations CLI runner override (used by tests). */
   channelRunner?: ConversationsChannelRunner;
+  /**
+   * Store seam for the workspace-row insert. Callers route this through the
+   * active ProjectStore so local creation touches the same seam as every other
+   * command (never a direct sqlite write hoisted into the caller). Defaults to
+   * the on-box `createWorkspace`. Machine-local runtime side effects
+   * (directory/git/tmux/channel) below are intentionally NOT part of the seam.
+   */
+  createProject?: (input: CreateWorkspaceInput) => Promise<Workspace>;
 }
 
 export interface CleanupWorkspaceCreationOptions {
@@ -578,10 +586,10 @@ export function cleanupWorkspaceCreation(
   }, options);
 }
 
-export function executeWorkspaceCreation(
+export async function executeWorkspaceCreation(
   input: WorkspaceCreationPlanInput,
   options: ExecuteWorkspaceCreationOptions = {},
-): WorkspaceCreationExecution {
+): Promise<WorkspaceCreationExecution> {
   const plan = planWorkspaceCreation(input, { db: options.db });
   if (options.dryRun) {
     return {
@@ -617,7 +625,9 @@ export function executeWorkspaceCreation(
       }, options.db));
     }
 
-    workspace = createWorkspace(plan.workspace_input, options.db);
+    workspace = options.createProject
+      ? await options.createProject(plan.workspace_input)
+      : createWorkspace(plan.workspace_input, options.db);
     const runtimeDryRun = Boolean(options.runtimeDryRun);
     const prepare = prepareWorkspaceDirectory(workspace, {
       createDirectory: input.createDirectory || input.gitInit,

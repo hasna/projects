@@ -760,14 +760,14 @@ function withAgentWorkspaceLock<T>(workspace: Workspace, agentId: string, reason
   }
 }
 
-function fallbackWorkspaceCreate(
+async function fallbackWorkspaceCreate(
   agent: Agent,
   options: Required<Pick<WorkspaceAgentPromptOptions, "prompt" | "dryRun" | "approve">> & {
     root_id?: string;
     recipe_id?: string;
     command: string;
   },
-): { call: JsonObject; workspace?: Workspace; text: string } | null {
+): Promise<{ call: JsonObject; workspace?: Workspace; text: string } | null> {
   if (!isCreateIntent(options.prompt)) return null;
   const workspaceInput = {
     name: splitPromptName(options.prompt),
@@ -794,7 +794,7 @@ function fallbackWorkspaceCreate(
   }
 
   if (options.approve && !options.dryRun) {
-    const result = executeWorkspaceCreation(workspaceInput);
+    const result = await executeWorkspaceCreation(workspaceInput);
     return {
       workspace: result.workspace ?? undefined,
       text: result.workspace
@@ -1006,7 +1006,7 @@ async function runMockPrompt(
   }];
 
   if (options.approve && !options.dryRun) {
-    const result = executeWorkspaceCreation(workspaceInput);
+    const result = await executeWorkspaceCreation(workspaceInput);
     if (result.workspace) projects.push(result.workspace);
     toolCalls[0]!["output"] = {
       status: "created",
@@ -2167,7 +2167,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           });
         }
 
-        const result = executeWorkspaceCreation({
+        const result = await executeWorkspaceCreation({
           ...createInput,
           createDirectory: input.create_directory,
           gitInit: input.git_init,
@@ -2403,7 +2403,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
 
     const toolCalls = observedToolCalls.length > 0 ? observedToolCalls : extractToolCalls(result);
     const fallback = shouldRunWorkspaceCreateFallback(toolCalls, options.prompt)
-      ? fallbackWorkspaceCreate(actorAgent, {
+      ? await fallbackWorkspaceCreate(actorAgent, {
         prompt: options.prompt,
         dryRun,
         approve,

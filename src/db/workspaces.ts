@@ -316,6 +316,41 @@ export interface RootMatchResult {
   reasons: string[];
 }
 
+/**
+ * Pure root scoring over an in-memory list — no db access. Shared by the local
+ * `scoreRoots` (which reads sqlite) and the api transport (which scores roots
+ * fetched over HTTP), so matching behaves identically in both modes.
+ */
+export function rankRoots(roots: Root[], input: RootMatchInput = {}): RootMatchResult[] {
+  const absPath = input.path ? resolve(input.path) : undefined;
+  const tags = new Set(input.tags ?? []);
+  return roots
+    .map((root) => {
+      let score = 0;
+      const reasons: string[] = [];
+      if (absPath && (absPath === root.base_path || absPath.startsWith(`${root.base_path}/`))) {
+        score += 1000 + root.base_path.length;
+        reasons.push("path-prefix");
+      }
+      if (input.kind && root.default_kind === input.kind) {
+        score += 50;
+        reasons.push("kind");
+      }
+      if (input.github_org && root.github_org === input.github_org) {
+        score += 40;
+        reasons.push("github-org");
+      }
+      const tagMatches = root.tags.filter((tag) => tags.has(tag));
+      if (tagMatches.length > 0) {
+        score += tagMatches.length * 10;
+        reasons.push(`tags:${tagMatches.join(",")}`);
+      }
+      return { root, score, reasons };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.root.slug.localeCompare(b.root.slug));
+}
+
 export function scoreRoots(input: RootMatchInput = {}, db?: Database): RootMatchResult[] {
   const absPath = input.path ? resolve(input.path) : undefined;
   const tags = new Set(input.tags ?? []);

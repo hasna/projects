@@ -51,6 +51,21 @@ function fakeStore(): ProjectsPgStore {
       if (!ws) throw new NotFoundError(`Workspace not found: ${id}`);
       return ws;
     },
+    async recordEvent(input: { workspace_id?: string; event_type: string; source: string }) {
+      return {
+        id: "evt_1",
+        workspace_id: input.workspace_id ?? null,
+        agent_id: null,
+        event_type: input.event_type,
+        source: input.source,
+        prompt: null,
+        command: null,
+        before_json: null,
+        after_json: null,
+        metadata: {},
+        created_at: "2026-07-06 00:00:00",
+      };
+    },
     async listRoots() {
       return [];
     },
@@ -138,6 +153,58 @@ describe("projects-serve auth", () => {
     const get = await h(new Request(`http://x/v1/projects/${created.id}`, { headers: { "x-api-key": token } }));
     expect(get.status).toBe(200);
     expect((await get.json()).slug).toBe("alpha");
+  });
+
+  test("POST /v1/projects/:id/events records an event (write scope)", async () => {
+    const h = handler();
+    const token = keyWith(["projects:*"]);
+    const create = await h(
+      new Request("http://x/v1/projects", {
+        method: "POST",
+        headers: { "x-api-key": token, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Beta", slug: "beta" }),
+      }),
+    );
+    const created = await create.json();
+    const post = await h(
+      new Request(`http://x/v1/projects/${created.id}/events`, {
+        method: "POST",
+        headers: { "x-api-key": token, "content-type": "application/json" },
+        body: JSON.stringify({ event_type: "note", source: "mcp", metadata: { k: 1 } }),
+      }),
+    );
+    expect(post.status).toBe(201);
+    expect((await post.json()).event.event_type).toBe("note");
+  });
+
+  test("POST events requires event_type and write scope", async () => {
+    const h = handler();
+    const writeToken = keyWith(["projects:*"]);
+    const create = await h(
+      new Request("http://x/v1/projects", {
+        method: "POST",
+        headers: { "x-api-key": writeToken, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Gamma", slug: "gamma" }),
+      }),
+    );
+    const created = await create.json();
+    const missingType = await h(
+      new Request(`http://x/v1/projects/${created.id}/events`, {
+        method: "POST",
+        headers: { "x-api-key": writeToken, "content-type": "application/json" },
+        body: JSON.stringify({ source: "mcp" }),
+      }),
+    );
+    expect(missingType.status).toBe(400);
+    const readToken = keyWith(["projects:read"]);
+    const forbidden = await h(
+      new Request(`http://x/v1/projects/${created.id}/events`, {
+        method: "POST",
+        headers: { "x-api-key": readToken, "content-type": "application/json" },
+        body: JSON.stringify({ event_type: "note", source: "mcp" }),
+      }),
+    );
+    expect(forbidden.status).toBe(403);
   });
 
   test("Authorization: Bearer scheme is accepted", async () => {

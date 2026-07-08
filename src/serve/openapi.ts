@@ -240,6 +240,25 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           properties: { events: { type: "array", items: ref("WorkspaceEvent") }, count: { type: "integer" } },
           required: ["events", "count"],
         },
+        RecordEvent: {
+          type: "object",
+          properties: {
+            event_type: { type: "string" },
+            source: { type: "string" },
+            agent_id: { type: "string" },
+            prompt: { type: "string" },
+            command: { type: "string" },
+            before: { type: "object", additionalProperties: true, nullable: true },
+            after: { type: "object", additionalProperties: true, nullable: true },
+            metadata: { type: "object", additionalProperties: true },
+          },
+          required: ["event_type"],
+        },
+        EventRecorded: {
+          type: "object",
+          properties: { event: ref("WorkspaceEvent") },
+          required: ["event"],
+        },
         DeleteResult: {
           type: "object",
           properties: { deleted: { type: "boolean" }, hard: { type: "boolean" }, id: { type: "string" } },
@@ -351,6 +370,13 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           summary: "List a project's events",
           parameters: [ID_PARAM, { name: "limit", in: "query", required: false, schema: { type: "integer" } }],
           responses: { "200": jsonResp("EventList"), "404": jsonResp("Error", "Not found") },
+        },
+        post: {
+          operationId: "recordProjectEvent",
+          summary: "Record a custom audit event for a project",
+          parameters: [ID_PARAM],
+          requestBody: jsonBody("RecordEvent"),
+          responses: { "201": jsonResp("EventRecorded", "Created"), "400": jsonResp("Error", "Invalid"), "404": jsonResp("Error", "Not found") },
         },
       },
       "/v1/roots": {

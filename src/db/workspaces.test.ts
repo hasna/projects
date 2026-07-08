@@ -381,7 +381,7 @@ describe("workspace domain services", () => {
     db.close();
   });
 
-  test("plans and executes workspace creation with locks and rollback records", () => {
+  test("plans and executes workspace creation with locks and rollback records", async () => {
     const db = makeDb();
     const rootDir = tmpDir();
     const root = createRoot({ name: "Plan Root", slug: "plan-root", base_path: rootDir, path_template: "{slug}" }, db);
@@ -410,7 +410,7 @@ describe("workspace domain services", () => {
     expect(plan.locks.map((lock) => lock.key)).toContain(`workspace-path:${join(rootDir, "planned-app")}`);
     expect(plan.rollback_actions.some((action) => action.action === "remove_file")).toBe(true);
 
-    const dryRun = executeWorkspaceCreation({
+    const dryRun = await executeWorkspaceCreation({
       name: "Dry Planned App",
       root_id: root.id,
       createDirectory: true,
@@ -419,7 +419,7 @@ describe("workspace domain services", () => {
     expect(dryRun.dry_run).toBe(true);
     expect(listWorkspaces({}, db)).toHaveLength(0);
 
-    const executed = executeWorkspaceCreation({
+    const executed = await executeWorkspaceCreation({
       name: "Planned App",
       root_id: root.id,
       createDirectory: true,
@@ -436,12 +436,12 @@ describe("workspace domain services", () => {
     db.close();
   });
 
-  test("cleans up workspace creation artifacts from rollback records", () => {
+  test("cleans up workspace creation artifacts from rollback records", async () => {
     const db = makeDb();
     const rootDir = tmpDir();
     const root = createRoot({ name: "Cleanup Root", slug: "cleanup-root", base_path: rootDir, path_template: "{slug}" }, db);
 
-    const executed = executeWorkspaceCreation({
+    const executed = await executeWorkspaceCreation({
       name: "Cleanup App",
       root_id: root.id,
       createDirectory: true,

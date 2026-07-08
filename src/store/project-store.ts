@@ -21,15 +21,39 @@
 
 import {
   acquireWorkspaceLock,
+  addWorkspaceLocation as dbAddWorkspaceLocation,
   archiveWorkspace as dbArchiveWorkspace,
+  assignAgentToWorkspace as dbAssignAgentToWorkspace,
+  createAgent as dbCreateAgent,
+  createRecipe as dbCreateRecipe,
+  createRoot as dbCreateRoot,
   createWorkspace as dbCreateWorkspace,
+  deleteRoot as dbDeleteRoot,
   deleteWorkspace as dbDeleteWorkspace,
+  getAgent as dbGetAgent,
+  getAgentBySlug as dbGetAgentBySlug,
+  getRecipe as dbGetRecipe,
+  getRecipeBySlug as dbGetRecipeBySlug,
+  getRoot as dbGetRoot,
+  getRootBySlug as dbGetRootBySlug,
+  listAgents as dbListAgents,
+  listRecipes as dbListRecipes,
+  listRoots as dbListRoots,
+  listWorkspaceAgents as dbListWorkspaceAgents,
   listWorkspaceEvents as dbListWorkspaceEvents,
+  listWorkspaceLocations as dbListWorkspaceLocations,
+  listWorkspaceLocks as dbListWorkspaceLocks,
   listWorkspaces as dbListWorkspaces,
+  rankRoots,
+  recordWorkspaceEvent as dbRecordWorkspaceEvent,
   releaseWorkspaceLock,
   resolveWorkspace as dbResolveWorkspace,
+  scoreRoots as dbScoreRoots,
   unarchiveWorkspace as dbUnarchiveWorkspace,
+  updateRoot as dbUpdateRoot,
   updateWorkspace as dbUpdateWorkspace,
+  type RootMatchInput,
+  type RootMatchResult,
   type WorkspaceFilter,
 } from "../db/workspaces.js";
 import {
@@ -38,12 +62,24 @@ import {
   type StorageClient,
   type QueryParams,
 } from "../http/client.js";
+import { resolveRegisteredProjectTargetOrThrow, type ProjectResolverOptions } from "../lib/project-resolver.js";
 import type {
+  Agent,
+  CreateAgentInput,
+  CreateRecipeInput,
+  CreateRootInput,
   CreateWorkspaceInput,
   EventSource,
+  JsonObject,
+  Recipe,
+  Root,
+  UpdateRootInput,
   UpdateWorkspaceInput,
   Workspace,
+  WorkspaceAgentAssignment,
   WorkspaceEvent,
+  WorkspaceLocation,
+  WorkspaceLock,
 } from "../types/workspace.js";
 
 const APP = "projects";
@@ -68,18 +104,130 @@ export interface DeleteProjectResult {
   id: string;
 }
 
+export interface DeleteRootResult {
+  root: Root;
+  detached_workspaces: number;
+}
+
+/** Explicit audit-event write (routes through the Store, never raw sqlite). */
+export interface RecordEventInput {
+  event_type: string;
+  source: EventSource;
+  agentId?: string;
+  prompt?: string;
+  command?: string;
+  before?: JsonObject | null;
+  after?: JsonObject | null;
+  metadata?: JsonObject;
+}
+
+/** Assign a registered agent to a project role (on-box sub-resource). */
+export interface AssignAgentInput {
+  /** Already-resolved agent id. */
+  agentId: string;
+  role?: string;
+  assignedBy?: string;
+  metadata?: JsonObject;
+  source?: EventSource;
+  command?: string;
+}
+
+/** Register another on-disk location for a project (on-box sub-resource). */
+export interface AddLocationInput {
+  path: string;
+  label?: string;
+  kind?: string;
+  isPrimary?: boolean;
+  metadata?: JsonObject;
+  agentId?: string;
+  source?: EventSource;
+  command?: string;
+}
+
+export interface AddLocationResult {
+  project: Workspace;
+  location: WorkspaceLocation;
+}
+
+/** Acquire a project mutation lock (machine-local coordination primitive). */
+export interface AcquireLockInput {
+  key: string;
+  workspaceId?: string;
+  agentId?: string;
+  reason?: string;
+  ttlSeconds?: number;
+}
+
+/**
+ * Operations that only exist on-box (agent assignments, extra disk locations,
+ * mutation locks). The api transport does not model them; calling a write in
+ * api mode throws this rather than silently writing local sqlite (split-brain).
+ */
+class LocalOnlyOperationError extends Error {
+  constructor(operation: string) {
+    super(`${operation} is a local-only operation and is not available in api/cloud mode.`);
+    this.name = "LocalOnlyOperationError";
+  }
+}
+
 export interface ProjectStore {
   readonly mode: ProjectStoreMode;
   /** Base `<url>/v1` for api mode; null for local. Never contains the key. */
   readonly baseUrl: string | null;
   listProjects(filter?: WorkspaceFilter): Promise<Workspace[]>;
   getProject(idOrSlug: string): Promise<Workspace | null>;
+  /**
+   * Resolve a caller-supplied target to a single project, throwing if none
+   * matches. Local resolves by id/slug/name and — as a machine-local
+   * convenience — by on-disk path/marker. Api resolves by id/slug server-side.
+   */
+  resolveTarget(target: string | undefined, options?: ProjectResolverOptions): Promise<Workspace>;
   createProject(input: CreateWorkspaceInput): Promise<Workspace>;
   updateProject(id: string, patch: UpdateWorkspaceInput): Promise<Workspace>;
   archiveProject(id: string, ctx?: MutationContext): Promise<Workspace>;
   unarchiveProject(id: string, ctx?: MutationContext): Promise<Workspace>;
   deleteProject(id: string, opts: { hard?: boolean }, ctx?: MutationContext): Promise<DeleteProjectResult>;
   listEvents(idOrSlug: string, limit?: number): Promise<WorkspaceEvent[]>;
+  /** Record an explicit audit event. Local writes sqlite; api POSTs to /projects/:id/events. */
+  recordEvent(idOrSlug: string, input: RecordEventInput): Promise<WorkspaceEvent>;
+  /**
+   * Per-project agent assignments. This is an on-box sub-resource; the api
+   * transport does not model it server-side and returns an empty list.
+   */
+  getProjectAgents(id: string): Promise<WorkspaceAgentAssignment[]>;
+  /** Assign a registered agent to a project role. Local-only (throws in api mode). */
+  assignAgent(idOrSlug: string, input: AssignAgentInput): Promise<WorkspaceAgentAssignment>;
+  /**
+   * Per-project registered locations. On-box sub-resource; the api transport
+   * does not model it server-side and returns an empty list.
+   */
+  getProjectLocations(id: string): Promise<WorkspaceLocation[]>;
+  /** Register another on-disk location for a project. Local-only (throws in api mode). */
+  addLocation(idOrSlug: string, input: AddLocationInput): Promise<AddLocationResult>;
+
+  // ---- Mutation locks (machine-local coordination) ----
+  listLocks(): Promise<WorkspaceLock[]>;
+  acquireLock(input: AcquireLockInput): Promise<WorkspaceLock>;
+  releaseLock(key: string): Promise<boolean>;
+
+  // ---- Roots (shared registry: /v1/roots) ----
+  listRoots(): Promise<Root[]>;
+  getRoot(idOrSlug: string): Promise<Root | null>;
+  createRoot(input: CreateRootInput): Promise<Root>;
+  updateRoot(idOrSlug: string, patch: UpdateRootInput): Promise<Root>;
+  deleteRoot(idOrSlug: string, opts?: { detachProjects?: boolean }): Promise<DeleteRootResult>;
+  /** Score registered roots by path/kind/tags/github_org (behaves identically in both transports). */
+  matchRoots(input: RootMatchInput): Promise<RootMatchResult[]>;
+
+  // ---- Agents (shared registry: /v1/agents) ----
+  listAgents(): Promise<Agent[]>;
+  getAgent(idOrSlug: string): Promise<Agent | null>;
+  createAgent(input: CreateAgentInput): Promise<Agent>;
+
+  // ---- Recipes (shared registry: /v1/recipes) ----
+  listRecipes(): Promise<Recipe[]>;
+  getRecipe(idOrSlug: string): Promise<Recipe | null>;
+  createRecipe(input: CreateRecipeInput): Promise<Recipe>;
 }
 
 // --------------------------------------------------------------------------
@@ -125,6 +273,10 @@ class LocalProjectStore implements ProjectStore {
     return dbResolveWorkspace(idOrSlug);
   }
 
+  async resolveTarget(target: string | undefined, options?: ProjectResolverOptions): Promise<Workspace> {
+    return resolveRegisteredProjectTargetOrThrow(target, options).project;
+  }
+
   async createProject(input: CreateWorkspaceInput): Promise<Workspace> {
     return dbCreateWorkspace(input);
   }
@@ -152,6 +304,142 @@ class LocalProjectStore implements ProjectStore {
     const project = dbResolveWorkspace(idOrSlug);
     if (!project) throw new Error(`Project not found: ${idOrSlug}`);
     return dbListWorkspaceEvents(project.id);
+  }
+
+  async recordEvent(idOrSlug: string, input: RecordEventInput): Promise<WorkspaceEvent> {
+    const project = dbResolveWorkspace(idOrSlug);
+    if (!project) throw new Error(`Project not found: ${idOrSlug}`);
+    return dbRecordWorkspaceEvent({
+      workspace_id: project.id,
+      agent_id: input.agentId,
+      event_type: input.event_type,
+      source: input.source,
+      prompt: input.prompt,
+      command: input.command,
+      before: input.before,
+      after: input.after,
+      metadata: input.metadata,
+    });
+  }
+
+  async getProjectAgents(id: string): Promise<WorkspaceAgentAssignment[]> {
+    return dbListWorkspaceAgents(id);
+  }
+
+  async assignAgent(idOrSlug: string, input: AssignAgentInput): Promise<WorkspaceAgentAssignment> {
+    const project = dbResolveWorkspace(idOrSlug);
+    if (!project) throw new Error(`Project not found: ${idOrSlug}`);
+    const role = input.role ?? "contributor";
+    return withLock(project.id, { agentId: input.assignedBy, source: input.source, command: input.command }, "project agent assign", () => {
+      const assignment = dbAssignAgentToWorkspace(project.id, input.agentId, role, input.assignedBy, input.metadata);
+      dbRecordWorkspaceEvent({
+        workspace_id: project.id,
+        agent_id: input.assignedBy,
+        event_type: "agent_assigned",
+        source: input.source ?? "cli",
+        command: input.command,
+        after: {
+          agent_id: input.agentId,
+          role: assignment.role,
+          assignment_id: assignment.id,
+        },
+      });
+      return assignment;
+    });
+  }
+
+  async getProjectLocations(id: string): Promise<WorkspaceLocation[]> {
+    return dbListWorkspaceLocations(id);
+  }
+
+  async addLocation(idOrSlug: string, input: AddLocationInput): Promise<AddLocationResult> {
+    const project = dbResolveWorkspace(idOrSlug);
+    if (!project) throw new Error(`Project not found: ${idOrSlug}`);
+    return withLock(project.id, { agentId: input.agentId, source: input.source, command: input.command }, "project location add", () => {
+      const location = dbAddWorkspaceLocation({
+        workspace_id: project.id,
+        path: input.path,
+        label: input.label,
+        kind: input.kind,
+        is_primary: input.isPrimary,
+        metadata: input.metadata,
+        agent_id: input.agentId,
+        source: input.source ?? "cli",
+        command: input.command,
+      });
+      const updated = dbResolveWorkspace(project.id) ?? project;
+      return { project: updated, location };
+    });
+  }
+
+  async listLocks(): Promise<WorkspaceLock[]> {
+    return dbListWorkspaceLocks();
+  }
+
+  async acquireLock(input: AcquireLockInput): Promise<WorkspaceLock> {
+    return acquireWorkspaceLock({
+      lock_key: input.key,
+      workspace_id: input.workspaceId,
+      agent_id: input.agentId,
+      reason: input.reason,
+      ttl_seconds: input.ttlSeconds,
+    });
+  }
+
+  async releaseLock(key: string): Promise<boolean> {
+    return releaseWorkspaceLock(key);
+  }
+
+  async listRoots(): Promise<Root[]> {
+    return dbListRoots();
+  }
+
+  async getRoot(idOrSlug: string): Promise<Root | null> {
+    return dbGetRoot(idOrSlug) ?? dbGetRootBySlug(idOrSlug);
+  }
+
+  async createRoot(input: CreateRootInput): Promise<Root> {
+    return dbCreateRoot(input);
+  }
+
+  async updateRoot(idOrSlug: string, patch: UpdateRootInput): Promise<Root> {
+    const root = await this.getRoot(idOrSlug);
+    if (!root) throw new Error(`Root not found: ${idOrSlug}`);
+    return dbUpdateRoot(root.id, patch);
+  }
+
+  async deleteRoot(idOrSlug: string, opts?: { detachProjects?: boolean }): Promise<DeleteRootResult> {
+    const root = await this.getRoot(idOrSlug);
+    if (!root) throw new Error(`Root not found: ${idOrSlug}`);
+    return dbDeleteRoot(root.id, { detachWorkspaces: opts?.detachProjects });
+  }
+
+  async matchRoots(input: RootMatchInput): Promise<RootMatchResult[]> {
+    return dbScoreRoots(input);
+  }
+
+  async listAgents(): Promise<Agent[]> {
+    return dbListAgents();
+  }
+
+  async getAgent(idOrSlug: string): Promise<Agent | null> {
+    return dbGetAgent(idOrSlug) ?? dbGetAgentBySlug(idOrSlug);
+  }
+
+  async createAgent(input: CreateAgentInput): Promise<Agent> {
+    return dbCreateAgent(input);
+  }
+
+  async listRecipes(): Promise<Recipe[]> {
+    return dbListRecipes();
+  }
+
+  async getRecipe(idOrSlug: string): Promise<Recipe | null> {
+    return dbGetRecipe(idOrSlug) ?? dbGetRecipeBySlug(idOrSlug);
+  }
+
+  async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
+    return dbCreateRecipe(input);
   }
 }
 
@@ -193,6 +481,14 @@ class ApiProjectStore implements ProjectStore {
     return this.client.get<Workspace>(RESOURCE, idOrSlug);
   }
 
+  async resolveTarget(target: string | undefined): Promise<Workspace> {
+    const idOrSlug = target?.trim();
+    if (!idOrSlug) throw new Error("Project not found: (no target provided)");
+    const project = await this.getProject(idOrSlug);
+    if (!project) throw new Error(`Project not found: ${idOrSlug}`);
+    return project;
+  }
+
   async createProject(input: CreateWorkspaceInput): Promise<Workspace> {
     return this.client.create<Workspace>(RESOURCE, input);
   }
@@ -228,6 +524,112 @@ class ApiProjectStore implements ProjectStore {
     );
     return raw.events ?? [];
   }
+
+  async recordEvent(idOrSlug: string, input: RecordEventInput): Promise<WorkspaceEvent> {
+    const raw = await this.client.transport.post<{ event?: WorkspaceEvent } | WorkspaceEvent>(
+      `/projects/${encodeURIComponent(idOrSlug)}/events`,
+      {
+        event_type: input.event_type,
+        source: input.source,
+        agent_id: input.agentId,
+        prompt: input.prompt,
+        command: input.command,
+        before: input.before,
+        after: input.after,
+        metadata: input.metadata,
+      },
+    );
+    return (raw as { event?: WorkspaceEvent }).event ?? (raw as WorkspaceEvent);
+  }
+
+  // Per-project agents/locations are on-box sub-resources that the projects
+  // API server does not model; the cloud detail view omits them by design.
+  async getProjectAgents(): Promise<WorkspaceAgentAssignment[]> {
+    return [];
+  }
+
+  async assignAgent(): Promise<WorkspaceAgentAssignment> {
+    throw new LocalOnlyOperationError("assign agent to project");
+  }
+
+  async getProjectLocations(): Promise<WorkspaceLocation[]> {
+    return [];
+  }
+
+  async addLocation(): Promise<AddLocationResult> {
+    throw new LocalOnlyOperationError("add project location");
+  }
+
+  // Mutation locks are a machine-local coordination primitive; cloud writes are
+  // atomic server-side so there is no shared lock table to expose.
+  async listLocks(): Promise<WorkspaceLock[]> {
+    return [];
+  }
+
+  async acquireLock(): Promise<WorkspaceLock> {
+    throw new LocalOnlyOperationError("acquire project lock");
+  }
+
+  async releaseLock(): Promise<boolean> {
+    return false;
+  }
+
+  async listRoots(): Promise<Root[]> {
+    const raw = await this.client.transport.get<{ roots?: Root[] }>("/roots");
+    return raw.roots ?? [];
+  }
+
+  async getRoot(idOrSlug: string): Promise<Root | null> {
+    return this.client.get<Root>("roots", idOrSlug);
+  }
+
+  async createRoot(input: CreateRootInput): Promise<Root> {
+    return this.client.create<Root>("roots", input);
+  }
+
+  async updateRoot(idOrSlug: string, patch: UpdateRootInput): Promise<Root> {
+    return this.client.update<Root>("roots", idOrSlug, patch);
+  }
+
+  async deleteRoot(idOrSlug: string, opts?: { detachProjects?: boolean }): Promise<DeleteRootResult> {
+    const root = await this.getRoot(idOrSlug);
+    if (!root) throw new Error(`Root not found: ${idOrSlug}`);
+    const q = opts?.detachProjects ? "?detach=true" : "";
+    const res = await this.client.transport.del<{ detached_workspaces?: number }>(
+      `/roots/${encodeURIComponent(root.id)}${q}`,
+    );
+    return { root, detached_workspaces: res?.detached_workspaces ?? 0 };
+  }
+
+  async matchRoots(input: RootMatchInput): Promise<RootMatchResult[]> {
+    return rankRoots(await this.listRoots(), input);
+  }
+
+  async listAgents(): Promise<Agent[]> {
+    const raw = await this.client.transport.get<{ agents?: Agent[] }>("/agents");
+    return raw.agents ?? [];
+  }
+
+  async getAgent(idOrSlug: string): Promise<Agent | null> {
+    return this.client.get<Agent>("agents", idOrSlug);
+  }
+
+  async createAgent(input: CreateAgentInput): Promise<Agent> {
+    return this.client.create<Agent>("agents", input);
+  }
+
+  async listRecipes(): Promise<Recipe[]> {
+    const raw = await this.client.transport.get<{ recipes?: Recipe[] }>("/recipes");
+    return raw.recipes ?? [];
+  }
+
+  async getRecipe(idOrSlug: string): Promise<Recipe | null> {
+    return this.client.get<Recipe>("recipes", idOrSlug);
+  }
+
+  async createRecipe(input: CreateRecipeInput): Promise<Recipe> {
+    return this.client.create<Recipe>("recipes", input);
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -242,9 +644,12 @@ let cached: ProjectStore | null = null;
  * API_URL + API_KEY), else a LocalProjectStore. Throws if cloud was requested
  * but is misconfigured (so callers never silently read the wrong dataset).
  */
-export function resolveProjectStore(env: Env = process.env): ProjectStore {
+export function resolveProjectStore(
+  env: Env = process.env,
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>,
+): ProjectStore {
   if (env === process.env && cached) return cached;
-  const resolved = resolveStorageClient(APP, env);
+  const resolved = resolveStorageClient(APP, env, fetchImpl);
   const store: ProjectStore =
     resolved.transport === "cloud-http" ? new ApiProjectStore(resolved.client) : new LocalProjectStore();
   if (env === process.env) cached = store;

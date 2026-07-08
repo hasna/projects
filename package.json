@@ -23,10 +23,6 @@
       "types": "./dist/project-store.d.ts",
       "import": "./dist/project-store.js"
     },
-    "./storage": {
-      "types": "./dist/storage.d.ts",
-      "import": "./dist/storage.js"
-    },
     "./sdk": {
       "types": "./dist/sdk/index.d.ts",
       "import": "./dist/sdk/index.js"
@@ -51,7 +47,7 @@
     ".cursor/hooks/goal-continue.sh"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/serve/index.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/serve/app.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/sdk/index.ts --outdir dist/sdk --target bun && bun build src/index.ts src/project-store.ts src/project-dashboard.ts src/storage.ts --outdir dist --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && tsc --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && bun build src/serve/index.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/serve/app.ts --outdir dist/serve --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/sdk && bun build src/sdk/index.ts --outdir dist/sdk --target bun && bun build src/index.ts src/project-store.ts src/project-dashboard.ts --outdir dist --target bun --external pg --external @hasna/contracts --external @hasna/contracts/auth --external @hasna/contracts/schemas && tsc --emitDeclarationOnly --outDir dist",
     "sdk:generate": "bun run scripts/generate-sdk.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",

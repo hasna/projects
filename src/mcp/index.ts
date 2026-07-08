@@ -8,14 +8,8 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   acquireWorkspaceLock,
-  addWorkspaceLocation,
   addTmuxProfileWindow,
-  assignAgentToWorkspace,
-  createAgent,
-  createRecipe,
-  createRoot,
   createTmuxProfile,
-  deleteRoot,
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
@@ -23,25 +17,12 @@ import {
   getRecipeBySlug,
   getRoot,
   getRootBySlug,
-  listAgents,
-  listRecipes,
-  listRoots,
   listTmuxProfileWindows,
   listTmuxProfiles,
-  listWorkspaceEvents,
-  listWorkspaceAgents,
-  listWorkspaceLocations,
-  listWorkspaceLocks,
-  listWorkspaces,
-  recordWorkspaceEvent,
-  scoreRoots,
   releaseWorkspaceLock,
   resolveTmuxProfile,
-  resolveWorkspace,
-  updateRoot,
 } from "../db/workspaces.js";
-import { getStorageStatus, storagePull, storagePush, storageSync } from "../db/storage-sync.js";
-import { resolveProjectStore } from "../store/project-store.js";
+import { resolveProjectStore, type ProjectStore } from "../store/project-store.js";
 import { runWorkspaceAgentPrompt } from "../lib/workspace-agent.js";
 import { parseWorkspaceAgentEvalCaseIds, runWorkspaceAgentEval } from "../lib/workspace-agent-eval.js";
 import {
@@ -70,7 +51,6 @@ import {
 } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
 import { ensureProjectChannel, resolveProjectChannel } from "../lib/project-channel.js";
-import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
 import {
   PROJECT_PRIORITIES,
   PROJECT_STAGES,
@@ -99,7 +79,7 @@ import {
   suggestProjectNextActions,
   toAgentText,
 } from "../lib/project-agent-assist.js";
-import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
+import { builtInWorkspaceRecipes } from "../lib/workspace-defaults.js";
 import {
   importWorkspaceFromGitHub,
   syncWorkspaceGitHubRoots,
@@ -350,8 +330,31 @@ function agentId(idOrSlug: string | undefined): string {
   return agent.id;
 }
 
-function findProjectTarget(target: string | undefined): Workspace | null {
-  return resolveRegisteredProjectTarget(target)?.project ?? null;
+/**
+ * Resolve a caller-supplied target to a single project through the active
+ * Store. In api/cloud mode this resolves the project server-side (so cloud-only
+ * projects resolve correctly and stale on-box rows are never used); in local
+ * mode it uses the richer on-disk (path/marker/cwd) resolver. Returns null when
+ * nothing matches so callers keep their existing not-found messaging.
+ */
+async function findProjectTarget(
+  target: string | undefined,
+  store: ProjectStore = resolveProjectStore(),
+): Promise<Workspace | null> {
+  try {
+    return await store.resolveTarget(target);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the attributing agent for a mutation. Local resolves/creates an
+ * on-box agent identity; api mode leaves attribution to the server (derived
+ * from the bearer key), so we never create a local agent row in api mode.
+ */
+function mcpMutationAgent(store: ProjectStore, optAgent?: string): string | undefined {
+  return store.mode === "local" ? agentId(optAgent) : undefined;
 }
 
 function withWorkspaceMutationLock<T>(workspace: Workspace, owner: string | undefined, reason: string, fn: () => T): T {
@@ -379,7 +382,7 @@ function parseRollbackActions(value: unknown): WorkspaceCreationPlanAction[] | n
   return actions.length === value.length ? actions : null;
 }
 
-function cleanupTargetFromWorkspace(workspace: Workspace, rollbackActions?: WorkspaceCreationPlanAction[]) {
+function cleanupTargetFromWorkspace(workspace: Workspace, events: WorkspaceEvent[], rollbackActions?: WorkspaceCreationPlanAction[]) {
   if (rollbackActions?.length) {
     return {
       workspace_slug: workspace.slug,
@@ -387,7 +390,7 @@ function cleanupTargetFromWorkspace(workspace: Workspace, rollbackActions?: Work
       rollback_actions: rollbackActions,
     };
   }
-  for (const event of listWorkspaceEvents(workspace.id).slice().reverse()) {
+  for (const event of events.slice().reverse()) {
     const fromMetadata = parseRollbackActions(event.metadata.rollback_actions);
     if (fromMetadata) return { workspace_slug: workspace.slug, primary_path: workspace.primary_path, rollback_actions: fromMetadata };
     const after = event.after_json as Record<string, unknown> | null;
@@ -417,7 +420,7 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
-    const roots = listRoots();
+    const roots = await resolveProjectStore().listRoots();
     if (!input.compact || input.verbose) return jsonText(roots);
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     return jsonText(compactListPayload(roots, roots.slice(0, limit).map((root) => ({
@@ -447,7 +450,7 @@ server.tool(
   },
   async (input) => {
     try {
-      return jsonText(createRoot({
+      return jsonText(await resolveProjectStore().createRoot({
         name: input.name,
         base_path: input.path,
         slug: input.slug,
@@ -469,7 +472,7 @@ server.tool(
   "Show one registered root by id or slug.",
   { id: z.string() },
   async (input) => {
-    const root = getRoot(input.id) ?? getRootBySlug(input.id);
+    const root = await resolveProjectStore().getRoot(input.id);
     return root ? jsonText(root) : errorText(`Root not found: ${input.id}`);
   },
 );
@@ -494,9 +497,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const root = getRoot(input.id) ?? getRootBySlug(input.id);
-      if (!root) return errorText(`Root not found: ${input.id}`);
-      return jsonText(updateRoot(root.id, {
+      return jsonText(await resolveProjectStore().updateRoot(input.id, {
         name: input.name,
         slug: input.slug,
         base_path: input.path,
@@ -525,9 +526,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const root = getRoot(input.id) ?? getRootBySlug(input.id);
-      if (!root) return errorText(`Root not found: ${input.id}`);
-      return jsonText(deleteRoot(root.id, { detachWorkspaces: input.detach_projects }));
+      return jsonText(await resolveProjectStore().deleteRoot(input.id, { detachProjects: input.detach_projects }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -543,7 +542,7 @@ server.tool(
     tags: z.array(z.string()).optional(),
     github_org: z.string().optional(),
   },
-  async (input) => jsonText(scoreRoots({
+  async (input) => jsonText(await resolveProjectStore().matchRoots({
     path: input.path,
     kind: input.kind as WorkspaceKind | undefined,
     tags: input.tags,
@@ -560,7 +559,7 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
-    const recipes = listRecipes();
+    const recipes = await resolveProjectStore().listRecipes();
     if (!input.compact || input.verbose) return jsonText(recipes);
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     return jsonText(compactListPayload(recipes, recipes.slice(0, limit).map((recipe) => ({
@@ -587,7 +586,7 @@ server.tool(
   },
   async (input) => {
     try {
-      return jsonText(createRecipe({
+      return jsonText(await resolveProjectStore().createRecipe({
         name: input.name,
         slug: input.slug,
         description: input.description,
@@ -626,7 +625,17 @@ server.tool(
   "projects_recipes_seed_defaults",
   "Create any missing built-in project recipes.",
   {},
-  async () => jsonText(ensureBuiltInWorkspaceRecipes()),
+  async () => {
+    const store = resolveProjectStore();
+    const created: unknown[] = [];
+    const existing: unknown[] = [];
+    for (const def of builtInWorkspaceRecipes()) {
+      const current = def.slug ? await store.getRecipe(def.slug) : null;
+      if (current) { existing.push(current); continue; }
+      created.push(await store.createRecipe(def));
+    }
+    return jsonText({ created, existing });
+  },
 );
 
 server.tool(
@@ -641,7 +650,7 @@ server.tool(
   async (input) => {
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     if (!input.project) {
-      const agents = listAgents();
+      const agents = await resolveProjectStore().listAgents();
       if (!input.compact || input.verbose) return jsonText(agents);
       return jsonText(compactListPayload(agents, agents.slice(0, limit).map((agent) => ({
         id: agent.id,
@@ -653,9 +662,10 @@ server.tool(
         role: agent.role,
       })), limit, "Use projects_agents_list verbose=true for full agent records."));
     }
-    const project = findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    const assignments = listWorkspaceAgents(project.id);
+    const assignments = await store.getProjectAgents(project.id);
     if (!input.compact || input.verbose) return jsonText(assignments);
     return jsonText(compactListPayload(assignments, assignments.slice(0, limit).map((assignment) => ({
       agent: assignment.agent?.slug ?? assignment.agent_id,
@@ -680,7 +690,7 @@ server.tool(
   },
   async (input) => {
     try {
-      return jsonText(createAgent({
+      return jsonText(await resolveProjectStore().createAgent({
         name: input.name,
         slug: input.slug,
         kind: input.kind as AgentKind,
@@ -707,30 +717,21 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      const agent = getAgent(input.agent) ?? getAgentBySlug(input.agent);
+      const agent = await store.getAgent(input.agent);
       if (!agent) return errorText(`Agent not found: ${input.agent}`);
-      const assignedBy = input.assigned_by ? agentId(input.assigned_by) : ensureCliAgent().id;
-      const assignment = assignAgentToWorkspace(
-        project.id,
-        agent.id,
-        input.role ?? "contributor",
+      const assignedBy = store.mode === "local"
+        ? (input.assigned_by ? agentId(input.assigned_by) : ensureCliAgent().id)
+        : undefined;
+      const assignment = await store.assignAgent(project.id, {
+        agentId: agent.id,
+        role: input.role,
         assignedBy,
-        input.metadata as JsonObject | undefined,
-      );
-      recordWorkspaceEvent({
-        workspace_id: project.id,
-        agent_id: assignedBy,
-        event_type: "agent_assigned",
+        metadata: input.metadata as JsonObject | undefined,
         source: "mcp",
         command: "projects_agents_assign",
-        after: {
-          agent_id: agent.id,
-          agent_slug: agent.slug,
-          role: assignment.role,
-          assignment_id: assignment.id,
-        },
       });
       return jsonText(assignment);
     } catch (err) {
@@ -834,7 +835,7 @@ server.tool(
     try {
       const profile = resolveTmuxProfile(input.profile);
       if (!profile) return errorText(`Tmux profile not found: ${input.profile}`);
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = ensureCliAgent().id;
       const apply = () => applyWorkspaceTmuxProfile(project, profile, listTmuxProfileWindows(profile.id), {
@@ -869,12 +870,8 @@ server.tool(
   },
   async (input) => {
     const store = resolveProjectStore();
-    if (store.mode === "api") {
-      const projects = await store.listProjects({ kind: input.kind as WorkspaceKind | undefined, status: input.status, query: input.query, tags: input.tags, limit: input.limit });
-      return jsonText({ projects, count: projects.length });
-    }
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
-    const projects = filterProjectEvalArtifacts(listWorkspaces({
+    const projects = filterProjectEvalArtifacts(await store.listProjects({
       kind: input.kind as WorkspaceKind | undefined,
       status: input.status,
       query: input.query,
@@ -905,19 +902,15 @@ server.tool(
   },
   async (input) => {
     const store = resolveProjectStore();
-    if (store.mode === "api") {
-      const project = await store.getProject(input.id);
-      if (!project) return errorText(`Project not found: ${input.id}`);
-      const events = await store.listEvents(project.id, input.events_limit);
-      return jsonText({ project, events, count: events.length });
-    }
-    const project = findProjectTarget(input.id);
+    const project = await store.getProject(input.id);
     if (!project) return errorText(`Project not found: ${input.id}`);
-    const events = listWorkspaceEvents(project.id);
+    const events = await store.listEvents(project.id, input.events_limit);
+    const agents = await store.getProjectAgents(project.id);
+    const locations = await store.getProjectLocations(project.id);
     const payload = buildProjectDetailPayload({
       project: projectWithManagement(project),
-      agents: listWorkspaceAgents(project.id),
-      locations: listWorkspaceLocations(project.id),
+      agents,
+      locations,
       events,
     });
     if (!input.compact || input.verbose) return jsonText(withoutRender(payload));
@@ -927,8 +920,8 @@ server.tool(
       external_links: projectExternalLinksSummary(project),
       dashboard: projectDashboardSummary(project),
       counts: {
-        agents: listWorkspaceAgents(project.id).length,
-        locations: listWorkspaceLocations(project.id).length,
+        agents: agents.length,
+        locations: locations.length,
         events: events.length,
       },
       recent_events: events.slice(-3).reverse().map((event) => compactEvent(event)),
@@ -948,7 +941,7 @@ server.tool(
     include_evals: z.boolean().optional(),
     limit: z.number().int().positive().max(500).optional(),
   },
-  async (input) => jsonText(buildProjectListRender(filterProjectEvalArtifacts(listWorkspaces({
+  async (input) => jsonText(buildProjectListRender(filterProjectEvalArtifacts(await resolveProjectStore().listProjects({
     kind: input.kind as WorkspaceKind | undefined,
     status: input.status,
     query: input.query,
@@ -963,13 +956,14 @@ server.tool(
   "Return a validated JSON Render spec for one project detail surface.",
   { id: z.string() },
   async (input) => {
-    const project = findProjectTarget(input.id);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.id, store);
     if (!project) return errorText(`Project not found: ${input.id}`);
     const payload = buildProjectDetailPayload({
       project: projectWithManagement(project),
-      agents: listWorkspaceAgents(project.id),
-      locations: listWorkspaceLocations(project.id),
-      events: listWorkspaceEvents(project.id),
+      agents: await store.getProjectAgents(project.id),
+      locations: await store.getProjectLocations(project.id),
+      events: await store.listEvents(project.id),
     });
     return jsonText(payload.render);
   },
@@ -980,11 +974,12 @@ server.tool(
   "Return a validated JSON Render spec for recent project start sessions.",
   { project: z.string(), limit: z.number().int().positive().max(100).optional(), unrenamed: z.boolean().optional() },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
     return jsonText(buildProjectSessionsPayload({
       project,
-      events: listWorkspaceEvents(project.id),
+      events: await store.listEvents(project.id),
       limit: input.limit,
       unrenamedOnly: input.unrenamed,
     }).render);
@@ -1067,14 +1062,14 @@ server.tool(
   "projects_render_roots",
   "Return a validated JSON Render spec for registered project roots.",
   {},
-  async () => jsonText(buildRootsRender(listRoots())),
+  async () => jsonText(buildRootsRender(await resolveProjectStore().listRoots())),
 );
 
 server.tool(
   "projects_render_recipes",
   "Return a validated JSON Render spec for project recipes.",
   {},
-  async () => jsonText(buildRecipesRender(listRecipes())),
+  async () => jsonText(buildRecipesRender(await resolveProjectStore().listRecipes())),
 );
 
 server.tool(
@@ -1086,7 +1081,7 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const project = await findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
     return jsonText({
       project: projectWithManagement(project),
@@ -1107,7 +1102,7 @@ server.tool(
     render_spec: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const project = await findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
     if (input.ensure_default) ensureDefaultProjectCanvas(project);
     const payload = buildProjectCanvasesPayload({ project, canvases: listProjectCanvases(project) });
@@ -1133,7 +1128,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
       const canvas = withWorkspaceMutationLock(project, owner, "project canvas create", () => createProjectCanvas(project, {
@@ -1168,7 +1163,7 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const project = await findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
     const target = input.canvas ?? "dashboard";
     const canvas = listProjectCanvases(project).find((item) => item.id === target || item.slug === target);
@@ -1196,7 +1191,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
       const link = withWorkspaceMutationLock(project, owner, "project OpenLoops link", () => linkProjectLoop(project, {
@@ -1220,7 +1215,7 @@ server.tool(
     include_runs: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const project = await findProjectTarget(input.project);
     if (!project) return errorText(`Project not found: ${input.project}`);
     return jsonText({
       project: projectWithManagement(project),
@@ -1238,9 +1233,10 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    const locations = listWorkspaceLocations(project.id);
+    const locations = await store.getProjectLocations(project.id);
     if (!input.compact || input.verbose) return jsonText({ project: projectWithManagement(project), locations });
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     const visible = locations.slice(0, limit);
@@ -1270,21 +1266,22 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
-      const location = withWorkspaceMutationLock(project, owner, "project location add", () => addWorkspaceLocation({
-        workspace_id: project.id,
+      const owner = store.mode === "local"
+        ? (input.agent ? agentId(input.agent) : ensureCliAgent().id)
+        : undefined;
+      const { project: updated, location } = await store.addLocation(project.id, {
         path: input.path,
         label: input.label,
         kind: input.kind,
-        is_primary: input.primary,
+        isPrimary: input.primary,
         metadata: input.metadata as JsonObject | undefined,
-        agent_id: owner,
+        agentId: owner,
         source: "mcp",
         command: "projects_locations_add",
-      }));
-      const updated = resolveWorkspace(project.id) ?? project;
+      });
       return jsonText({ project: projectWithManagement(updated), location });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1333,6 +1330,8 @@ server.tool(
     try {
       const store = resolveProjectStore();
       if (store.mode === "api") {
+        // Cloud rows are created through the Store; machine-local runtime
+        // (directory/git/tmux) does not apply to a remote project row.
         const project = await store.createProject({
           name: input.name,
           slug: input.slug,
@@ -1363,7 +1362,7 @@ server.tool(
         brief_id: input.brief_id,
         brief_path: input.brief_path,
       }) ?? integrationsBase;
-      return jsonProjectText(executeWorkspaceCreation({
+      return jsonProjectText(await executeWorkspaceCreation({
         name: input.name,
         slug: input.slug,
         description: input.description,
@@ -1386,7 +1385,7 @@ server.tool(
           windows: input.tmux_windows,
         } : undefined,
         tmux_profile: input.tmux_profile,
-      }, { dryRun: input.dry_run, runtimeDryRun: input.dry_run_runtime }));
+      }, { dryRun: input.dry_run, runtimeDryRun: input.dry_run_runtime, createProject: (createInput) => store.createProject(createInput) }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1557,7 +1556,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
       const publish = () => publishWorkspaceToGitHub(project, {
@@ -1590,7 +1589,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
       const unpublish = () => unpublishWorkspaceFromGitHub(project, {
@@ -1689,11 +1688,13 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
+      const events = await store.listEvents(project.id);
       return jsonText(withWorkspaceMutationLock(project, owner, "project creation cleanup", () => cleanupWorkspaceCreationTarget(
-        cleanupTargetFromWorkspace(project, input.rollback_actions),
+        cleanupTargetFromWorkspace(project, events, input.rollback_actions),
         {
           dryRun: input.dry_run,
           agentId: owner,
@@ -1745,9 +1746,8 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      const project = store.mode === "api" ? await store.getProject(input.id) : findProjectTarget(input.id);
-      if (!project) return errorText(`Project not found: ${input.id}`);
-      const owner = store.mode === "api" ? undefined : agentId(input.agent);
+      const project = await store.resolveTarget(input.id);
+      const owner = mcpMutationAgent(store, input.agent);
       const metadataBase = input.metadata === undefined ? project.metadata : input.metadata as JsonObject;
       const metadataFields = {
         stage: input.stage,
@@ -1772,14 +1772,17 @@ server.tool(
       const integrations = hasProjectIntegrationFields(integrationFields)
         ? mergeProjectIntegrationFields(integrationsBase, integrationFields)
         : input.integrations === undefined ? undefined : integrationsBase;
+      // Root/recipe are resolved from on-box slugs; api mode leaves them to the server.
+      const rootPatch = store.mode === "local"
+        ? { root_id: input.clear_root ? null : rootId(input.root), recipe_id: input.clear_recipe ? null : recipeId(input.recipe) }
+        : {};
       const updated = await store.updateProject(project.id, {
         name: input.name,
         slug: input.slug,
         description: input.description,
         kind: input.kind as WorkspaceKind | undefined,
         status: input.status,
-        root_id: input.clear_root ? null : rootId(input.root),
-        recipe_id: input.clear_recipe ? null : recipeId(input.recipe),
+        ...rootPatch,
         primary_path: input.path,
         tags: input.tags,
         git_remote: input.git_remote,
@@ -1808,7 +1811,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const project = await findProjectTarget(input.project);
       if (!project) return errorText(`Project not found: ${input.project}`);
       const owner = input.agent ? agentId(input.agent) : ensureCliAgent().id;
       return jsonText({ project: linkWorkspaceExternalIntegrations(project, input.integrations as WorkspaceIntegrations, {
@@ -1833,16 +1836,15 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      const project = store.mode === "api" ? await store.getProject(input.project) : findProjectTarget(input.project);
-      if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = store.mode === "api" ? undefined : (input.agent ? agentId(input.agent) : ensureCliAgent().id);
+      const project = await store.resolveTarget(input.project);
+      const owner = mcpMutationAgent(store, input.agent);
       const updated = await store.updateProject(project.id, {
-        tags: mergeProjectTags(project.tags, input.tags),
+        tags: mergeProjectTags(project.tags ?? [], input.tags),
         agent_id: owner,
         source: "mcp",
         command: "projects_tag",
       });
-      return jsonText({ project: store.mode === "api" ? updated : projectWithManagement(updated) });
+      return jsonText({ project: projectWithManagement(updated) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1860,16 +1862,15 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      const project = store.mode === "api" ? await store.getProject(input.project) : findProjectTarget(input.project);
-      if (!project) return errorText(`Project not found: ${input.project}`);
-      const owner = store.mode === "api" ? undefined : (input.agent ? agentId(input.agent) : ensureCliAgent().id);
+      const project = await store.resolveTarget(input.project);
+      const owner = mcpMutationAgent(store, input.agent);
       const updated = await store.updateProject(project.id, {
-        tags: removeProjectTags(project.tags, input.tags),
+        tags: removeProjectTags(project.tags ?? [], input.tags),
         agent_id: owner,
         source: "mcp",
         command: "projects_untag",
       });
-      return jsonText({ project: store.mode === "api" ? updated : projectWithManagement(updated) });
+      return jsonText({ project: projectWithManagement(updated) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1887,18 +1888,17 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      const project = store.mode === "api" ? await store.getProject(input.project) : findProjectTarget(input.project);
-      if (!project) return errorText(`Project not found: ${input.project}`);
+      const project = await store.resolveTarget(input.project);
       const unlinked = expandProjectIntegrationUnlinkKeys(input.keys);
       if (unlinked.length === 0) return errorText("Provide at least one integration key or group to unlink");
-      const owner = store.mode === "api" ? undefined : (input.agent ? agentId(input.agent) : ensureCliAgent().id);
+      const owner = mcpMutationAgent(store, input.agent);
       const updated = await store.updateProject(project.id, {
         integrations: unlinkProjectIntegrationFields(project.integrations, input.keys),
         agent_id: owner,
         source: "mcp",
         command: "projects_unlink",
       });
-      return jsonText({ project: store.mode === "api" ? updated : projectWithManagement(updated), unlinked });
+      return jsonText({ project: projectWithManagement(updated), unlinked });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1912,12 +1912,8 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      if (store.mode === "api") {
-        return jsonText({ project: await store.archiveProject(input.id) });
-      }
-      const project = findProjectTarget(input.id);
-      if (!project) return errorText(`Project not found: ${input.id}`);
-      const owner = agentId(input.agent);
+      const project = await store.resolveTarget(input.id);
+      const owner = mcpMutationAgent(store, input.agent);
       return jsonText({ project: await store.archiveProject(project.id, { agentId: owner, source: "mcp", command: "projects_archive" }) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1932,12 +1928,8 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      if (store.mode === "api") {
-        return jsonText({ project: await store.unarchiveProject(input.id) });
-      }
-      const project = findProjectTarget(input.id);
-      if (!project) return errorText(`Project not found: ${input.id}`);
-      const owner = agentId(input.agent);
+      const project = await store.resolveTarget(input.id);
+      const owner = mcpMutationAgent(store, input.agent);
       return jsonText({ project: await store.unarchiveProject(project.id, { agentId: owner, source: "mcp", command: "projects_unarchive" }) });
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -1952,13 +1944,8 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      if (store.mode === "api") {
-        const res = await store.deleteProject(input.id, { hard: input.hard });
-        return jsonText(res);
-      }
-      const project = findProjectTarget(input.id);
-      if (!project) return errorText(`Project not found: ${input.id}`);
-      const owner = agentId(input.agent);
+      const project = await store.resolveTarget(input.id);
+      const owner = mcpMutationAgent(store, input.agent);
       const res = await store.deleteProject(project.id, { hard: input.hard }, { agentId: owner, source: "mcp", command: "projects_delete" });
       return jsonProjectText({ workspace: res.workspace, hard: res.hard });
     } catch (err) {
@@ -1981,7 +1968,7 @@ server.tool(
   async (input) => {
     const options = { fix: input.fix, dryRun: input.dry_run };
     if (input.id) {
-      const project = findProjectTarget(input.id);
+      const project = await findProjectTarget(input.id);
       if (!project) return errorText(`Project not found: ${input.id}`);
       const owner = ensureCliAgent().id;
       const result = input.fix && !input.dry_run
@@ -2000,7 +1987,7 @@ server.tool(
     }
     const owner = ensureCliAgent().id;
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
-    const projects = listWorkspaces({ limit: input.compact && !input.verbose ? limit + 1 : input.limit ?? 500 });
+    const projects = await resolveProjectStore().listProjects({ limit: input.compact && !input.verbose ? limit + 1 : input.limit ?? 500 });
     const results = projects.map((project) => input.fix && !input.dry_run
       ? withWorkspaceMutationLock(project, owner, "project doctor fix", () => doctorWorkspace(project, options))
       : doctorWorkspace(project, options));
@@ -2027,9 +2014,10 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
-    const project = findProjectTarget(input.project);
+    const store = resolveProjectStore();
+    const project = await findProjectTarget(input.project, store);
     if (!project) return errorText(`Project not found: ${input.project}`);
-    const events = listWorkspaceEvents(project.id);
+    const events = await store.listEvents(project.id);
     if (!input.compact) return jsonText({ project, events });
     const limit = mcpLimit(input.limit, DEFAULT_MCP_EVENT_LIMIT);
     const visible = events.slice(-limit).reverse();
@@ -2059,13 +2047,16 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      const event = recordWorkspaceEvent({
-        workspace_id: project.id,
-        agent_id: input.agent ? agentId(input.agent) : undefined,
+      const attributedAgent = store.mode === "local"
+        ? (input.agent ? agentId(input.agent) : undefined)
+        : undefined;
+      const event = await store.recordEvent(project.id, {
         event_type: input.event_type,
         source: "mcp",
+        agentId: attributedAgent,
         prompt: input.prompt,
         command: "projects_event_record",
         before: input.before as JsonObject | null | undefined,
@@ -2088,7 +2079,7 @@ server.tool(
     verbose: z.boolean().optional(),
   },
   async (input) => {
-    const locks = listWorkspaceLocks();
+    const locks = await resolveProjectStore().listLocks();
     if (!input.compact || input.verbose) return jsonText(locks);
     const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
     return jsonText(compactListPayload(locks, locks.slice(0, limit).map(compactLock), limit, "Pass verbose=true for full lock records."));
@@ -2107,14 +2098,16 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = findProjectTarget(input.project);
+      const store = resolveProjectStore();
+      const project = await findProjectTarget(input.project, store);
       if (!project) return errorText(`Project not found: ${input.project}`);
-      return jsonText(acquireWorkspaceLock({
-        lock_key: input.key ?? `workspace:${project.id}`,
-        workspace_id: project.id,
-        agent_id: input.agent ? agentId(input.agent) : undefined,
+      const owner = store.mode === "local" ? (input.agent ? agentId(input.agent) : undefined) : undefined;
+      return jsonText(await store.acquireLock({
+        key: input.key ?? `workspace:${project.id}`,
+        workspaceId: project.id,
+        agentId: owner,
         reason: input.reason,
-        ttl_seconds: input.ttl_seconds,
+        ttlSeconds: input.ttl_seconds,
       }));
     } catch (err) {
       return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -2126,7 +2119,7 @@ server.tool(
   "projects_unlock",
   "Release a project mutation lock.",
   { key: z.string() },
-  async (input) => jsonText({ released: releaseWorkspaceLock(input.key) }),
+  async (input) => jsonText({ released: await resolveProjectStore().releaseLock(input.key) }),
 );
 
 server.tool(
@@ -2218,7 +2211,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? findProjectTarget(input.project) : null;
+      const project = input.project ? await findProjectTarget(input.project) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
       if (!project && !input.run_id) return errorText("Pass project or run_id");
       if (project && input.run_id) return errorText("Choose only one scope: project or run_id");
@@ -2258,7 +2251,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? findProjectTarget(input.project) : null;
+      const project = input.project ? await findProjectTarget(input.project) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
       const statuses = getProjectBudgetStatuses({
         workspace_id: project?.id,
@@ -2289,7 +2282,7 @@ server.tool(
   },
   async (input) => {
     try {
-      const project = input.project ? findProjectTarget(input.project) : null;
+      const project = input.project ? await findProjectTarget(input.project) : null;
       if (input.project && !project) return errorText(`Project not found: ${input.project}`);
       if (!project && !input.run_id) return errorText("Pass project or run_id");
       return jsonText({
@@ -2312,36 +2305,8 @@ server.tool(
 );
 
 server.tool(
-  "storage_status",
-  "Show projects storage sync configuration and local sync history.",
-  {},
-  async () => jsonText(getStorageStatus()),
-);
-
-server.tool(
-  "storage_push",
-  "Push local project data to storage PostgreSQL.",
-  { tables: z.array(z.string()).optional() },
-  async (input) => jsonText(await storagePush(input.tables ? { tables: input.tables } : undefined)),
-);
-
-server.tool(
-  "storage_pull",
-  "Pull project data from storage PostgreSQL to local SQLite.",
-  { tables: z.array(z.string()).optional() },
-  async (input) => jsonText(await storagePull(input.tables ? { tables: input.tables } : undefined)),
-);
-
-server.tool(
-  "storage_sync",
-  "Bidirectional project storage sync: pull then push.",
-  { tables: z.array(z.string()).optional() },
-  async (input) => jsonText(await storageSync(input.tables ? { tables: input.tables } : undefined)),
-);
-
-server.tool(
   "projects_context",
-  "Emit a compact agent-priming bundle for a project: resolved project, root/recipe, siblings, recent events, tmux state, integrations, doctor, budgets, and storage sync. Resolves the project from target or cwd.",
+  "Emit a compact agent-priming bundle for a project: resolved project, root/recipe, siblings, recent events, tmux state, integrations, doctor, and budgets. Resolves the project from target or cwd.",
   {
     target: z.string().optional(),
     cwd: z.string().optional(),
@@ -2422,7 +2387,7 @@ server.tool(
     try {
       const effectiveTarget = input.target?.trim() || input.cwd?.trim() || ".";
       if (!input.ensure) return jsonText(resolveProjectChannel(effectiveTarget));
-      const project = findProjectTarget(effectiveTarget);
+      const project = await findProjectTarget(effectiveTarget);
       if (!project) return errorText(`Project not found: ${effectiveTarget}`);
       return jsonText(ensureProjectChannel(project, {
         source: "mcp",
