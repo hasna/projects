@@ -36,10 +36,15 @@ import {
   getRecipeBySlug as dbGetRecipeBySlug,
   getRoot as dbGetRoot,
   getRootBySlug as dbGetRootBySlug,
+  addTmuxProfileWindow as dbAddTmuxProfileWindow,
+  createTmuxProfile as dbCreateTmuxProfile,
   listAgentRuns as dbListAgentRuns,
   listAgents as dbListAgents,
   listRecipes as dbListRecipes,
   listRoots as dbListRoots,
+  listTmuxProfileWindows as dbListTmuxProfileWindows,
+  listTmuxProfiles as dbListTmuxProfiles,
+  resolveTmuxProfile as dbResolveTmuxProfile,
   listWorkspaceAgents as dbListWorkspaceAgents,
   listWorkspaceEvents as dbListWorkspaceEvents,
   listWorkspaceLocations as dbListWorkspaceLocations,
@@ -119,8 +124,12 @@ import type {
   CreateWorkspaceInput,
   EventSource,
   JsonObject,
+  CreateTmuxProfileInput,
+  CreateTmuxProfileWindowInput,
   Recipe,
   Root,
+  TmuxProfile,
+  TmuxProfileWindow,
   UpdateRootInput,
   UpdateWorkspaceInput,
   Workspace,
@@ -321,6 +330,18 @@ export interface ProjectStore {
   resetBudget(id: string): Promise<ProjectBudget>;
   recordSpend(input: ProjectSpendInput): Promise<ProjectBudgetSpend>;
 
+  // ---- tmux profiles (machine-local runtime resource) ----
+  // tmux is a machine-local construct: a tmux server runs on THIS box, so saved
+  // window-layout profiles live on the box that runs tmux and resolve against
+  // local sqlite in BOTH transports. They are deliberately NOT part of the
+  // shared cloud registry (there is no `/v1/tmux-profiles` endpoint), but every
+  // command still routes through the Store so nothing touches sqlite directly.
+  listTmuxProfiles(): Promise<TmuxProfile[]>;
+  getTmuxProfile(idOrSlug: string): Promise<TmuxProfile | null>;
+  createTmuxProfile(input: CreateTmuxProfileInput): Promise<TmuxProfile>;
+  addTmuxProfileWindow(input: CreateTmuxProfileWindowInput & { profile_id: string }): Promise<TmuxProfileWindow>;
+  listTmuxProfileWindows(profileId: string): Promise<TmuxProfileWindow[]>;
+
   // ---- Conversations channel link (works in BOTH transports) ----
   // Channel derivation is pure and channel creation is a machine-local side
   // effect, but the integration link + audit event persist through the Store so
@@ -349,6 +370,23 @@ function withLock<T>(workspaceId: string, ctx: MutationContext | undefined, reas
     releaseWorkspaceLock(key);
   }
 }
+
+/**
+ * tmux profiles are a machine-local runtime resource. tmux always runs on THIS
+ * box, so its saved window-layout profiles resolve against local sqlite in
+ * BOTH transports (local and api/cloud) — they are not shared cloud state.
+ * Both Store transports delegate here so the "route through the Store"
+ * invariant holds (no command touches sqlite directly) without pretending
+ * profiles live in the cloud.
+ */
+const machineLocalTmuxProfiles = {
+  listTmuxProfiles: async (): Promise<TmuxProfile[]> => dbListTmuxProfiles(),
+  getTmuxProfile: async (idOrSlug: string): Promise<TmuxProfile | null> => dbResolveTmuxProfile(idOrSlug),
+  createTmuxProfile: async (input: CreateTmuxProfileInput): Promise<TmuxProfile> => dbCreateTmuxProfile(input),
+  addTmuxProfileWindow: async (input: CreateTmuxProfileWindowInput & { profile_id: string }): Promise<TmuxProfileWindow> =>
+    dbAddTmuxProfileWindow(input),
+  listTmuxProfileWindows: async (profileId: string): Promise<TmuxProfileWindow[]> => dbListTmuxProfileWindows(profileId),
+} as const;
 
 function mutationFields(ctx?: MutationContext): Pick<UpdateWorkspaceInput, "agent_id" | "source" | "command" | "prompt"> {
   return {
@@ -619,6 +657,13 @@ class LocalProjectStore implements ProjectStore {
   async recordSpend(input: ProjectSpendInput): Promise<ProjectBudgetSpend> {
     return dbRecordProjectSpend(input);
   }
+
+  // ---- tmux profiles (machine-local runtime resource; see shared impl) ----
+  listTmuxProfiles = machineLocalTmuxProfiles.listTmuxProfiles;
+  getTmuxProfile = machineLocalTmuxProfiles.getTmuxProfile;
+  createTmuxProfile = machineLocalTmuxProfiles.createTmuxProfile;
+  addTmuxProfileWindow = machineLocalTmuxProfiles.addTmuxProfileWindow;
+  listTmuxProfileWindows = machineLocalTmuxProfiles.listTmuxProfileWindows;
 
   // ---- Channel ----
   async ensureChannel(project: Workspace, options?: StoreEnsureChannelOptions): Promise<ProjectChannelEnsureResult> {
@@ -897,6 +942,15 @@ class ApiProjectStore implements ProjectStore {
   async recordSpend(): Promise<ProjectBudgetSpend> {
     throw new LocalOnlyOperationError("record project spend");
   }
+
+  // tmux profiles are a machine-local runtime resource (tmux runs on THIS box),
+  // so even in api/cloud mode they resolve against local sqlite rather than a
+  // nonexistent cloud endpoint. See machineLocalTmuxProfiles.
+  listTmuxProfiles = machineLocalTmuxProfiles.listTmuxProfiles;
+  getTmuxProfile = machineLocalTmuxProfiles.getTmuxProfile;
+  createTmuxProfile = machineLocalTmuxProfiles.createTmuxProfile;
+  addTmuxProfileWindow = machineLocalTmuxProfiles.addTmuxProfileWindow;
+  listTmuxProfileWindows = machineLocalTmuxProfiles.listTmuxProfileWindows;
 
   // Channel derivation is pure; persistence routes through this same api
   // transport (updateProject/recordEvent) so the link lands on the cloud

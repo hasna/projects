@@ -3,16 +3,9 @@ import type { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  acquireWorkspaceLock,
-  addTmuxProfileWindow,
-  createTmuxProfile,
   ensureCliAgent,
   getAgent,
   getAgentBySlug,
-  listTmuxProfileWindows,
-  listTmuxProfiles,
-  releaseWorkspaceLock,
-  resolveTmuxProfile,
 } from "../../db/workspaces.js";
 import {
   applyWorkspaceTmuxProfile,
@@ -40,7 +33,7 @@ import {
   type GitHubRemoteProtocol,
   type GitHubVisibility,
 } from "../../lib/workspace-github.js";
-import { importRegisteredRoots, importWorkspace, importWorkspaceBulk } from "../../lib/workspace-import.js";
+import { importWorkspace, importWorkspaceBulk } from "../../lib/workspace-import.js";
 import { runWorkspaceLegacyMigration } from "../../lib/workspace-migration.js";
 import {
   ensureProjectStore as ensureCanonicalProjectStore,
@@ -263,10 +256,20 @@ function parseNonNegativeNumber(value: string | undefined, label: string): numbe
   return parsed;
 }
 
-function withWorkspaceLock<T>(workspace: Workspace, agentId: string | undefined, reason: string, fn: () => T): T {
+// Machine-local mutation lock routed through the Store. In api/cloud mode the
+// Store cannot hold a local lock (writes are atomic server-side and a local
+// lock would be invisible to the rest of the fleet), so it becomes a no-op.
+async function withWorkspaceLock<T>(
+  store: ProjectStore,
+  workspace: Workspace,
+  agentId: string | undefined,
+  reason: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  if (store.mode !== "local") return fn();
   const key = `workspace:${workspace.id}`;
   try {
-    acquireWorkspaceLock({ lock_key: key, workspace_id: workspace.id, agent_id: agentId, reason, ttl_seconds: 600 });
+    await store.acquireLock({ key, workspaceId: workspace.id, agentId, reason, ttlSeconds: 600 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("Workspace lock already held:")) {
@@ -275,9 +278,9 @@ function withWorkspaceLock<T>(workspace: Workspace, agentId: string | undefined,
     throw err;
   }
   try {
-    return fn();
+    return await fn();
   } finally {
-    releaseWorkspaceLock(key);
+    await store.releaseLock(key);
   }
 }
 
@@ -1494,10 +1497,11 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (path, opts) => {
       try {
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : undefined;
+        const store = resolveProjectStore();
+        const agentId = mutationAgentId(store, opts.agent);
         const result = opts.bulk
-          ? await importWorkspaceBulk(path, { dryRun: opts.dryRun, tags: splitList(opts.tags), agent_id: agentId })
-          : await importWorkspace(path, { dryRun: opts.dryRun, tags: splitList(opts.tags), agent_id: agentId });
+          ? await importWorkspaceBulk(store, path, { dryRun: opts.dryRun, tags: splitList(opts.tags), agent_id: agentId })
+          : await importWorkspace(store, path, { dryRun: opts.dryRun, tags: splitList(opts.tags), agent_id: agentId });
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         if ("imported" in result) {
           console.log(chalk.green(`✓ Imported ${result.imported.length} project(s)`));
@@ -1566,7 +1570,8 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (repo, opts) => {
       try {
-        const result = await importWorkspaceFromGitHub(repo, {
+        const store = resolveProjectStore();
+        const result = await importWorkspaceFromGitHub(store, repo, {
           root: opts.root,
           path: opts.path,
           clone: opts.clone,
@@ -1575,7 +1580,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: Boolean(opts.dryRun),
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -1610,8 +1615,9 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
       try {
+        const store = resolveProjectStore();
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
-        const result = await syncWorkspaceGitHubRoots({
+        const result = await syncWorkspaceGitHubRoots(store, {
           root: opts.root,
           repoPrefix: opts.repoPrefix,
           limit,
@@ -1619,7 +1625,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: true,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -1648,8 +1654,9 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
       try {
+        const store = resolveProjectStore();
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
-        const result = await syncWorkspaceGitHubRoots({
+        const result = await syncWorkspaceGitHubRoots(store, {
           root: opts.root,
           repoPrefix: opts.repoPrefix,
           limit,
@@ -1657,7 +1664,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: opts.dryRun,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -2262,11 +2269,13 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview GitHub and git actions without mutating")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const publish = () => publishWorkspaceToGitHub(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug);
+        // The registry write routes through store.updateProject, which serializes
+        // the mutation itself (local lock / server atomicity) — no coarse lock.
+        const result = await publishWorkspaceToGitHub(store, project, {
           org: opts.org,
           repoName: opts.repo,
           visibility: parseGitHubVisibility(opts.visibility),
@@ -2274,13 +2283,10 @@ function registerProjectCommands(program: Command): void {
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           push: opts.push,
           dryRun: opts.dryRun,
-          agent_id: agentId,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
         });
-        const result = opts.dryRun
-          ? publish()
-          : withWorkspaceLock(project, agentId, "project GitHub publish", publish);
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         const marker = result.dry_run ? chalk.dim("[dry-run]") : chalk.green("✓");
         console.log(`${marker} GitHub publish ${result.full_name}`);
@@ -2300,20 +2306,17 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview changes without mutating")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const unpublish = () => unpublishWorkspaceFromGitHub(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug);
+        const result = await unpublishWorkspaceFromGitHub(store, project, {
           clearIntegrations: opts.clearIntegrations,
           dryRun: opts.dryRun,
-          agent_id: agentId,
+          agent_id: mutationAgentId(store, opts.agent),
           source: "cli",
           command: process.argv.join(" "),
         });
-        const result = opts.dryRun
-          ? unpublish()
-          : withWorkspaceLock(project, agentId, "project GitHub unpublish", unpublish);
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         const marker = result.dry_run ? chalk.dim("[dry-run]") : chalk.green("✓");
         console.log(`${marker} GitHub unpublish ${project.slug}`);
@@ -2462,16 +2465,16 @@ function registerProjectCommands(program: Command): void {
     .option("--verbose", "Show every check instead of only issue counts")
     .option("-j, --json", "Output JSON")
     .action(async (idOrSlug, opts) => {
-      const runDoctor = (project: Workspace) => opts.fix && !opts.dryRun
-        ? withWorkspaceLock(project, ensureCliAgent().id, "project doctor fix", () => doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun }))
-        : doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun });
       try {
         const store = resolveProjectStore();
+        const runDoctor = (project: Workspace) => opts.fix && !opts.dryRun
+          ? withWorkspaceLock(store, project, mutationAgentId(store), "project doctor fix", () => doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun }))
+          : Promise.resolve(doctorWorkspace(project, { fix: opts.fix, dryRun: opts.dryRun }));
         const json = wantsJson(opts);
         const limit = json ? undefined : parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
         const results = idOrSlug
-          ? [runDoctor(await store.resolveTarget(idOrSlug))]
-          : (await store.listProjects({ limit: json ? undefined : limit! + 1 })).map(runDoctor);
+          ? [await runDoctor(await store.resolveTarget(idOrSlug))]
+          : await Promise.all((await store.listProjects({ limit: json ? undefined : limit! + 1 })).map(runDoctor));
         if (json) { printObject(results, opts); return; }
         const visible = idOrSlug ? results : results.slice(0, limit);
         for (const result of visible) {
@@ -2537,8 +2540,9 @@ function registerStoreCommand(program: Command): void {
     .option("--no-primary", "Do not set the canonical path as primary when the project has no primary path")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
+        const store = resolveProjectStore();
         const project = resolveProjectTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const ensure = () => ensureCanonicalProjectStore(project, {
@@ -2548,7 +2552,7 @@ function registerStoreCommand(program: Command): void {
           source: "cli",
           command: process.argv.join(" "),
         });
-        const result = opts.dryRun ? ensure() : withWorkspaceLock(project, agentId, "project store ensure", ensure);
+        const result = opts.dryRun ? ensure() : await withWorkspaceLock(store, project, agentId, "project store ensure", ensure);
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(result.dry_run ? chalk.dim(`[dry-run] Store ensure ${project.slug}`) : chalk.green(`✓ Store ensured: ${project.slug}`));
         console.log(`  ${chalk.dim("workspace:")} ${result.paths.workspace_path}`);
@@ -2568,13 +2572,14 @@ function registerStoreCommand(program: Command): void {
     .option("--yes", "Apply the migration plan (alias for --apply)")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
+        const store = resolveProjectStore();
         const project = resolveProjectTarget(projectIdOrSlug);
         const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const apply = Boolean(opts.apply || opts.yes);
         const result = apply
-          ? withWorkspaceLock(project, agentId, "project store migrate", () => migrateProjectToStore(project, {
+          ? await withWorkspaceLock(store, project, agentId, "project store migrate", () => migrateProjectToStore(project, {
               apply: true,
               agentId,
               source: "cli",
@@ -3316,9 +3321,10 @@ function registerTmuxProfilesCommand(program: Command): void {
     .option("--attach", "Attach after applying")
     .option("--windows-json <json>", "JSON array of profile windows")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
+    .action(async (opts) => {
       try {
-        const profile = createTmuxProfile({
+        const store = resolveProjectStore();
+        const profile = await store.createTmuxProfile({
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
@@ -3326,7 +3332,7 @@ function registerTmuxProfilesCommand(program: Command): void {
           attach: opts.attach,
           windows: parseTmuxProfileWindowsJson(opts.windowsJson),
         });
-        const payload = { profile, windows: listTmuxProfileWindows(profile.id) };
+        const payload = { profile, windows: await store.listTmuxProfileWindows(profile.id) };
         if (wantsJson(opts)) { printObject(payload, opts); return; }
         console.log(chalk.green(`✓ Tmux profile created: ${profile.slug}`));
       } catch (err) {
@@ -3343,11 +3349,12 @@ function registerTmuxProfilesCommand(program: Command): void {
     .option("--index <n>", "Window index")
     .option("--attached", "Create focused rather than detached")
     .option("-j, --json", "Output JSON")
-    .action((profileIdOrSlug, opts) => {
+    .action(async (profileIdOrSlug, opts) => {
       try {
-        const profile = resolveTmuxProfile(profileIdOrSlug);
+        const store = resolveProjectStore();
+        const profile = await store.getTmuxProfile(profileIdOrSlug);
         if (!profile) throw new Error(`Tmux profile not found: ${profileIdOrSlug}`);
-        const window = addTmuxProfileWindow({
+        const window = await store.addTmuxProfileWindow({
           profile_id: profile.id,
           window_name_template: opts.name,
           path_template: opts.pathTemplate,
@@ -3368,17 +3375,21 @@ function registerTmuxProfilesCommand(program: Command): void {
     .option("--limit <n>", `Max rows for terminal output (default ${DEFAULT_LIST_LIMIT}, max ${MAX_HUMAN_LIMIT})`)
     .option("--verbose", "Show description and window count")
     .option("-j, --json", "Output JSON")
-    .action((opts) => {
-      const profiles = listTmuxProfiles();
+    .action(async (opts) => {
+      const store = resolveProjectStore();
+      const profiles = await store.listTmuxProfiles();
       if (wantsJson(opts)) { printObject(profiles, opts); return; }
       const limit = parseHumanLimit(opts.limit, DEFAULT_LIST_LIMIT);
       const visible = profiles.slice(0, limit);
+      const windowCounts = opts.verbose
+        ? new Map(await Promise.all(visible.map(async (profile) => [profile.id, (await store.listTmuxProfileWindows(profile.id)).length] as const)))
+        : new Map<string, number>();
       printRows(visible.map((profile) => ({
         slug: profile.slug,
         session: compactText(profile.session_template, 80),
         attach: profile.attach ? "yes" : "no",
         ...(opts.verbose ? {
-          windows: listTmuxProfileWindows(profile.id).length,
+          windows: windowCounts.get(profile.id) ?? 0,
           description: compactText(profile.description, 80),
         } : {}),
       })), opts.verbose ? ["slug", "session", "attach", "windows", "description"] : ["slug", "session", "attach"]);
@@ -3388,13 +3399,14 @@ function registerTmuxProfilesCommand(program: Command): void {
   cmd
     .command("show <profile>")
     .option("-j, --json", "Output JSON")
-    .action((profileIdOrSlug, opts) => {
-      const profile = resolveTmuxProfile(profileIdOrSlug);
+    .action(async (profileIdOrSlug, opts) => {
+      const store = resolveProjectStore();
+      const profile = await store.getTmuxProfile(profileIdOrSlug);
       if (!profile) {
         console.error(chalk.red(`Tmux profile not found: ${profileIdOrSlug}`));
         process.exit(1);
       }
-      const payload = { profile, windows: listTmuxProfileWindows(profile.id) };
+      const payload = { profile, windows: await store.listTmuxProfileWindows(profile.id) };
       if (wantsJson(opts)) { printObject(payload, opts); return; }
       console.log(`${chalk.bold(profile.name)} ${chalk.dim(`(${profile.slug})`)}`);
       for (const window of payload.windows) console.log(`  ${window.window_name_template}`);
@@ -3404,19 +3416,21 @@ function registerTmuxProfilesCommand(program: Command): void {
     .command("apply <profile> <project>")
     .option("--dry-run", "Plan tmux changes without applying")
     .option("-j, --json", "Output JSON")
-    .action((profileIdOrSlug, projectIdOrSlug, opts) => {
+    .action(async (profileIdOrSlug, projectIdOrSlug, opts) => {
       try {
-        const profile = resolveTmuxProfile(profileIdOrSlug);
+        const store = resolveProjectStore();
+        const profile = await store.getTmuxProfile(profileIdOrSlug);
         if (!profile) throw new Error(`Tmux profile not found: ${profileIdOrSlug}`);
-        const workspace = resolveProjectTarget(projectIdOrSlug);
-        const agentId = ensureCliAgent().id;
+        const workspace = await store.resolveTarget(projectIdOrSlug);
+        const agentId = mutationAgentId(store);
+        const windows = await store.listTmuxProfileWindows(profile.id);
         const result = opts.dryRun
-          ? applyWorkspaceTmuxProfile(workspace, profile, listTmuxProfileWindows(profile.id), {
+          ? applyWorkspaceTmuxProfile(workspace, profile, windows, {
               dryRun: true,
               source: "cli",
               command: process.argv.join(" "),
             })
-          : withWorkspaceLock(workspace, agentId, "tmux profile apply", () => applyWorkspaceTmuxProfile(workspace, profile, listTmuxProfileWindows(profile.id), {
+          : await withWorkspaceLock(store, workspace, agentId, "tmux profile apply", () => applyWorkspaceTmuxProfile(workspace, profile, windows, {
               source: "cli",
               command: process.argv.join(" "),
             }));

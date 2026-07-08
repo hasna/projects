@@ -43,6 +43,8 @@ import {
 } from "./workspaces.js";
 import { doctorWorkspace } from "../lib/workspace-doctor.js";
 import { builtInWorkspaceRecipes, ensureBuiltInWorkspaceRecipes } from "../lib/workspace-defaults.js";
+import { closeDatabase, getDatabase, PROJECTS_DB_PATH_ENV } from "./database.js";
+import { resolveProjectStore, __resetProjectStore } from "../store/project-store.js";
 import { importRegisteredRoots, importWorkspace, planWorkspaceImport } from "../lib/workspace-import.js";
 import { cleanupWorkspaceCreation, executeWorkspaceCreation, planWorkspaceCreation } from "../lib/workspace-plan.js";
 import { applyWorkspaceTmuxProfile, prepareWorkspaceDirectory, tmuxProfileToSpec, workspaceMarkerPath } from "../lib/workspace-runtime.js";
@@ -509,7 +511,16 @@ describe("workspace domain services", () => {
   });
 
   test("writes markers, diagnoses workspaces, imports folders, matches roots, and manages locks", async () => {
-    const db = makeDb();
+    // Import/registry ops now route through the Store, so bind fixtures and the
+    // store to one shared global in-memory db.
+    process.env[PROJECTS_DB_PATH_ENV] = ":memory:";
+    delete process.env["HASNA_PROJECTS_API_URL"];
+    delete process.env["HASNA_PROJECTS_API_KEY"];
+    delete process.env["HASNA_PROJECTS_STORAGE_MODE"];
+    closeDatabase();
+    __resetProjectStore();
+    const db = getDatabase();
+    const store = resolveProjectStore({});
     const rootDir = tmpDir();
     const childDir = join(rootDir, "tooling");
     mkdirSync(childDir);
@@ -518,7 +529,7 @@ describe("workspace domain services", () => {
     writeFileSync(join(childDir, ".project.json"), JSON.stringify({ name: "Legacy Tooling" }));
     const root = createRoot({ name: "Import Root", slug: "import-root", base_path: rootDir, path_template: "{slug}" }, db);
 
-    const preview = planWorkspaceImport(childDir, { db, tags: ["imported"], metadata: { domain: "tools" } });
+    const preview = await planWorkspaceImport(store, childDir, { tags: ["imported"], metadata: { domain: "tools" } });
     expect(preview.name).toBe("Legacy Tooling");
     expect(preview.root_id).toBe(root.id);
     expect(preview.metadata.domain).toBe("tools");
@@ -526,17 +537,17 @@ describe("workspace domain services", () => {
     expect(preview.signals).toContain("scaffold-dir:docs");
     expect(matchRootForPath(childDir, db)?.id).toBe(root.id);
 
-    const scan = await importRegisteredRoots({ db, dryRun: true, tags: ["scan"] });
+    const scan = await importRegisteredRoots(store, { dryRun: true, tags: ["scan"] });
     expect(scan.dry_run).toBe(true);
     expect(scan.previews.some((item) => item.path === childDir && item.tags.includes("scan"))).toBe(true);
 
     const pathLock = acquireWorkspaceLock({ lock_key: `workspace-path:${childDir}`, reason: "import conflict" }, db);
-    const blockedImport = await importWorkspace(childDir, { db, tags: ["imported"] });
+    const blockedImport = await importWorkspace(store, childDir, { tags: ["imported"] });
     expect(blockedImport.error).toMatch(/Workspace lock already held/);
     expect(listWorkspaceLocks(db).map((item) => item.lock_key)).not.toContain("workspace-slug:legacy-tooling");
     expect(releaseWorkspaceLock(pathLock.lock_key, db)).toBe(true);
 
-    const imported = await importWorkspace(childDir, { db, tags: ["imported"], metadata: { domain: "tools" } });
+    const imported = await importWorkspace(store, childDir, { tags: ["imported"], metadata: { domain: "tools" } });
     expect(imported.workspace?.slug).toBe("legacy-tooling");
     const workspace = imported.workspace!;
     expect(workspace.metadata.domain).toBe("tools");

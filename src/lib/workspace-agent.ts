@@ -52,6 +52,7 @@ import {
   type GitHubVisibility,
 } from "./workspace-github.js";
 import { doctorWorkspace } from "./workspace-doctor.js";
+import { resolveProjectStore } from "../store/project-store.js";
 import { importRegisteredRoots, importWorkspace, importWorkspaceBulk, planWorkspaceImport } from "./workspace-import.js";
 import {
   cleanupWorkspaceCreationTarget,
@@ -1074,6 +1075,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
   const approve = Boolean(options.approve) && !dryRun;
   const mock = Boolean(options.mock || process.env["WORKSPACES_AGENT_MOCK"]);
   const runAgent = ensureWorkspaceAgent(model);
+  const store = resolveProjectStore();
   const actorAgent = resolvePromptAgent(options.agent) ?? runAgent;
   const forcedRootId = resolveRootId(options.root);
   const forcedRecipeId = resolveRecipeId(options.recipe);
@@ -1743,12 +1745,12 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       }),
       execute: async (input) => {
         if (!approve) {
-          if (input.bulk) return projectPayload({ status: "planned", result: await importWorkspaceBulk(input.path, { dryRun: true, tags: input.tags, agent_id: actorAgent.id }) });
-          return { status: "planned", preview: planWorkspaceImport(input.path, { tags: input.tags, agent_id: actorAgent.id }) };
+          if (input.bulk) return projectPayload({ status: "planned", result: await importWorkspaceBulk(store, input.path, { dryRun: true, tags: input.tags, agent_id: actorAgent.id }) });
+          return { status: "planned", preview: await planWorkspaceImport(store, input.path, { tags: input.tags, agent_id: actorAgent.id }) };
         }
         return projectPayload(input.bulk
-          ? await importWorkspaceBulk(input.path, { tags: input.tags, agent_id: actorAgent.id })
-          : await importWorkspace(input.path, { tags: input.tags, agent_id: actorAgent.id }));
+          ? await importWorkspaceBulk(store, input.path, { tags: input.tags, agent_id: actorAgent.id })
+          : await importWorkspace(store, input.path, { tags: input.tags, agent_id: actorAgent.id }));
       },
     }),
     projects_scan_roots: tool({
@@ -1761,7 +1763,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         tags: z.array(z.string()).optional(),
         remote_protocol: z.enum(["https", "ssh"]).optional(),
       }),
-      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots({
+      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots(store, {
         root: input.root,
         repoPrefix: input.repo_prefix,
         limit: input.limit,
@@ -1784,7 +1786,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         tags: z.array(z.string()).optional(),
         remote_protocol: z.enum(["https", "ssh"]).optional(),
       }),
-      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots({
+      execute: async (input) => projectPayload(await syncWorkspaceGitHubRoots(store, {
         root: input.root,
         repoPrefix: input.repo_prefix,
         limit: input.limit,
@@ -1802,7 +1804,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       inputSchema: z.object({
         tags: z.array(z.string()).optional(),
       }),
-      execute: async (input) => projectPayload(await importRegisteredRoots({
+      execute: async (input) => projectPayload(await importRegisteredRoots(store, {
         dryRun: !approve,
         tags: input.tags,
         agent_id: actorAgent.id,
@@ -1822,7 +1824,8 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       execute: async (input) => {
         const workspace = resolveProjectTarget(input.project);
         if (!workspace) return { error: `Project not found: ${input.project}` };
-        const publish = () => publishWorkspaceToGitHub(workspace, {
+        // Registry write serialized by store.updateProject; no coarse lock.
+        return projectPayload(await publishWorkspaceToGitHub(store, workspace, {
           org: input.org,
           repoName: input.repo,
           visibility: input.visibility as GitHubVisibility | undefined,
@@ -1834,8 +1837,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
           source: "agent",
           prompt: options.prompt,
           command,
-        });
-        return projectPayload(approve ? withAgentWorkspaceLock(workspace, actorAgent.id, "project GitHub publish", publish) : publish());
+        }));
       },
     }),
     projects_github_unpublish: tool({
@@ -1847,15 +1849,14 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
       execute: async (input) => {
         const workspace = resolveProjectTarget(input.project);
         if (!workspace) return { error: `Project not found: ${input.project}` };
-        const unpublish = () => unpublishWorkspaceFromGitHub(workspace, {
+        return projectPayload(await unpublishWorkspaceFromGitHub(store, workspace, {
           clearIntegrations: input.clear_integrations,
           dryRun: !approve,
           agent_id: actorAgent.id,
           source: "agent",
           prompt: options.prompt,
           command,
-        });
-        return projectPayload(approve ? withAgentWorkspaceLock(workspace, actorAgent.id, "project GitHub unpublish", unpublish) : unpublish());
+        }));
       },
     }),
     projects_import_github: tool({
@@ -1870,7 +1871,7 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
         tags: z.array(z.string()).optional(),
         remote_protocol: z.enum(["https", "ssh"]).optional(),
       }),
-      execute: async (input) => projectPayload(await importWorkspaceFromGitHub(input.repo, {
+      execute: async (input) => projectPayload(await importWorkspaceFromGitHub(store, input.repo, {
         root: forcedRootId ?? input.root,
         path: forcedRootId ? undefined : input.path,
         clone: input.clone,
@@ -1926,12 +1927,12 @@ export async function runWorkspaceAgentPrompt(options: WorkspaceAgentPromptOptio
             note: "Run again with --yes to link these integrations.",
           };
         }
-        return { status: "linked", project: compactProject(withAgentWorkspaceLock(workspace, actorAgent.id, "project integration link", () => linkWorkspaceExternalIntegrations(workspace, integrations, {
+        return { status: "linked", project: compactProject(await linkWorkspaceExternalIntegrations(store, workspace, integrations, {
           agent_id: actorAgent.id,
           source: "agent",
           prompt: options.prompt,
           command,
-        }))) };
+        })) };
       },
     }),
     projects_unlink: tool({

@@ -1,17 +1,11 @@
-import type { Database } from "bun:sqlite";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import {
-  acquireWorkspaceLock,
-  createWorkspace,
-  getWorkspaceByPath,
   inferWorkspaceKind,
-  listRoots,
-  matchRootForPath,
-  releaseWorkspaceLock,
   workspaceSlugify,
 } from "../db/workspaces.js";
+import type { ProjectStore } from "../store/project-store.js";
 import type { EventSource, JsonObject, Root, Workspace, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
 import { LEGACY_WORKSPACE_MARKER_FILENAME, PROJECT_MARKER_FILENAME } from "./workspace-runtime.js";
 
@@ -36,7 +30,6 @@ export interface ImportWorkspaceOptions {
   source?: EventSource;
   prompt?: string;
   command?: string;
-  db?: Database;
 }
 
 export interface ImportWorkspaceResult {
@@ -101,11 +94,28 @@ function importLocks(preview: WorkspaceImportPreview): Array<{ key: string; reas
   return locks;
 }
 
-function releaseLocks(locks: WorkspaceLock[], db?: Database): void {
-  for (const lock of locks.slice().reverse()) releaseWorkspaceLock(lock.lock_key, db);
+// Import reservation locks are machine-local coordination; in api mode the
+// Store cannot hold local locks (cloud enforces uniqueness), so they are
+// skipped rather than written to invisible local sqlite (split-brain).
+async function acquireImportLocks(store: ProjectStore, specs: Array<{ key: string; reason: string }>, agentId?: string): Promise<WorkspaceLock[]> {
+  if (store.mode !== "local") return [];
+  const acquired: WorkspaceLock[] = [];
+  try {
+    for (const spec of specs) {
+      acquired.push(await store.acquireLock({ key: spec.key, agentId, reason: spec.reason, ttlSeconds: 600 }));
+    }
+  } catch (err) {
+    await releaseImportLocks(store, acquired);
+    throw err;
+  }
+  return acquired;
 }
 
-export function planWorkspaceImport(path: string, options: ImportWorkspaceOptions = {}): WorkspaceImportPreview {
+async function releaseImportLocks(store: ProjectStore, locks: WorkspaceLock[]): Promise<void> {
+  for (const lock of locks.slice().reverse()) await store.releaseLock(lock.lock_key);
+}
+
+export async function planWorkspaceImport(store: ProjectStore, path: string, options: ImportWorkspaceOptions = {}): Promise<WorkspaceImportPreview> {
   const absPath = resolve(path);
   if (!existsSync(absPath)) throw new Error(`Path does not exist: ${absPath}`);
   if (!statSync(absPath).isDirectory()) throw new Error(`Path is not a directory: ${absPath}`);
@@ -123,7 +133,8 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
   const tags = [...new Set(options.tags ?? [])];
   const slug = workspaceSlugify(name);
   const kind = inferWorkspaceKind(slug, absPath, tags);
-  const root = matchRootForPath(absPath, options.db);
+  const rootMatches = await store.matchRoots({ path: absPath });
+  const root = rootMatches[0]?.root ?? null;
   if (root) signals.push(`root:${root.slug}`);
   const remote = gitRemote(absPath) ?? undefined;
   if (remote) signals.push("git-remote");
@@ -142,26 +153,21 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
   };
 }
 
-export async function importWorkspace(path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceResult> {
+export async function importWorkspace(store: ProjectStore, path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceResult> {
   try {
-    const preview = planWorkspaceImport(path, options);
-    if (getWorkspaceByPath(preview.path, options.db)) {
+    const preview = await planWorkspaceImport(store, path, options);
+    const targetPath = resolve(preview.path);
+    const existing = (await store.listProjects({ limit: 10000 }))
+      .find((w) => w.primary_path && resolve(w.primary_path) === targetPath);
+    if (existing) {
       return { skipped: "already-registered", preview };
     }
     if (options.dryRun) {
       return { skipped: "dry-run", preview };
     }
-    const locks: WorkspaceLock[] = [];
+    const locks = await acquireImportLocks(store, importLocks(preview), options.agent_id);
     try {
-      for (const lock of importLocks(preview)) {
-        locks.push(acquireWorkspaceLock({
-          lock_key: lock.key,
-          agent_id: options.agent_id,
-          reason: lock.reason,
-          ttl_seconds: 600,
-        }, options.db));
-      }
-      const workspace = createWorkspace({
+      const workspace = await store.createProject({
         name: preview.name,
         slug: preview.slug,
         kind: preview.kind,
@@ -178,17 +184,17 @@ export async function importWorkspace(path: string, options: ImportWorkspaceOpti
         source: options.source ?? "cli",
         prompt: options.prompt,
         command: options.command ?? "projects import",
-      }, options.db);
+      });
       return { workspace, preview };
     } finally {
-      releaseLocks(locks, options.db);
+      await releaseImportLocks(store, locks);
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-export async function importWorkspaceBulk(path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceBulkResult> {
+export async function importWorkspaceBulk(store: ProjectStore, path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceBulkResult> {
   const absPath = resolve(path);
   const result: ImportWorkspaceBulkResult = { imported: [], previews: [], skipped: [], errors: [] };
   if (!existsSync(absPath) || !statSync(absPath).isDirectory()) {
@@ -199,7 +205,7 @@ export async function importWorkspaceBulk(path: string, options: ImportWorkspace
     if (entry.startsWith(".")) continue;
     const child = join(absPath, entry);
     if (!statSync(child).isDirectory()) continue;
-    const imported = await importWorkspace(child, options);
+    const imported = await importWorkspace(store, child, options);
     if (imported.workspace) result.imported.push(imported.workspace);
     if (imported.preview) result.previews.push(imported.preview);
     if (imported.skipped) result.skipped.push({ path: child, reason: imported.skipped });
@@ -208,7 +214,7 @@ export async function importWorkspaceBulk(path: string, options: ImportWorkspace
   return result;
 }
 
-export async function importRegisteredRoots(options: ImportWorkspaceOptions = {}): Promise<ImportRegisteredRootsResult> {
+export async function importRegisteredRoots(store: ProjectStore, options: ImportWorkspaceOptions = {}): Promise<ImportRegisteredRootsResult> {
   const result: ImportRegisteredRootsResult = {
     dry_run: options.dryRun !== false,
     roots: [],
@@ -217,12 +223,12 @@ export async function importRegisteredRoots(options: ImportWorkspaceOptions = {}
     skipped: [],
     errors: [],
   };
-  for (const root of listRoots(options.db)) {
+  for (const root of await store.listRoots()) {
     if (!existsSync(root.base_path)) {
       result.errors.push({ path: root.base_path, error: "Root path does not exist" });
       continue;
     }
-    const rootResult = await importWorkspaceBulk(root.base_path, {
+    const rootResult = await importWorkspaceBulk(store, root.base_path, {
       ...options,
       dryRun: options.dryRun !== false,
       tags: [...new Set([...(options.tags ?? []), ...root.tags])],

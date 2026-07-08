@@ -25,6 +25,7 @@ import {
   type ProjectChannelEnsureResult,
 } from "./project-channel.js";
 import { importWorkspace, planWorkspaceImport, type WorkspaceImportPreview } from "./workspace-import.js";
+import { resolveProjectStore } from "../store/project-store.js";
 import { applyWorkspaceTmux, tmuxProfileToSpec, type WorkspaceTmuxResult, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import { attachSession } from "./tmux.js";
 import { buildProjectStartRender, PROJECT_RENDER_SCHEMA_VERSION } from "./project-render.js";
@@ -342,12 +343,12 @@ export async function resolveProjectStartTarget(
       throw new Error(`Project is not registered: ${path}`);
     }
 
+    const store = resolveProjectStore();
     if (options.dryRun) {
-      const preview = planWorkspaceImport(path, {
+      const preview = await planWorkspaceImport(store, path, {
         tags: options.importTags,
         metadata: options.importMetadata,
         agent_id: options.agentId,
-        db: options.db,
       });
       return {
         project: previewToWorkspace(preview),
@@ -355,13 +356,12 @@ export async function resolveProjectStartTarget(
       };
     }
 
-    const imported = await importWorkspace(path, {
+    const imported = await importWorkspace(store, path, {
       tags: options.importTags,
       metadata: options.importMetadata,
       agent_id: options.agentId,
       source: options.source,
       command: options.auditCommand,
-      db: options.db,
     });
     if (imported.workspace) {
       return {
