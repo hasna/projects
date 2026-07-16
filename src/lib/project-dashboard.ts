@@ -127,7 +127,7 @@ export const DEFAULT_PROJECT_DASHBOARD_PROVIDERS: ProjectDashboardProvider[] = [
     panelKind: "tasks",
     title: "Tasks",
     command: "todos",
-    args: ["project-panel", "--project", "{project}", "--json", "--contract"],
+    args: ["project-panel", "--project", "{todosProject}", "--json", "--contract"],
     optional: true,
   },
   {
@@ -747,16 +747,16 @@ async function collectProviderPanel(args: {
     const parsed = sanitizeProviderPanel(
       ProjectPanelSchema.parse(JSON.parse(result.stdout)),
     );
-    if (parsed.projectId !== args.project.slug) {
+    if (!providerPanelMatchesProject(parsed, args.provider, args.project)) {
       return providerStatePanel(
         args.provider,
         args.project,
         args.generatedAt,
         "error",
-        `Provider returned projectId ${parsed.projectId}, expected ${args.project.slug}`,
+        `Provider returned projectId ${parsed.projectId}, expected ${expectedProviderProjectIds(args.provider, args.project).join(" or ")}`,
       );
     }
-    return parsed;
+    return normalizeProviderPanelProjectId(parsed, args.project);
   } catch (err) {
     return providerStatePanel(
       args.provider,
@@ -876,8 +876,61 @@ export async function defaultProjectDashboardProviderRunner(
 function interpolateProviderArg(value: string, project: Workspace): string {
   return value
     .replaceAll("{project}", project.slug)
+    .replaceAll("{todosProject}", todosProviderProjectTarget(project))
     .replaceAll("{projectId}", project.id)
     .replaceAll("{projectPath}", project.primary_path ?? "");
+}
+
+function todosProviderProjectTarget(project: Workspace): string {
+  return (
+    project.integrations.todos_project_id ??
+    project.integrations.todos_task_list_id ??
+    project.slug
+  );
+}
+
+function expectedProviderProjectIds(
+  provider: ProjectDashboardProvider,
+  project: Workspace,
+): string[] {
+  if (provider.id !== "todos" && provider.kind !== "todos") return [project.slug];
+  return [
+    project.slug,
+    project.integrations.todos_project_id,
+    project.integrations.todos_task_list_id,
+    todosTaskListSlugForPanel(project.integrations.todos_task_list_id),
+  ].filter((item, index, values): item is string =>
+    Boolean(item) && values.indexOf(item) === index
+  );
+}
+
+function providerPanelMatchesProject(
+  panel: ProjectPanel,
+  provider: ProjectDashboardProvider,
+  project: Workspace,
+): boolean {
+  const expected = expectedProviderProjectIds(provider, project);
+  if (expected.includes(panel.projectId)) return true;
+  if (provider.id !== "todos" && provider.kind !== "todos") return false;
+  const linkedTodosProject = project.integrations.todos_project_id;
+  return Boolean(
+    linkedTodosProject &&
+    panel.provider.kind === "todos" &&
+    panel.provider.externalId === linkedTodosProject
+  );
+}
+
+function normalizeProviderPanelProjectId(panel: ProjectPanel, project: Workspace): ProjectPanel {
+  if (panel.projectId === project.slug) return panel;
+  return ProjectPanelSchema.parse({
+    ...panel,
+    projectId: project.slug,
+  });
+}
+
+function todosTaskListSlugForPanel(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return value.startsWith("todos-") ? value.slice("todos-".length) : value;
 }
 
 function summarizeProviderError(result: ProviderRunResult): string {
