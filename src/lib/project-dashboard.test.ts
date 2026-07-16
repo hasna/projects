@@ -37,6 +37,82 @@ const provider: ProjectDashboardProvider = {
 };
 
 describe("project dashboard", () => {
+  test("uses linked Todos project metadata for the todos provider", async () => {
+    const todos = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
+      (item) => item.id === "todos",
+    )!;
+    expect(todos.args).toEqual([
+      "project-panel",
+      "--project",
+      "{todosProject}",
+      "--json",
+      "--contract",
+    ]);
+
+    const db = makeDb();
+    createWorkspace(
+      {
+        id: "wks_todos_linked",
+        name: "Projects Slug",
+        slug: "projects-slug",
+        kind: "project",
+        primary_path: "/tmp/projects-slug",
+        integrations: {
+          todos_project_id: "todo_project_123",
+          todos_task_list_id: "todos-chief-of-harness",
+        },
+      },
+      db,
+    );
+
+    const snapshot = await buildProjectDashboardSnapshot("projects-slug", {
+      providers: [todos],
+      generatedAt: "2026-06-29T00:00:00.000Z",
+      cwd: "/tmp/projects-slug",
+      db,
+      runner: async ({ command, args }) => {
+        expect(command).toBe("todos");
+        expect(args).toEqual([
+          "project-panel",
+          "--project",
+          "todo_project_123",
+          "--json",
+          "--contract",
+        ]);
+        return {
+          ok: true,
+          stdout: JSON.stringify({
+            schema: SCHEMA_IDS.projectPanel,
+            id: "todos_panel_todo_project_123",
+            createdAt: "2026-06-29T00:00:00.000Z",
+            projectId: "chief-of-harness",
+            provider: {
+              kind: "todos",
+              id: "todos_chief-of-harness",
+              name: "Todos",
+              sourcePackage: "@hasna/todos",
+              externalId: "todo_project_123",
+            },
+            kind: "tasks",
+            title: "Tasks",
+            state: "ready",
+            generatedAt: "2026-06-29T00:00:00.000Z",
+            metrics: [{ id: "open", label: "Open", value: 2 }],
+            items: [{ id: "task-1", title: "Build dashboard" }],
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+
+    expect(ProjectSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(snapshot.panels.find((panel) => panel.kind === "tasks")?.state).toBe(
+      "ready",
+    );
+    db.close();
+  });
+
   test("uses the published Mailery project-panel provider command", () => {
     const mailery = DEFAULT_PROJECT_DASHBOARD_PROVIDERS.find(
       (item) => item.id === "mailery",
