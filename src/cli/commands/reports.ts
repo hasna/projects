@@ -1,5 +1,8 @@
 import type { Command } from "commander";
-import { serveProjectReports } from "../../lib/project-reports-server.js";
+import {
+  isLoopbackReportsHost,
+  serveProjectReports,
+} from "../../lib/project-reports-server.js";
 
 function wantsJson(options: { json?: boolean }): boolean {
   return Boolean(options.json || process.env["PROJECTS_JSON"]);
@@ -61,10 +64,13 @@ function parsePort(value: string | undefined): number | undefined {
   return port;
 }
 
-async function serveAction(options: { host?: string; port?: string; json?: boolean }) {
+async function serveAction(options: { host?: string; port?: string; token?: string; trustNetwork?: boolean; json?: boolean }) {
+  const host = options.host ?? "127.0.0.1";
   const served = await serveProjectReports({
-    host: options.host ?? "0.0.0.0",
+    host,
     port: parsePort(options.port),
+    token: options.token,
+    trustNetwork: options.trustNetwork,
   });
   const payload = {
     ok: true,
@@ -72,6 +78,11 @@ async function serveAction(options: { host?: string; port?: string; json?: boole
     url: served.url,
     host: served.host,
     port: served.port,
+    auth: options.trustNetwork
+      ? "trusted-network"
+      : isLoopbackReportsHost(host)
+        ? "loopback"
+        : "http-only-cookie-token",
   };
   await print(payload, options);
   if (!wantsJson(options)) await print(`Reports listening at ${served.url}`, options);
@@ -92,8 +103,10 @@ export function registerReportsCommands(program: Command): void {
   reports
     .command("serve")
     .description("Serve reports for all registered projects from each project reports directory")
-    .option("--host <host>", "Host to bind", "0.0.0.0")
+    .option("--host <host>", "Host to bind", "127.0.0.1")
     .option("--port <port>", "Port to bind")
+    .option("--token <token>", "Reports access token for non-loopback serving (or PROJECTS_REPORTS_TOKEN)")
+    .option("--trust-network", "Serve reports on a non-loopback host with explicit network trust", false)
     .option("-j, --json", "Print server info as JSON", false)
     .action(withJsonErrors(serveAction));
 }
