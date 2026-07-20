@@ -1,5 +1,7 @@
 import type { Command } from "commander";
 import {
+  CANONICAL_PROJECTS_RDS_CLUSTER_ENV,
+  CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV,
   getStorageStatus,
   parseStorageTables,
   storagePull,
@@ -50,9 +52,9 @@ export function registerStorageCommands(program: Command): void {
       }
       console.log(`Storage configured: ${info.configured ? "yes" : "no"}`);
       console.log(`Mode: ${info.mode}`);
-      console.log(`Canonical RDS cluster: ${info.canonical.cluster}`);
+      console.log(`Canonical RDS cluster: ${info.canonical.cluster ?? `(not configured — set ${CANONICAL_PROJECTS_RDS_CLUSTER_ENV})`}`);
       console.log(`Canonical database: ${info.canonical.database}`);
-      console.log(`Runtime secret path: ${info.canonical.runtimeSecretPath}`);
+      console.log(`Runtime secret path: ${info.canonical.runtimeSecretPath ?? `(not configured — set ${CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV})`}`);
       console.log(`Database env: ${info.canonical.env} (fallback: ${info.canonical.fallbackEnv})`);
       console.log(`Tables: ${info.tables.join(", ")}`);
       printReadiness(info);

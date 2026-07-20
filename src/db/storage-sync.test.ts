@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
-  CANONICAL_PROJECTS_RDS_CLUSTER,
+  CANONICAL_PROJECTS_RDS_CLUSTER_ENV,
   CANONICAL_PROJECTS_RDS_DATABASE,
-  CANONICAL_PROJECTS_RDS_SECRET_PATH,
+  CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV,
   PROJECTS_STORAGE_ENV,
   PROJECTS_STORAGE_FALLBACK_ENV,
   getProjectsStorageReadiness,
@@ -22,6 +22,8 @@ const envKeys = [
   "HASNA_PROJECTS_STORAGE_MODE",
   "PROJECTS_STORAGE_MODE",
   "HASNA_PROJECTS_DB_PATH",
+  CANONICAL_PROJECTS_RDS_CLUSTER_ENV,
+  CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV,
 ] as const;
 
 const savedEnv = new Map<string, string | undefined>();
@@ -43,11 +45,24 @@ afterEach(() => {
 });
 
 describe("projects storage sync config", () => {
-  test("exposes the canonical Hasna XYZ RDS descriptor without secret values", () => {
+  test("ships no baked-in RDS cluster/secret-path default (operator env only)", () => {
     expect(getCanonicalProjectsRdsConfig()).toEqual({
-      cluster: CANONICAL_PROJECTS_RDS_CLUSTER,
+      cluster: null,
       database: CANONICAL_PROJECTS_RDS_DATABASE,
-      runtimeSecretPath: CANONICAL_PROJECTS_RDS_SECRET_PATH,
+      runtimeSecretPath: null,
+      env: PROJECTS_STORAGE_ENV,
+      fallbackEnv: PROJECTS_STORAGE_FALLBACK_ENV,
+    });
+  });
+
+  test("surfaces operator-supplied RDS cluster/secret-path from env, never a literal", () => {
+    process.env[CANONICAL_PROJECTS_RDS_CLUSTER_ENV] = "example-cluster";
+    process.env[CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV] = "example/secret/path";
+
+    expect(getCanonicalProjectsRdsConfig()).toEqual({
+      cluster: "example-cluster",
+      database: CANONICAL_PROJECTS_RDS_DATABASE,
+      runtimeSecretPath: "example/secret/path",
       env: PROJECTS_STORAGE_ENV,
       fallbackEnv: PROJECTS_STORAGE_FALLBACK_ENV,
     });
@@ -91,9 +106,9 @@ describe("projects storage sync config", () => {
     expect(status.mode).toBe("local");
     expect(status.activeEnv).toBe(null);
     expect(status.canonical).toEqual({
-      cluster: "hasna-xyz-infra-apps-prod-postgres",
+      cluster: null,
       database: "projects",
-      runtimeSecretPath: "hasna/xyz/opensource/projects/prod/rds",
+      runtimeSecretPath: null,
       env: "HASNA_PROJECTS_DATABASE_URL",
       fallbackEnv: "PROJECTS_DATABASE_URL",
     });

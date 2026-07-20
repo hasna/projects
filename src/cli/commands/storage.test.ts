@@ -36,6 +36,11 @@ describe("projects storage CLI", () => {
         PROJECTS_DATABASE_URL: "",
         HASNA_PROJECTS_STORAGE_MODE: "",
         PROJECTS_STORAGE_MODE: "",
+        // Explicitly unset so this test is deterministic even if the ambient
+        // environment (e.g. a real deployment host) has these configured. This
+        // package ships no default for either (see SECURITY note in db/storage-sync.ts).
+        HASNA_PROJECTS_RDS_CLUSTER: "",
+        HASNA_PROJECTS_RDS_SECRET_PATH: "",
       });
 
       expect(result.status).toBe(0);
@@ -44,9 +49,9 @@ describe("projects storage CLI", () => {
         mode: string;
         activeEnv: string | null;
         canonical: {
-          cluster: string;
+          cluster: string | null;
           database: string;
-          runtimeSecretPath: string;
+          runtimeSecretPath: string | null;
           env: string;
           fallbackEnv: string;
         };
@@ -65,9 +70,9 @@ describe("projects storage CLI", () => {
       expect(status.mode).toBe("local");
       expect(status.activeEnv).toBe(null);
       expect(status.canonical).toEqual({
-        cluster: "hasna-xyz-infra-apps-prod-postgres",
+        cluster: null,
         database: "projects",
-        runtimeSecretPath: "hasna/xyz/opensource/projects/prod/rds",
+        runtimeSecretPath: null,
         env: "HASNA_PROJECTS_DATABASE_URL",
         fallbackEnv: "PROJECTS_DATABASE_URL",
       });

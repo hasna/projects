@@ -312,19 +312,20 @@ contexts.
 
 ## Storage Sync
 
-Production storage for Hasna XYZ uses the `projects` database on
-`hasna-xyz-infra-apps-prod-postgres`. The runtime secret path is
-`hasna/xyz/opensource/projects/prod/rds`; load that secret into
-`HASNA_PROJECTS_DATABASE_URL` for runtime or smoke commands and do not print
-the value. `PROJECTS_DATABASE_URL` remains available as a local/self-hosted
-fallback.
-
 ```bash
-export HASNA_PROJECTS_DATABASE_URL="<value from hasna/xyz/opensource/projects/prod/rds>"
+export HASNA_PROJECTS_DATABASE_URL="<your PostgreSQL connection string>"
 projects storage status --json
 projects storage push
 projects storage pull
 ```
+
+This package ships no default database, cluster, or secret-manager identifier —
+`HASNA_PROJECTS_DATABASE_URL` (fallback: `PROJECTS_DATABASE_URL`) is the only
+required configuration, and its value is never logged or printed. Operators
+running a self-hosted deployment may optionally set
+`HASNA_PROJECTS_RDS_CLUSTER` and `HASNA_PROJECTS_RDS_SECRET_PATH` to surface
+their own cluster name / secret path in `projects storage status` output;
+both are informational only and default to "not configured" when unset.
 
 `projects storage status --json` includes a `readiness` object that separates
 the global registry sync target from local-only per-project `project.db` and
