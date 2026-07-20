@@ -49,9 +49,15 @@ export interface SyncMeta {
   direction: "push" | "pull";
 }
 
-export const CANONICAL_PROJECTS_RDS_CLUSTER = "hasna-xyz-infra-apps-prod-postgres";
+// SECURITY: this OSS package must never ship a literal internal RDS cluster
+// name or Secrets Manager path. The canonical cluster/secret-path identifiers
+// are operator-supplied, server-side configuration only (set these env vars on
+// the machine/service that runs the real deployment); the package ships no
+// default value for either. `CANONICAL_PROJECTS_RDS_DATABASE` is just the
+// logical database name (not an infra identifier) and is safe to default.
+export const CANONICAL_PROJECTS_RDS_CLUSTER_ENV = "HASNA_PROJECTS_RDS_CLUSTER";
 export const CANONICAL_PROJECTS_RDS_DATABASE = "projects";
-export const CANONICAL_PROJECTS_RDS_SECRET_PATH = "hasna/xyz/opensource/projects/prod/rds";
+export const CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV = "HASNA_PROJECTS_RDS_SECRET_PATH";
 export const PROJECTS_STORAGE_ENV = "HASNA_PROJECTS_DATABASE_URL";
 export const PROJECTS_STORAGE_FALLBACK_ENV = "PROJECTS_DATABASE_URL";
 export const PROJECTS_STORAGE_MODE_ENV = "HASNA_PROJECTS_STORAGE_MODE";
@@ -60,9 +66,11 @@ export const STORAGE_DATABASE_ENV = [PROJECTS_STORAGE_ENV, PROJECTS_STORAGE_FALL
 export const STORAGE_MODE_ENV = [PROJECTS_STORAGE_MODE_ENV, PROJECTS_STORAGE_MODE_FALLBACK_ENV] as const;
 
 export interface CanonicalProjectsRdsConfig {
-  cluster: typeof CANONICAL_PROJECTS_RDS_CLUSTER;
+  /** Operator-configured cluster identifier, or `null` when unset (server-side only; no OSS default). */
+  cluster: string | null;
   database: typeof CANONICAL_PROJECTS_RDS_DATABASE;
-  runtimeSecretPath: typeof CANONICAL_PROJECTS_RDS_SECRET_PATH;
+  /** Operator-configured Secrets Manager path, or `null` when unset (server-side only; no OSS default). */
+  runtimeSecretPath: string | null;
   env: typeof PROJECTS_STORAGE_ENV;
   fallbackEnv: typeof PROJECTS_STORAGE_FALLBACK_ENV;
 }
@@ -161,11 +169,13 @@ export function getStorageDatabaseUrl(): string | null {
   return env ? readEnv(env.name) ?? null : null;
 }
 
-export function getCanonicalProjectsRdsConfig(): CanonicalProjectsRdsConfig {
+export function getCanonicalProjectsRdsConfig(
+  env: Record<string, string | undefined> = process.env,
+): CanonicalProjectsRdsConfig {
   return {
-    cluster: CANONICAL_PROJECTS_RDS_CLUSTER,
+    cluster: env[CANONICAL_PROJECTS_RDS_CLUSTER_ENV] || null,
     database: CANONICAL_PROJECTS_RDS_DATABASE,
-    runtimeSecretPath: CANONICAL_PROJECTS_RDS_SECRET_PATH,
+    runtimeSecretPath: env[CANONICAL_PROJECTS_RDS_SECRET_PATH_ENV] || null,
     env: PROJECTS_STORAGE_ENV,
     fallbackEnv: PROJECTS_STORAGE_FALLBACK_ENV,
   };

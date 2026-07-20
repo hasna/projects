@@ -24,6 +24,6 @@
     "apiSigningSecretRef": "hasna/oss/projects/api-key-signing-secret",
     "databaseUrlOwnerSecretRef": "hasna/oss/projects/database-url-owner",
     "openapiPath": "/openapi.json",
-    "host": "projects.hasna.xyz"
+    "host": "projects.md"
   }
 }

@@ -34,7 +34,7 @@ function normalizeMode(value: string): { mode: StorageMode; deprecatedAlias: str
 }
 
 export function defaultCloudBaseUrl(name: string): string {
-  return `https://${name}.hasna.xyz`;
+  return `https://${name}.md`;
 }
 
 interface EnvKeys {

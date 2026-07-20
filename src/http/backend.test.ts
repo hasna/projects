@@ -27,15 +27,28 @@ describe("projects client-flip resolution", () => {
     __resetProjectsBackend();
     const b = resolveProjectsBackend({
       HASNA_PROJECTS_STORAGE_MODE: "self_hosted",
-      HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz",
+      HASNA_PROJECTS_API_URL: "https://projects.md",
       HASNA_PROJECTS_API_KEY: "k",
     });
     expect(b?.mode).toBe("cloud-http");
-    expect(b?.baseUrl).toBe("https://projects.hasna.xyz/v1");
+    expect(b?.baseUrl).toBe("https://projects.md/v1");
   });
 
   test("cloud requested but no key -> throws", () => {
     expect(() => resolveProjectsBackend({ HASNA_PROJECTS_STORAGE_MODE: "self_hosted" })).toThrow();
+  });
+
+  // SECURITY regression: when mode+key are set but no explicit API URL is
+  // given, the client must fall back to the public product domain
+  // (defaultCloudBaseUrl), never an internal Hasna hostname.
+  test("mode + key (no explicit URL) -> defaults to the public product domain", () => {
+    __resetProjectsBackend();
+    const b = resolveProjectsBackend({
+      HASNA_PROJECTS_STORAGE_MODE: "self_hosted",
+      HASNA_PROJECTS_API_KEY: "k",
+    });
+    expect(b?.mode).toBe("cloud-http");
+    expect(b?.baseUrl).toBe("https://projects.md/v1");
   });
 
   // Regression: the fleet flip writes ONLY HASNA_PROJECTS_API_URL +
@@ -44,16 +57,16 @@ describe("projects client-flip resolution", () => {
   test("url + key (no explicit mode) -> cloud-http", () => {
     __resetProjectsBackend();
     const b = resolveProjectsBackend({
-      HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz",
+      HASNA_PROJECTS_API_URL: "https://projects.md",
       HASNA_PROJECTS_API_KEY: "k",
     });
     expect(b?.mode).toBe("cloud-http");
-    expect(b?.baseUrl).toBe("https://projects.hasna.xyz/v1");
+    expect(b?.baseUrl).toBe("https://projects.md/v1");
   });
 
   test("api url without key -> local (no silent partial cloud)", () => {
     __resetProjectsBackend();
-    expect(resolveProjectsBackend({ HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz" })).toBeNull();
+    expect(resolveProjectsBackend({ HASNA_PROJECTS_API_URL: "https://projects.md" })).toBeNull();
   });
 
   test("explicit local mode wins even with creds present -> local", () => {
@@ -61,7 +74,7 @@ describe("projects client-flip resolution", () => {
     expect(
       resolveProjectsBackend({
         HASNA_PROJECTS_STORAGE_MODE: "local",
-        HASNA_PROJECTS_API_URL: "https://projects.hasna.xyz",
+        HASNA_PROJECTS_API_URL: "https://projects.md",
         HASNA_PROJECTS_API_KEY: "k",
       }),
     ).toBeNull();
@@ -69,7 +82,7 @@ describe("projects client-flip resolution", () => {
 });
 
 describe("projects cloud workspace CRUD mapping", () => {
-  const base = "https://projects.hasna.xyz/v1";
+  const base = "https://projects.md/v1";
   test("list maps {workspaces} envelope + bearer auth", async () => {
     const { fetchImpl, calls } = mockFetch(() => ({ status: 200, body: { workspaces: [{ id: "1", slug: "a" }], count: 1 } }));
     const client = createStorageClient(APP, createHttpTransport({ name: APP, baseUrl: base, apiKey: "sek", fetchImpl }));
