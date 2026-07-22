@@ -1,5 +1,7 @@
 // @generated from the projects-serve OpenAPI document by scripts/generate-sdk.ts.
 // DO NOT EDIT BY HAND. Regenerate: bun run sdk:generate
+import { encodeProjectContextBundle, parseProjectContextBundle } from "../lib/project-context-bundle.js";
+
 // @generated from OpenAPI by @hasna/contracts SDK generator — DO NOT EDIT.
 // Source: Projects API 0.1.90
 
@@ -43,7 +45,13 @@ export interface DeleteResult { "deleted": boolean; "hard"?: boolean; "id"?: str
 
 export interface Health { "status": string; "version": string; "mode": string }
 
-export interface Error { "error": string; "reason"?: string }
+export interface SimpleError { "error": string; "reason"?: string }
+
+export type ProjectContextErrorCode = "PROJECT_ALREADY_REGISTERED" | "PROJECT_IDENTITY_CONFLICT" | "PROJECT_ARCHIVED" | "PROJECT_DELETED" | "PROJECT_MARKER_ORPHANED" | "PROJECT_MARKER_INVALID" | "PROJECT_AUTHORITY_UNAVAILABLE" | "PROJECT_NOT_FOUND" | "PROJECT_PATH_INVALID" | "PROJECT_IDEMPOTENCY_KEY_REUSED" | "PROJECT_CONTEXT_BUNDLE_TOO_LARGE" | "PROJECT_CONTEXT_BUNDLE_INVALID";
+
+export interface ProjectContextErrorResponse { "error": { "code": ProjectContextErrorCode; "message": string }; "project"?: { "id": string; "slug": string; "status": "active" | "archived" | "deleted" } }
+
+export type Error = SimpleError | ProjectContextErrorResponse;
 
 export interface ProjectsClientOptions {
   /** Base URL, e.g. process.env.APP_API_URL. */
@@ -56,10 +64,21 @@ export interface ProjectsClientOptions {
   headers?: Record<string, string>;
 }
 
+function projectErrorCode(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const error = (body as Record<string, unknown>)["error"];
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as Record<string, unknown>)["code"];
+  return typeof code === "string" ? code : undefined;
+}
+
 export class ApiError extends Error {
+  readonly code: string | undefined;
+
   constructor(readonly status: number, message: string, readonly body: unknown) {
     super(message);
     this.name = "ApiError";
+    this.code = projectErrorCode(body);
   }
 }
 
@@ -199,13 +218,16 @@ export class ProjectsClient {
       });
     }
 
-    /** Get a strict, allowlisted project context bundle */
+    /** Get and validate a strict, allowlisted project context bundle */
     async getProjectContextBundle(id: string, init?: RequestInit): Promise<ProjectContextBundle> {
-      return this.request("GET", `/v1/projects/${encodeURIComponent(String(id))}/context-bundle`, {
+      const value = await this.request<unknown>("GET", `/v1/projects/${encodeURIComponent(String(id))}/context-bundle`, {
         body: undefined,
         query: undefined,
         init,
       });
+      const bundle = parseProjectContextBundle(value);
+      encodeProjectContextBundle(bundle);
+      return bundle;
     }
 
     /** List a project's events */

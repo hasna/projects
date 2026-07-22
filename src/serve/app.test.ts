@@ -120,6 +120,12 @@ describe("projects-serve probes", () => {
     const spec = await res.json();
     expect(spec.openapi).toBe("3.1.0");
     expect(spec.paths["/v1/projects"]).toBeDefined();
+    expect(spec.components.schemas.ProjectContextErrorCode.enum).toContain("PROJECT_ALREADY_REGISTERED");
+    expect(spec.components.schemas.ProjectContextErrorResponse.additionalProperties).toBe(false);
+    expect(spec.paths["/v1/projects"].post.responses["409"].content["application/json"].schema.$ref)
+      .toBe("#/components/schemas/ProjectContextErrorResponse");
+    expect(spec.paths["/v1/projects/{id}/context-bundle"].get.responses["503"].content["application/json"].schema.$ref)
+      .toBe("#/components/schemas/ProjectContextErrorResponse");
   });
 });
 
@@ -133,6 +139,26 @@ describe("projects-serve auth", () => {
     const token = mintApiKey({ app: "todos", scopes: ["todos:*"], signingSecret: SIGNING_SECRET }).token;
     const res = await handler()(new Request("http://x/v1/projects", { headers: { "x-api-key": token } }));
     expect(res.status).toBe(401);
+  });
+
+  test("maps a stable project error code to its HTTP status when a transport omits status", async () => {
+    const store = fakeStore() as unknown as Record<string, unknown>;
+    store["listWorkspaces"] = async () => {
+      throw Object.assign(new Error("Project authority is unavailable"), {
+        code: "PROJECT_AUTHORITY_UNAVAILABLE",
+      });
+    };
+    const h = createFetchHandler({
+      store: store as unknown as ProjectsPgStore,
+      version: "9.9.9",
+      app: "projects",
+      signingSecret: SIGNING_SECRET,
+    });
+    const response = await h(new Request("http://x/v1/projects", {
+      headers: { "x-api-key": keyWith(["projects:read"]) },
+    }));
+    expect(response.status).toBe(503);
+    expect((await response.json()).error.code).toBe("PROJECT_AUTHORITY_UNAVAILABLE");
   });
 
   test("read scope allows GET but not POST", async () => {

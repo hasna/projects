@@ -94,7 +94,7 @@ export function isProjectPathLike(target: string): boolean {
 
 function markerError(message: string, path: string, cause?: unknown): ProjectContextError {
   return new ProjectContextError("PROJECT_MARKER_INVALID", message, {
-    status: 409,
+    status: 400,
     details: { marker_path: path },
     cause,
   });

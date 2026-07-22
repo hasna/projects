@@ -2,6 +2,8 @@
 // served /openapi.json and for the generated SDK (scripts/generate-sdk.ts uses
 // @hasna/contracts/sdk `generateSdkFromOpenApi` on this exact object).
 
+import { PROJECT_CONTEXT_ERROR_CODES } from "../lib/project-context-errors.js";
+
 export function buildOpenApiSpec(version: string): Record<string, unknown> {
   const ID_PARAM = {
     name: "id",
@@ -380,10 +382,44 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           properties: { status: { type: "string" }, version: { type: "string" }, mode: { type: "string" } },
           required: ["status", "version", "mode"],
         },
-        Error: {
+        SimpleError: {
           type: "object",
+          additionalProperties: false,
           properties: { error: { type: "string" }, reason: { type: "string" } },
           required: ["error"],
+        },
+        ProjectContextErrorCode: {
+          type: "string",
+          enum: [...PROJECT_CONTEXT_ERROR_CODES],
+        },
+        ProjectContextErrorResponse: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            error: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                code: ref("ProjectContextErrorCode"),
+                message: { type: "string" },
+              },
+              required: ["code", "message"],
+            },
+            project: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                slug: { type: "string" },
+                status: { type: "string", enum: ["active", "archived", "deleted"] },
+              },
+              required: ["id", "slug", "status"],
+            },
+          },
+          required: ["error"],
+        },
+        Error: {
+          oneOf: [ref("SimpleError"), ref("ProjectContextErrorResponse")],
         },
       },
     },
@@ -432,7 +468,12 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "createProject",
           summary: "Create a project (workspace)",
           requestBody: jsonBody("CreateWorkspace"),
-          responses: { "201": jsonResp("Workspace", "Created"), "400": jsonResp("Error", "Invalid") },
+          responses: {
+            "201": jsonResp("Workspace", "Created"),
+            "400": jsonResp("Error", "Invalid request or project identity"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project identity or idempotency conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/projects/{id}": {
@@ -488,7 +529,14 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "getProjectContextBundle",
           summary: "Get a strict, allowlisted project context bundle",
           parameters: [ID_PARAM],
-          responses: { "200": jsonResp("ProjectContextBundle"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("ProjectContextBundle"),
+            "400": jsonResp("ProjectContextErrorResponse", "Invalid project target or bundle"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project identity or lifecycle conflict"),
+            "500": jsonResp("ProjectContextErrorResponse", "Bundle contract failure"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/roots": {

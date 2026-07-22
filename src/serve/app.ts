@@ -6,7 +6,11 @@
 
 import { verifyApiKey, type ApiKeyVerifier, type AuthAuditHook } from "@hasna/contracts/auth";
 import { NotFoundError, ProjectsPgStore, ValidationError } from "./pg-store.js";
-import { ProjectContextError, isProjectContextError } from "../lib/project-context-errors.js";
+import {
+  ProjectContextError,
+  isProjectContextError,
+  projectContextErrorStatus,
+} from "../lib/project-context-errors.js";
 import { buildProjectContextBundle } from "../lib/project-context-bundle.js";
 import { buildOpenApiSpec } from "./openapi.js";
 
@@ -36,6 +40,7 @@ function errorResponse(message: string, status: number, reason?: string): Respon
 }
 
 function statusForError(err: unknown): number {
+  if (isProjectContextError(err)) return projectContextErrorStatus(err.code);
   if (err && typeof err === "object" && "status" in err) {
     const status = Number((err as { status: unknown }).status);
     if (Number.isInteger(status) && status >= 400 && status <= 599) return status;

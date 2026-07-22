@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,22 @@ function runProjects(args: string[], env: Record<string, string> = {}, cwd = pro
     env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
     cwd,
   });
+}
+
+async function runProjectsAsync(args: string[], env: Record<string, string> = {}, cwd = process.cwd()) {
+  const child = Bun.spawn({
+    cmd: ["bun", "run", CLI_PATH, ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
+    cwd,
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
 }
 
 async function readStreamChunk(stream: ReadableStream<Uint8Array> | null, timeoutMs = 3_000): Promise<string> {
@@ -803,6 +819,90 @@ describe("project-first CLI surface", () => {
       expect(body.commands.length).toBeLessThanOrEqual(6);
       expect(Buffer.byteLength(text(result.stdout), "utf-8")).toBeLessThanOrEqual(8 * 1024);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("context-bundle emits a structured stable error for an invalid marker", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-context-error-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    writeFileSync(join(root, ".project.json"), "{", "utf-8");
+    try {
+      const result = runProjects(["context-bundle", root, "--json"], env);
+      expect(result.exitCode).toBe(1);
+      expect(text(result.stderr)).toBe("");
+      expect(JSON.parse(text(result.stdout))).toMatchObject({
+        error: { code: "PROJECT_MARKER_INVALID", status: 400 },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("store ensure and migrate dry-runs resolve marker identity through the remote Store", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-store-api-"));
+    const projectPath = join(root, "project");
+    const locatorDb = join(root, "locator.db");
+    mkdirSync(projectPath, { recursive: true });
+    writeFileSync(join(projectPath, ".project.json"), JSON.stringify({ id: "wks_remote_store" }), "utf-8");
+    const calls: Array<{ method: string; pathname: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        calls.push({ method: request.method, pathname: url.pathname });
+        if (request.method === "GET" && url.pathname === "/v1/projects/wks_remote_store") {
+          return Response.json({
+            id: "wks_remote_store",
+            slug: "remote-store",
+            name: "Remote Store",
+            description: null,
+            kind: "project",
+            status: "active",
+            root_id: null,
+            recipe_id: null,
+            primary_path: "/remote/canonical",
+            git_remote: null,
+            s3_bucket: null,
+            s3_prefix: null,
+            tags: [],
+            integrations: {},
+            metadata: {},
+            last_opened_at: null,
+            created_at: "2026-07-22 00:00:00",
+            updated_at: "2026-07-22 00:00:00",
+            synced_at: null,
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+    const env = {
+      HASNA_PROJECTS_STORAGE_MODE: "cloud",
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${server.port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+      HASNA_PROJECTS_DB_PATH: locatorDb,
+      HASNA_PROJECTS_HOME: join(root, "home"),
+    };
+    try {
+      const ensured = await runProjectsAsync(["store", "ensure", projectPath, "--dry-run", "--json"], env);
+      expect(ensured.exitCode).toBe(0);
+      expect(ensured.stderr).toBe("");
+      expect(JSON.parse(ensured.stdout).project.id).toBe("wks_remote_store");
+
+      const migrated = await runProjectsAsync(["store", "migrate", projectPath, "--json"], env);
+      expect(migrated.exitCode).toBe(0);
+      expect(migrated.stderr).toBe("");
+      expect(JSON.parse(migrated.stdout).project.id).toBe("wks_remote_store");
+
+      expect(calls).toEqual([
+        { method: "GET", pathname: "/v1/projects/wks_remote_store" },
+        { method: "GET", pathname: "/v1/projects/wks_remote_store" },
+      ]);
+      expect(existsSync(locatorDb)).toBe(false);
+    } finally {
+      server.stop(true);
       rmSync(root, { recursive: true, force: true });
     }
   });

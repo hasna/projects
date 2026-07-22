@@ -127,7 +127,16 @@ function assertEnum<T extends string>(value: unknown, allowed: readonly T[], fal
 }
 
 export function parseProjectContextBundle(input: unknown): ProjectContextBundle {
-  const parsed = projectContextBundleSchema.parse(input);
+  let parsed: ProjectContextBundle;
+  try {
+    parsed = projectContextBundleSchema.parse(input);
+  } catch (cause) {
+    throw new ProjectContextError(
+      "PROJECT_CONTEXT_BUNDLE_INVALID",
+      "Project context bundle does not match the strict schema",
+      { status: 400, cause },
+    );
+  }
   const { hash, ...payload } = parsed;
   const expected = projectContextBundleHash(payload);
   if (hash !== expected) {

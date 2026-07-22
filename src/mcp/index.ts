@@ -464,7 +464,7 @@ server.tool(
         name_template: input.name_template,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -516,7 +516,7 @@ server.tool(
         metadata: input.metadata,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -534,7 +534,7 @@ server.tool(
       if (!root) return errorText(`Root not found: ${input.id}`);
       return jsonText(deleteRoot(root.id, { detachWorkspaces: input.detach_projects }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -601,7 +601,7 @@ server.tool(
         steps: input.steps,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -696,7 +696,7 @@ server.tool(
         permissions: input.permissions,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -731,7 +731,7 @@ server.tool(
       });
       return jsonText(assignment);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -798,7 +798,7 @@ server.tool(
       }
       return jsonText({ profile, windows: listTmuxProfileWindows(profile.id) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -841,7 +841,7 @@ server.tool(
       });
       return jsonText(input.dry_run ? apply() : withWorkspaceMutationLock(project, owner, "project tmux profile apply", apply));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -938,14 +938,21 @@ server.tool(
     include_evals: z.boolean().optional(),
     limit: z.number().int().positive().max(500).optional(),
   },
-  async (input) => jsonText(buildProjectListRender(filterProjectEvalArtifacts(listWorkspaces({
-    kind: input.kind as WorkspaceKind | undefined,
-    status: input.status,
-    query: input.query,
-    tags: input.tags,
-    exclude_eval_artifacts: !input.include_evals,
-    limit: input.limit,
-  }), input.include_evals))),
+  async (input) => {
+    try {
+      const projects = await resolveProjectStore().listProjects({
+        kind: input.kind as WorkspaceKind | undefined,
+        status: input.status,
+        query: input.query,
+        tags: input.tags,
+        exclude_eval_artifacts: !input.include_evals,
+        limit: input.limit,
+      });
+      return jsonText(buildProjectListRender(filterProjectEvalArtifacts(projects, input.include_evals)));
+    } catch (err) {
+      return projectCommandError(err);
+    }
+  },
 );
 
 server.tool(
@@ -1026,7 +1033,7 @@ server.tool(
       });
       return jsonText(result.render);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1055,7 +1062,7 @@ server.tool(
       });
       return jsonText(result.render);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1155,7 +1162,7 @@ server.tool(
       });
       return jsonText(input.render_spec ? payload.render : withoutRender(payload));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1205,7 +1212,7 @@ server.tool(
       });
       return jsonText(input.render_spec ? payload.render : withoutRender(payload));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1262,7 +1269,7 @@ server.tool(
       });
       return jsonText(input.render_spec ? payload.render : withoutRender(payload));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1320,7 +1327,7 @@ server.tool(
       }, { agentId: owner, source: "mcp", command: "projects_loops_link" });
       return jsonText({ project: projectWithManagement(project), link });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1403,7 +1410,7 @@ server.tool(
       });
       return jsonText({ project: projectWithManagement(result.project), location: result.location });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1573,7 +1580,7 @@ server.tool(
         command: "projects_import_github",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1607,7 +1614,7 @@ server.tool(
         command: "projects_scan_roots",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1642,7 +1649,7 @@ server.tool(
         command: "projects_sync_roots",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1664,7 +1671,7 @@ server.tool(
         agent_id: owner,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1702,7 +1709,7 @@ server.tool(
         command: "projects_github_publish",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1730,7 +1737,7 @@ server.tool(
         command: "projects_github_unpublish",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1773,7 +1780,7 @@ server.tool(
         auditCommand: "projects_start",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1801,7 +1808,7 @@ server.tool(
         requestedWindows: input.windows,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1831,7 +1838,7 @@ server.tool(
         },
       )));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1926,7 +1933,7 @@ server.tool(
       });
       return jsonText({ project: updated });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1951,7 +1958,7 @@ server.tool(
         command: "projects_link",
       }) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -1980,7 +1987,7 @@ server.tool(
       });
       return jsonText({ project: projectWithManagement(updated) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2009,7 +2016,7 @@ server.tool(
       });
       return jsonText({ project: projectWithManagement(updated) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2040,7 +2047,7 @@ server.tool(
       });
       return jsonText({ project: projectWithManagement(updated), unlinked });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2061,7 +2068,7 @@ server.tool(
         command: "projects_archive",
       }) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2082,7 +2089,7 @@ server.tool(
         command: "projects_unarchive",
       }) });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2103,7 +2110,7 @@ server.tool(
         command: "projects_delete",
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2220,7 +2227,7 @@ server.tool(
       });
       return jsonText({ project, event });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2264,7 +2271,7 @@ server.tool(
         ttlSeconds: input.ttl_seconds,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2296,7 +2303,7 @@ server.tool(
         basePath: input.base_path,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2343,7 +2350,7 @@ server.tool(
         },
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2388,7 +2395,7 @@ server.tool(
         }),
       });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2418,7 +2425,7 @@ server.tool(
       const limit = mcpLimit(input.limit, DEFAULT_MCP_LIST_LIMIT);
       return jsonText(compactListPayload(statuses, statuses.slice(0, limit).map(compactBudgetStatus), limit, "Pass verbose=true for full budget records."));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2456,7 +2463,7 @@ server.tool(
         }),
       });
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2510,7 +2517,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(ctx) });
       return jsonText(ctx);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2544,7 +2551,7 @@ server.tool(
       });
       return jsonText(bundle);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2568,7 +2575,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(res) });
       return jsonText(res);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2587,7 +2594,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(res) });
       return jsonText(res);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2617,7 +2624,7 @@ server.tool(
         dryRun: input.dry_run,
       }));
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2643,7 +2650,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(h) });
       return jsonText(h);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2669,7 +2676,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(res) });
       return jsonText(res);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );
@@ -2689,7 +2696,7 @@ server.tool(
       if (input.for_agent) return jsonText({ text: toAgentText(detail) });
       return jsonText(detail);
     } catch (err) {
-      return errorText(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      return projectCommandError(err);
     }
   },
 );

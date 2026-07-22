@@ -133,7 +133,7 @@ import {
   buildProjectContextBundle,
   encodeProjectContextBundle,
 } from "../../lib/project-context-bundle.js";
-import { isProjectContextError } from "../../lib/project-context-errors.js";
+import { ProjectContextError, isProjectContextError } from "../../lib/project-context-errors.js";
 import { resolveProjectStore } from "../../store/project-store.js";
 import {
   createProjectBudget,
@@ -214,6 +214,15 @@ function reportProjectCommandError(error: unknown, opts?: { json?: boolean }): v
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
   }
   process.exitCode = 1;
+}
+
+function assertLocalProjectStoreMutation(mode: "local" | "api", operation: string): void {
+  if (mode === "local") return;
+  throw new ProjectContextError(
+    "PROJECT_AUTHORITY_UNAVAILABLE",
+    `${operation} requires a local Projects authority; API mode cannot write the machine-local project store`,
+    { status: 503 },
+  );
 }
 
 function printRenderSpec(value: unknown): void {
@@ -892,8 +901,7 @@ function registerAgentAssistCommands(program: Command): void {
         if (wantsJson(opts)) { printObject(context, opts); return; }
         console.log(toAgentText(context));
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -924,8 +932,7 @@ function registerAgentAssistCommands(program: Command): void {
         });
         console.log(encodeProjectContextBundle(bundle));
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -956,8 +963,7 @@ function registerAgentAssistCommands(program: Command): void {
           console.log(`  ${chalk.dim("run:")} ${a.command}`);
         }
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -974,8 +980,7 @@ function registerAgentAssistCommands(program: Command): void {
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(toAgentText(result));
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -1028,8 +1033,7 @@ function registerAgentAssistCommands(program: Command): void {
         }
         if (result.status === "error") process.exit(1);
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -1053,8 +1057,7 @@ function registerAgentAssistCommands(program: Command): void {
         if (wantsJson(opts)) { printObject(handoff, opts); return; }
         console.log(toAgentText(handoff));
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -1090,8 +1093,7 @@ function registerAgentAssistCommands(program: Command): void {
           started_at: r.started_at,
         })), ["id", "status", "model", "tool_calls", "started_at"]);
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -1125,8 +1127,7 @@ function registerAgentAssistCommands(program: Command): void {
           return;
         }
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 }
@@ -2853,7 +2854,12 @@ function registerStoreCommand(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug, {
+          allowPath: true,
+          allowMarker: true,
+          intent: "read",
+        });
         const inspection = inspectCanonicalProjectStore(project);
         const appStore = opts.includeLoops
           ? await inspectProjectAppStoreWithLoops(project, { includeRuns: opts.includeRuns })
@@ -2869,8 +2875,7 @@ function registerStoreCommand(program: Command): void {
         console.log(`  ${chalk.dim("app loop links:")} ${appStore.counts.loop_links}`);
         if (inspection.migration_recommended) console.log(chalk.yellow("  migration recommended: primary path is not the canonical store path"));
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -2881,10 +2886,18 @@ function registerStoreCommand(program: Command): void {
     .option("--no-primary", "Do not set the canonical path as primary when the project has no primary path")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug, {
+          allowPath: true,
+          allowMarker: true,
+          intent: opts.dryRun ? "read" : "mutate",
+        });
+        if (!opts.dryRun) assertLocalProjectStoreMutation(store.mode, "Project store ensure");
+        const agentId = store.mode === "local"
+          ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id)
+          : undefined;
         const ensure = () => ensureCanonicalProjectStore(project, {
           dryRun: opts.dryRun,
           setPrimaryIfMissing: opts.primary,
@@ -2900,8 +2913,7 @@ function registerStoreCommand(program: Command): void {
         if (result.created.length) console.log(`  ${chalk.dim(result.dry_run ? "would create:" : "created:")} ${result.created.join(", ")}`);
         if (result.primary_updated) console.log(`  ${chalk.dim(result.dry_run ? "would set primary:" : "primary set:")} ${result.paths.workspace_path}`);
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -2912,11 +2924,19 @@ function registerStoreCommand(program: Command): void {
     .option("--yes", "Apply the migration plan (alias for --apply)")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((projectIdOrSlug, opts) => {
+    .action(async (projectIdOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(projectIdOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
         const apply = Boolean(opts.apply || opts.yes);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(projectIdOrSlug, {
+          allowPath: true,
+          allowMarker: true,
+          intent: apply ? "mutate" : "read",
+        });
+        if (apply) assertLocalProjectStoreMutation(store.mode, "Project store migration");
+        const agentId = store.mode === "local"
+          ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id)
+          : undefined;
         const result = apply
           ? withWorkspaceLock(project, agentId, "project store migrate", () => migrateProjectToStore(project, {
               apply: true,
@@ -2937,8 +2957,7 @@ function registerStoreCommand(program: Command): void {
         if (!apply) console.log(chalk.dim("  Re-run with --apply or --yes to move files and update the primary location."));
         if ("verified" in result && result.verified) console.log(`  ${chalk.dim("verified:")} canonical primary exists`);
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 }

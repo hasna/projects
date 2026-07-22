@@ -26,6 +26,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   create attempts and remote outages.
 - Reconciled the Store/runtime architecture previously published on the
   `npm/projects/v0.1.89` lineage with the current `main` feature lineage.
+- Routed project-store inspection/ensure/migration and MCP render reads through
+  the selected Store, and preserved structured project error codes across CLI,
+  MCP, API/OpenAPI, and SDK boundaries.
+- Made the generated SDK reject non-strict, hash-invalid, or oversized project
+  context bundles before returning them to callers.
 
 ### Changed
 
