@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -59,7 +59,9 @@ describe("database", () => {
     test("audits historical identity collisions instead of guessing during migration", () => {
       const database = new Database(":memory:");
       const realPath = mkdtempSync(join(tmpdir(), "projects-identity-migration-"));
+      const singlePath = join(realPath, "single");
       try {
+        mkdirSync(singlePath);
         database.run("PRAGMA foreign_keys=ON");
         database.run(`
           CREATE TABLE _migrations (
@@ -89,11 +91,16 @@ describe("database", () => {
           INSERT INTO workspaces (id, slug, primary_path) VALUES
             ('wks_a', 'a', NULL),
             ('wks_b', 'b', NULL),
+            ('wks_single', 'single', NULL),
             ('wks_unattested', 'unattested', '/historical/unattested');
         `);
         database.run(
-          "INSERT INTO workspace_locations (id, workspace_id, path, machine_id) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
-          ["loc_a", "wks_a", realPath, "station-1", "loc_b", "wks_b", realPath, "station-1"],
+          "INSERT INTO workspace_locations (id, workspace_id, path, machine_id) VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
+          [
+            "loc_a", "wks_a", realPath, "station-1",
+            "loc_b", "wks_b", realPath, "station-1",
+            "loc_single", "wks_single", singlePath, "station-2",
+          ],
         );
 
         runMigrations(database);
@@ -112,6 +119,13 @@ describe("database", () => {
         expect(unattested.reason).toBe("historical_primary_path_unattested");
         expect(unattested.location_owner_id).toBe("unknown");
         expect(JSON.parse(unattested.workspace_ids)).toEqual(["wks_unattested"]);
+        const locationUnattested = database.query(
+          "SELECT reason, location_owner_id, real_path, workspace_ids FROM project_identity_migration_audit WHERE reason = 'historical_location_unattested'",
+        ).get() as { reason: string; location_owner_id: string; real_path: string; workspace_ids: string };
+        expect(locationUnattested.reason).toBe("historical_location_unattested");
+        expect(locationUnattested.location_owner_id).toBe("station-2");
+        expect(locationUnattested.real_path).toBe(singlePath);
+        expect(JSON.parse(locationUnattested.workspace_ids)).toEqual(["wks_single"]);
 
         database.run(
           "INSERT INTO workspace_identity_bindings (workspace_id, location_owner_id, real_path) VALUES (?, ?, ?)",

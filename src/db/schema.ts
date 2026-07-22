@@ -372,9 +372,11 @@ interface HistoricalPrimaryPathRow {
 }
 
 /**
- * Backfill canonical identity bindings. A machine+realpath group that maps to
- * multiple projects is written to the audit table and deliberately left
- * unbound; choosing either project would silently corrupt identity.
+ * Audit historical identity candidates without promoting legacy logical paths
+ * into canonical machine+realpath bindings. Both ambiguous and single-project
+ * groups remain unbound until a current client supplies attested realpath
+ * evidence; guessing even an apparently unique historical row can bind the
+ * wrong workspace after symlink or station drift.
  */
 export function migrateProjectIdentityBindings(db: Database): void {
   const table = db.query(
@@ -486,15 +488,24 @@ export function migrateProjectIdentityBindings(db: Database): void {
       }
       const workspaceId = workspaceIds[0];
       if (!workspaceId) continue;
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(["unattested-location", group.owner, group.realPath, workspaceIds]))
+        .digest("hex");
       db.run(
-        `INSERT INTO workspace_identity_bindings (
-          workspace_id, location_owner_id, real_path, logical_path, machine_id, source
-        ) VALUES (?, ?, ?, ?, ?, 'migration')
-        ON CONFLICT(workspace_id, location_owner_id, real_path) DO UPDATE SET
-          logical_path = excluded.logical_path,
-          machine_id = excluded.machine_id,
-          updated_at = datetime('now')`,
-        [workspaceId, group.owner, group.realPath, group.logicalPaths[0] ?? null, group.owner],
+        `INSERT OR IGNORE INTO project_identity_migration_audit (
+          id, reason, location_owner_id, real_path, workspace_ids, details
+        ) VALUES (?, 'historical_location_unattested', ?, ?, ?, ?)`,
+        [
+          `identity_unattested_location_${fingerprint}`,
+          group.owner,
+          group.realPath,
+          JSON.stringify(workspaceIds),
+          JSON.stringify({
+            source: "workspace_locations",
+            binding_created: false,
+            logical_paths: [...new Set(group.logicalPaths)].sort(),
+          }),
+        ],
       );
     }
   });

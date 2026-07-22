@@ -27,7 +27,11 @@ export interface ProjectIdentityLocator { "location_owner_id"?: string; "real_pa
 
 export interface UpdateWorkspace { "name"?: string; "slug"?: string; "description"?: string | null; "kind"?: string; "status"?: "active" | "archived" | "deleted"; "root_id"?: string | null; "recipe_id"?: string | null; "primary_path"?: string | null; "git_remote"?: string | null; "tags"?: Array<string>; "integrations"?: Record<string, unknown>; "metadata"?: Record<string, unknown>; "agent_id"?: string }
 
-export interface WorkspaceEvent { "id": string; "workspace_id"?: string | null; "agent_id"?: string | null; "event_type": string; "source": string; "metadata"?: Record<string, unknown>; "created_at"?: string }
+export interface WorkspaceEvent { "id": string; "workspace_id"?: string | null; "agent_id"?: string | null; "event_type": string; "source": "cli" | "mcp" | "agent" | "migration" | "system"; "metadata"?: Record<string, unknown>; "created_at"?: string }
+
+export interface RecordWorkspaceEvent { "event_type": string; "source"?: string; "agent_id"?: string; "prompt"?: string; "command"?: string; "before"?: Record<string, unknown>; "after"?: Record<string, unknown>; "metadata"?: Record<string, unknown> }
+
+export interface RecordWorkspaceEventResponse { "event": WorkspaceEvent }
 
 export interface WorkspaceList { "workspaces": Array<Workspace>; "count": number }
 
@@ -49,7 +53,9 @@ export interface SimpleError { "error": string; "reason"?: string }
 
 export type ProjectContextErrorCode = "PROJECT_ALREADY_REGISTERED" | "PROJECT_IDENTITY_CONFLICT" | "PROJECT_ARCHIVED" | "PROJECT_DELETED" | "PROJECT_MARKER_ORPHANED" | "PROJECT_MARKER_INVALID" | "PROJECT_AUTHORITY_UNAVAILABLE" | "PROJECT_NOT_FOUND" | "PROJECT_PATH_INVALID" | "PROJECT_IDEMPOTENCY_KEY_REUSED" | "PROJECT_CONTEXT_BUNDLE_TOO_LARGE" | "PROJECT_CONTEXT_BUNDLE_INVALID";
 
-export interface ProjectContextErrorResponse { "error": { "code": ProjectContextErrorCode; "message": string }; "project"?: { "id": string; "slug": string; "status": "active" | "archived" | "deleted" } }
+export interface ProjectContextErrorResponse { "error": { "code": ProjectContextErrorCode; "message": string }; "project"?: { "id": string; "slug": string; "status": "active" | "archived" | "deleted" }; "details"?: ProjectContextErrorDetails }
+
+export interface ProjectContextErrorDetails { "identity_required"?: boolean; "migration_audit_required"?: boolean }
 
 export type Error = SimpleError | ProjectContextErrorResponse;
 
@@ -235,6 +241,15 @@ export class ProjectsClient {
       return this.request("GET", `/v1/projects/${encodeURIComponent(String(id))}/events`, {
         body: undefined,
         query,
+        init,
+      });
+    }
+
+    /** Record a project audit event */
+    async recordProjectEvent(id: string, body: RecordWorkspaceEvent, init?: RequestInit): Promise<RecordWorkspaceEventResponse> {
+      return this.request("POST", `/v1/projects/${encodeURIComponent(String(id))}/events`, {
+        body,
+        query: undefined,
         init,
       });
     }

@@ -3,6 +3,7 @@ import { mintApiKey } from "@hasna/contracts/auth";
 import { createFetchHandler } from "./app.js";
 import { NotFoundError, ProjectsPgStore } from "./pg-store.js";
 import type { Workspace } from "../types/workspace.js";
+import { ProjectContextError } from "../lib/project-context-errors.js";
 
 const SIGNING_SECRET = "test-signing-secret-projects-0000000000";
 
@@ -122,8 +123,18 @@ describe("projects-serve probes", () => {
     expect(spec.paths["/v1/projects"]).toBeDefined();
     expect(spec.components.schemas.ProjectContextErrorCode.enum).toContain("PROJECT_ALREADY_REGISTERED");
     expect(spec.components.schemas.ProjectContextErrorResponse.additionalProperties).toBe(false);
+    expect(spec.components.schemas.ProjectContextErrorDetails.additionalProperties).toBe(false);
     expect(spec.paths["/v1/projects"].post.responses["409"].content["application/json"].schema.$ref)
       .toBe("#/components/schemas/ProjectContextErrorResponse");
+    for (const [path, method] of [
+      ["/v1/projects/{id}", "patch"],
+      ["/v1/projects/{id}", "delete"],
+      ["/v1/projects/{id}/archive", "post"],
+      ["/v1/projects/{id}/unarchive", "post"],
+    ] as const) {
+      expect(spec.paths[path][method].responses["409"].content["application/json"].schema.$ref)
+        .toBe("#/components/schemas/ProjectContextErrorResponse");
+    }
     expect(spec.paths["/v1/projects/{id}/context-bundle"].get.responses["503"].content["application/json"].schema.$ref)
       .toBe("#/components/schemas/ProjectContextErrorResponse");
   });
@@ -159,6 +170,67 @@ describe("projects-serve auth", () => {
     }));
     expect(response.status).toBe(503);
     expect((await response.json()).error.code).toBe("PROJECT_AUTHORITY_UNAVAILABLE");
+  });
+
+  test("returns only allowlisted project identity remediation details", async () => {
+    const store = fakeStore() as unknown as Record<string, unknown>;
+    store["createWorkspace"] = async () => {
+      throw new ProjectContextError("PROJECT_IDENTITY_CONFLICT", "identity required", {
+        details: { identity_required: true, secret_hint: "must-not-leak" },
+      });
+    };
+    const h = createFetchHandler({
+      store: store as unknown as ProjectsPgStore,
+      version: "9.9.9",
+      app: "projects",
+      signingSecret: SIGNING_SECRET,
+    });
+    const response = await h(new Request("http://x/v1/projects", {
+      method: "POST",
+      headers: { "x-api-key": keyWith(["projects:write"]), "content-type": "application/json" },
+      body: JSON.stringify({ name: "Needs Identity" }),
+    }));
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: { code: "PROJECT_IDENTITY_CONFLICT" },
+      details: { identity_required: true },
+    });
+    expect(JSON.stringify(body)).not.toContain("must-not-leak");
+  });
+
+  test("records project events through the remote authority route", async () => {
+    const project = fakeWorkspace({ id: "wks_event", slug: "event-project" });
+    const store = fakeStore() as unknown as Record<string, unknown>;
+    store["requireWorkspace"] = async () => project;
+    store["recordEvent"] = async (input: Record<string, unknown>) => ({
+      id: "evt_api",
+      workspace_id: input["workspace_id"],
+      agent_id: input["agent_id"] ?? null,
+      event_type: input["event_type"],
+      source: input["source"],
+      prompt: null,
+      command: null,
+      before: null,
+      after: null,
+      metadata: input["metadata"] ?? {},
+      created_at: "2026-07-22 00:00:00",
+    });
+    const h = createFetchHandler({
+      store: store as unknown as ProjectsPgStore,
+      version: "9.9.9",
+      app: "projects",
+      signingSecret: SIGNING_SECRET,
+    });
+    const response = await h(new Request("http://x/v1/projects/wks_event/events", {
+      method: "POST",
+      headers: { "x-api-key": keyWith(["projects:write"]), "content-type": "application/json" },
+      body: JSON.stringify({ event_type: "remote_boundary", source: "cli", metadata: { safe: true } }),
+    }));
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({
+      event: { id: "evt_api", workspace_id: "wks_event", event_type: "remote_boundary", source: "cli" },
+    });
   });
 
   test("read scope allows GET but not POST", async () => {

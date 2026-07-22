@@ -248,9 +248,13 @@ export interface AcquireLockInput {
  * mutation locks). The api transport does not model them; calling a write in
  * api mode throws this rather than silently writing local sqlite (split-brain).
  */
-class LocalOnlyOperationError extends Error {
+class LocalOnlyOperationError extends ProjectContextError {
   constructor(operation: string) {
-    super(`${operation} is a local-only operation and is not available in api/cloud mode.`);
+    super(
+      "PROJECT_AUTHORITY_UNAVAILABLE",
+      `${operation} is a local-only operation and is not available in api/cloud mode`,
+      { status: 503 },
+    );
     this.name = "LocalOnlyOperationError";
   }
 }
@@ -1056,7 +1060,7 @@ class ApiProjectStore implements ProjectStore {
   }
 
   async releaseLock(): Promise<boolean> {
-    return false;
+    throw new LocalOnlyOperationError("release project lock");
   }
 
   async listRoots(): Promise<Root[]> {

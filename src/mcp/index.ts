@@ -47,7 +47,6 @@ import { inspectProjectStore as inspectCanonicalProjectStore } from "../lib/proj
 import type { ProjectBudget, ProjectBudgetStatus } from "../lib/budget.js";
 import { filterProjectEvalArtifacts } from "../lib/project-eval-artifacts.js";
 import { resolveProjectChannelForProject } from "../lib/project-channel.js";
-import { resolveRegisteredProjectTarget } from "../lib/project-resolver.js";
 import { isProjectContextError } from "../lib/project-context-errors.js";
 import {
   PROJECT_PRIORITIES,
@@ -1537,7 +1536,9 @@ server.tool(
   async (input) => {
     try {
       const store = resolveProjectStore();
-      const owner = store.mode === "local" && input.agent ? agentId(input.agent) : undefined;
+      const agent = input.agent ? await store.getAgent(input.agent) : null;
+      if (input.agent && !agent) return errorText(`Agent not found: ${input.agent}`);
+      const owner = store.mode === "local" && input.agent ? agentId(input.agent) : agent?.id;
       return jsonProjectText(input.bulk
         ? await importWorkspaceBulk(input.path, { dryRun: input.dry_run, tags: input.tags, agent_id: owner, store })
         : await importWorkspace(input.path, { dryRun: input.dry_run, tags: input.tags, agent_id: owner, store }));
@@ -1762,6 +1763,7 @@ server.tool(
   },
   async (input) => {
     try {
+      const store = resolveProjectStore();
       return jsonText(await startProject(input.target, {
         agentTool: input.agent_tool ? parseProjectStartAgent(input.agent_tool) : undefined,
         toolCommand: input.command,
@@ -1775,9 +1777,12 @@ server.tool(
         importMetadata: input.metadata as JsonObject | undefined,
         dryRun: input.dry_run,
         attach: false,
-        agentId: input.agent ? agentId(input.agent) : ensureCliAgent().id,
+        agentId: store.mode === "local"
+          ? (input.agent ? agentId(input.agent) : ensureCliAgent().id)
+          : input.agent,
         source: "mcp",
         auditCommand: "projects_start",
+        store,
       }));
     } catch (err) {
       return projectCommandError(err);

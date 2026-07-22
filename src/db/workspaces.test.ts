@@ -742,16 +742,24 @@ describe("legacy project migration", () => {
     expect(first.validation.valid).toBe(true);
     expect(first.validation.workdir_source_count).toBe(1);
     expect(first.samples[0]?.old_project_id).toBe(project.id);
-    const workspace = listWorkspacesByPathForMachine(workdirPath, { machineId: "legacy-machine" }, db)[0];
-    expect(workspace?.slug).toBe("open-legacy");
-    expect(workspace?.metadata["migrated_from_project_id"]).toBe(project.id);
-    const locations = listWorkspaceLocations(workspace!.id, db);
+    const workspace = getWorkspaceBySlug("open-legacy", db)!;
+    expect(workspace.metadata["migrated_from_project_id"]).toBe(project.id);
+    expect(listWorkspacesByPathForMachine(workdirPath, { machineId: "legacy-machine" }, db)).toEqual([]);
+    const audit = db.query(
+      `SELECT reason, workspace_ids, details
+       FROM project_identity_migration_audit
+       WHERE location_owner_id = ? AND real_path = ?`,
+    ).get("legacy-machine", workdirPath) as { reason: string; workspace_ids: string; details: string };
+    expect(audit.reason).toBe("historical_location_unattested");
+    expect(JSON.parse(audit.workspace_ids)).toEqual([workspace.id]);
+    expect(JSON.parse(audit.details)).toMatchObject({ binding_created: false });
+    const locations = listWorkspaceLocations(workspace.id, db);
     const migratedWorkdir = locations.find((location) => location.machine_id === "legacy-machine");
     expect(migratedWorkdir?.path).toBe(workdirPath);
     expect(migratedWorkdir?.is_primary).toBe(true);
     expect(migratedWorkdir?.metadata["migrated_from_workdir_id"]).toBe("legacy_workdir_1");
-    expect(doctorWorkspace(workspace!, {}, db).checks.some((check) => check.code === "WORKSPACE_MIGRATION_MAP_OK")).toBe(true);
-    expect(listWorkspaceEvents(workspace!.id, db).some((event) => event.source === "migration")).toBe(true);
+    expect(doctorWorkspace(workspace, {}, db).checks.some((check) => check.code === "WORKSPACE_MIGRATION_MAP_OK")).toBe(true);
+    expect(listWorkspaceEvents(workspace.id, db).some((event) => event.source === "migration")).toBe(true);
 
     const second = migrateLegacyProjectsToWorkspaces(db);
     expect(second.migrated).toBe(0);

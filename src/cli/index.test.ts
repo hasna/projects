@@ -907,6 +907,153 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("API mode routes shared sub-resource writes remotely and fails closed before local-only writes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-subresources-api-"));
+    const dbPath = join(root, "projects.db");
+    const projectsHome = join(root, "home");
+    const projectPath = join(root, "stale-project");
+    const extraPath = join(root, "extra-location");
+    mkdirSync(projectPath, { recursive: true });
+    mkdirSync(extraPath, { recursive: true });
+    const localEnv = {
+      HASNA_PROJECTS_DB_PATH: dbPath,
+      HASNA_PROJECTS_HOME: projectsHome,
+      PROJECTS_CHANNEL_ENSURE: "0",
+    };
+    const created = runProjects([
+      "create", "--name", "Stale Local", "--slug", "stale-local", "--path", projectPath, "--json",
+    ], localEnv);
+    expect(created.exitCode).toBe(0);
+    const localProject = (JSON.parse(text(created.stdout)) as { project: { id: string; slug: string } }).project;
+    const addedAgent = runProjects([
+      "agents", "add", "--name", "Boundary Agent", "--slug", "boundary-agent", "--kind", "ai", "--json",
+    ], localEnv);
+    expect(addedAgent.exitCode).toBe(0);
+
+    let remoteProject = {
+      id: localProject.id,
+      slug: localProject.slug,
+      name: "Canonical Remote",
+      description: null,
+      kind: "project",
+      status: "active",
+      root_id: null,
+      recipe_id: null,
+      primary_path: "/remote/canonical",
+      git_remote: null,
+      s3_bucket: null,
+      s3_prefix: null,
+      tags: [] as string[],
+      integrations: {},
+      metadata: {},
+      last_opened_at: null,
+      created_at: "2026-07-22 00:00:00",
+      updated_at: "2026-07-22 00:00:00",
+      synced_at: null,
+    };
+    const calls: Array<{ method: string; pathname: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        calls.push({ method: request.method, pathname: url.pathname });
+        if (request.method === "GET" && url.pathname === "/v1/roots") {
+          return Response.json({ roots: [] });
+        }
+        if (request.method === "GET" && (
+          url.pathname === `/v1/projects/${localProject.slug}`
+          || url.pathname === `/v1/projects/${localProject.id}`
+        )) {
+          return Response.json(remoteProject);
+        }
+        if (request.method === "PATCH" && url.pathname === `/v1/projects/${localProject.id}`) {
+          const patch = await request.json() as { tags?: string[] };
+          remoteProject = { ...remoteProject, tags: patch.tags ?? remoteProject.tags };
+          return Response.json(remoteProject);
+        }
+        if (request.method === "POST" && url.pathname === `/v1/projects/${localProject.id}/events`) {
+          const input = await request.json() as { event_type: string; source: string };
+          return Response.json({
+            event: {
+              id: "evt_remote",
+              workspace_id: localProject.id,
+              agent_id: null,
+              event_type: input.event_type,
+              source: input.source,
+              prompt: null,
+              command: null,
+              before: null,
+              after: null,
+              metadata: {},
+              created_at: "2026-07-22 00:00:01",
+            },
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+    const cloudEnv = {
+      ...localEnv,
+      HASNA_PROJECTS_STORAGE_MODE: "cloud",
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${server.port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+    try {
+      const imported = await runProjectsAsync(["import", projectPath, "--json"], cloudEnv);
+      expect(imported.exitCode).toBe(0);
+      expect(JSON.parse(imported.stdout)).toMatchObject({ skipped: "already-registered" });
+
+      for (const args of [
+        ["canvases", "create", localProject.slug, "--name", "Must Not Persist", "--json"],
+        ["loops", "link", localProject.slug, "loop-boundary", "--json"],
+        ["locations", "add", localProject.slug, extraPath, "--json"],
+        ["agents", "assign", localProject.slug, "boundary-agent", "--json"],
+      ]) {
+        const result = await runProjectsAsync(args, cloudEnv);
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toBe("");
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          error: { code: "PROJECT_AUTHORITY_UNAVAILABLE", status: 503 },
+        });
+      }
+
+      const labels = await runProjectsAsync(["labels", "add", localProject.slug, "remote-only", "--json"], cloudEnv);
+      expect(labels.exitCode).toBe(0);
+      expect(JSON.parse(labels.stdout).labels).toEqual(["remote-only"]);
+      const event = await runProjectsAsync(["events", "record", localProject.slug, "remote_boundary", "--json"], cloudEnv);
+      expect(event.exitCode).toBe(0);
+      expect(JSON.parse(event.stdout).event.id).toBe("evt_remote");
+
+      expect(calls.filter((call) => call.method !== "GET")).toEqual([
+        { method: "PATCH", pathname: `/v1/projects/${localProject.id}` },
+        { method: "POST", pathname: `/v1/projects/${localProject.id}/events` },
+      ]);
+      const localDb = new Database(dbPath, { readonly: true });
+      try {
+        const row = localDb.query("SELECT tags FROM workspaces WHERE id = ?").get(localProject.id) as { tags: string };
+        expect(JSON.parse(row.tags)).toEqual([]);
+        expect((localDb.query(
+          "SELECT COUNT(*) AS count FROM workspace_events WHERE workspace_id = ? AND event_type = 'remote_boundary'",
+        ).get(localProject.id) as { count: number }).count).toBe(0);
+        expect((localDb.query(
+          "SELECT COUNT(*) AS count FROM workspace_locations WHERE workspace_id = ? AND path = ?",
+        ).get(localProject.id, extraPath) as { count: number }).count).toBe(0);
+        expect((localDb.query(
+          `SELECT COUNT(*) AS count
+           FROM workspace_agents wa
+           JOIN agents a ON a.id = wa.agent_id
+           WHERE wa.workspace_id = ? AND a.slug = 'boundary-agent'`,
+        ).get(localProject.id) as { count: number }).count).toBe(0);
+      } finally {
+        localDb.close();
+      }
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("workspace store, app store, canvases, loops, and labels use temp home", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-store-"));
     const env = {

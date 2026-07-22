@@ -50,6 +50,16 @@ function statusForError(err: unknown): number {
   return 500;
 }
 
+function allowlistedProjectErrorDetails(value: unknown): Record<string, boolean> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const details: Record<string, boolean> = {};
+  for (const key of ["identity_required", "migration_audit_required"] as const) {
+    if (typeof input[key] === "boolean") details[key] = input[key];
+  }
+  return Object.keys(details).length > 0 ? details : undefined;
+}
+
 function projectErrorResponse(error: unknown, status: number): Response {
   if (isProjectContextError(error)) {
     const message = error.message.startsWith(`${error.code}: `)
@@ -62,10 +72,17 @@ function projectErrorResponse(error: unknown, status: number): Response {
       && typeof rawProject["status"] === "string"
       ? { id: rawProject["id"], slug: rawProject["slug"], status: rawProject["status"] }
       : undefined;
+    const details = allowlistedProjectErrorDetails(error.details);
     return jsonResponse({
       error: { code: error.code, message },
       ...(project ? { project } : {}),
+      ...(details ? { details } : {}),
     }, status);
+  }
+  if (error instanceof NotFoundError) {
+    return jsonResponse({
+      error: { code: "PROJECT_NOT_FOUND", message: error.message },
+    }, 404);
   }
   const candidate = error && typeof error === "object" ? error as Record<string, unknown> : {};
   if (typeof candidate["code"] === "string") {
@@ -78,12 +95,14 @@ function projectErrorResponse(error: unknown, status: number): Response {
       && typeof rawProject["status"] === "string"
       ? { id: rawProject["id"], slug: rawProject["slug"], status: rawProject["status"] }
       : undefined;
+    const details = allowlistedProjectErrorDetails(candidate["details"]);
     return jsonResponse({
       error: {
         code: candidate["code"],
         message: error instanceof Error ? error.message : "request failed",
       },
       ...(project ? { project } : {}),
+      ...(details ? { details } : {}),
     }, status);
   }
   return errorResponse(error instanceof Error ? error.message : "internal error", status);
@@ -267,6 +286,48 @@ async function route(
       const limit = url.searchParams.get("limit");
       const events = await store.listWorkspaceEvents(ws.id, limit ? Number(limit) : undefined);
       return jsonResponse({ events, count: events.length });
+    }
+    if (sub === "events" && method === "POST") {
+      const ws = await store.requireWorkspace(id);
+      if (ws.status === "deleted") {
+        throw new ProjectContextError("PROJECT_DELETED", "Deleted project cannot receive events", { project: ws });
+      }
+      if (ws.status === "archived") {
+        throw new ProjectContextError("PROJECT_ARCHIVED", "Archived project cannot receive events", { project: ws });
+      }
+      const body = await readJsonBody(req);
+      const allowed = new Set(["event_type", "source", "agent_id", "prompt", "command", "before", "after", "metadata"]);
+      for (const key of Object.keys(body)) {
+        if (!allowed.has(key)) throw new ValidationError(`event contains unsupported property: ${key}`);
+      }
+      if (typeof body["event_type"] !== "string" || !body["event_type"].trim()) {
+        throw new ValidationError("event_type must be a non-empty string");
+      }
+      const requestedSource = typeof body["source"] === "string" ? body["source"].trim() : "";
+      const source = (["cli", "mcp", "agent", "migration", "system"] as const).find(
+        (candidate) => candidate === requestedSource,
+      );
+      if (requestedSource && !source) throw new ValidationError("source is invalid");
+      for (const key of ["before", "after", "metadata"] as const) {
+        const value = body[key];
+        if (value !== undefined && value !== null && (typeof value !== "object" || Array.isArray(value))) {
+          throw new ValidationError(`${key} must be a JSON object or null`);
+        }
+      }
+      const event = await store.recordEvent({
+        workspace_id: ws.id,
+        event_type: body["event_type"].trim(),
+        source: source ?? "system",
+        agent_id: typeof body["agent_id"] === "string" ? body["agent_id"] : undefined,
+        prompt: typeof body["prompt"] === "string" ? body["prompt"] : undefined,
+        command: typeof body["command"] === "string" ? body["command"] : undefined,
+        before: body["before"] as never,
+        after: body["after"] as never,
+        metadata: body["metadata"] && typeof body["metadata"] === "object" && !Array.isArray(body["metadata"])
+          ? body["metadata"] as Record<string, unknown>
+          : undefined,
+      });
+      return jsonResponse({ event }, 201);
     }
     return errorResponse("Not found", 404);
   }
