@@ -34,6 +34,7 @@ function fakeWorkspace(overrides: Partial<Workspace> = {}): Workspace {
 /** Minimal fake store — exercises routing/auth without a live Postgres. */
 function fakeStore(): ProjectsPgStore {
   const created: Workspace[] = [];
+  const idempotency = new Map<string, { hash: string; workspace: Workspace }>();
   return {
     async ping() {
       return true;
@@ -41,9 +42,37 @@ function fakeStore(): ProjectsPgStore {
     async listWorkspaces() {
       return created;
     },
-    async createWorkspace(input: { name: string; slug?: string }) {
-      const ws = fakeWorkspace({ id: `wks_${created.length + 1}`, name: input.name, slug: input.slug ?? "demo" });
+    async createWorkspace(input: { name: string; slug?: string; primary_path?: string }, options?: { idempotencyKey?: string }) {
+      const hash = JSON.stringify(input);
+      const key = options?.idempotencyKey;
+      if (key) {
+        const prior = idempotency.get(key);
+        if (prior && prior.hash !== hash) {
+          throw Object.assign(new Error("Idempotency key was already used for a different request"), {
+            status: 409,
+            code: "PROJECT_IDEMPOTENCY_KEY_REUSED",
+          });
+        }
+        if (prior) return prior.workspace;
+      }
+      const existing = input.primary_path
+        ? created.find((workspace) => workspace.primary_path === input.primary_path)
+        : undefined;
+      if (existing) {
+        throw Object.assign(new Error("Project path is already registered"), {
+          status: 409,
+          code: "PROJECT_ALREADY_REGISTERED",
+          project: existing,
+        });
+      }
+      const ws = fakeWorkspace({
+        id: `wks_${created.length + 1}`,
+        name: input.name,
+        slug: input.slug ?? "demo",
+        primary_path: input.primary_path ?? null,
+      });
       created.push(ws);
+      if (key) idempotency.set(key, { hash, workspace: ws });
       return ws;
     },
     async requireWorkspace(id: string) {
@@ -138,6 +167,114 @@ describe("projects-serve auth", () => {
     const get = await h(new Request(`http://x/v1/projects/${created.id}`, { headers: { "x-api-key": token } }));
     expect(get.status).toBe(200);
     expect((await get.json()).slug).toBe("alpha");
+  });
+
+  test("GET project context-bundle returns the strict additive schema", async () => {
+    const h = handler();
+    const token = keyWith(["projects:*"]);
+    const create = await h(new Request("http://x/v1/projects", {
+      method: "POST",
+      headers: { "x-api-key": token, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Bundle",
+        slug: "bundle",
+        integrations: { todos_project_id: "todo-project", todos_task_list_id: "todo-list" },
+      }),
+    }));
+    const project = await create.json() as Workspace;
+    const response = await h(new Request(`http://x/v1/projects/${project.id}/context-bundle`, {
+      headers: { "x-api-key": token },
+    }));
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    const { parseProjectContextBundle } = await import("../lib/project-context-bundle.js");
+    const parsed = parseProjectContextBundle(body);
+    expect(parsed.schema).toBe("hasna.projects.project_context_bundle.v1");
+    expect(parsed.project.id).toBe(project.id);
+    expect(parsed.commands.length).toBeLessThanOrEqual(6);
+    expect(Buffer.byteLength(JSON.stringify(body), "utf-8")).toBeLessThanOrEqual(8 * 1024);
+    expect(() => parseProjectContextBundle({ ...(body as object), arbitrary: true })).toThrow();
+  });
+
+  test("replays concurrent and lost-response creates by persisted idempotency key", async () => {
+    const h = handler();
+    const token = keyWith(["projects:*"]);
+    const request = () => new Request("http://x/v1/projects", {
+      method: "POST",
+      headers: {
+        "x-api-key": token,
+        "content-type": "application/json",
+        "idempotency-key": "ope4-create-alpha",
+      },
+      body: JSON.stringify({
+        name: "Alpha",
+        slug: "alpha",
+        primary_path: "/srv/alpha",
+        identity: { location_owner_id: "station-1", real_path: "/srv/alpha" },
+      }),
+    });
+
+    const [first, concurrent] = await Promise.all([h(request()), h(request())]);
+    expect(first.status).toBe(201);
+    expect(concurrent.status).toBe(201);
+    const firstBody = await first.json() as Workspace;
+    const concurrentBody = await concurrent.json() as Workspace;
+    expect(concurrentBody.id).toBe(firstBody.id);
+
+    const replay = await h(request());
+    expect(replay.status).toBe(201);
+    expect(((await replay.json()) as Workspace).id).toBe(firstBody.id);
+
+    const listed = await h(new Request("http://x/v1/projects", { headers: { "x-api-key": token } }));
+    expect(((await listed.json()) as { count: number }).count).toBe(1);
+  });
+
+  test("rejects idempotency-key reuse with a different request", async () => {
+    const h = handler();
+    const token = keyWith(["projects:*"]);
+    const create = (name: string) => h(new Request("http://x/v1/projects", {
+      method: "POST",
+      headers: {
+        "x-api-key": token,
+        "content-type": "application/json",
+        "idempotency-key": "ope4-collision",
+      },
+      body: JSON.stringify({ name }),
+    }));
+
+    expect((await create("First")).status).toBe(201);
+    const collision = await create("Second");
+    expect(collision.status).toBe(409);
+    expect((await collision.json()).error.code).toBe("PROJECT_IDEMPOTENCY_KEY_REUSED");
+  });
+
+  test("explicit create against an existing path is 409 with canonical identity", async () => {
+    const h = handler();
+    const token = keyWith(["projects:*"]);
+    const create = (name: string, idempotencyKey: string) => h(new Request("http://x/v1/projects", {
+      method: "POST",
+      headers: {
+        "x-api-key": token,
+        "content-type": "application/json",
+        "idempotency-key": idempotencyKey,
+      },
+      body: JSON.stringify({
+        name,
+        slug: name.toLowerCase(),
+        primary_path: "/srv/bound",
+        identity: { location_owner_id: "station-1", real_path: "/srv/bound" },
+      }),
+    }));
+
+    const first = await create("Bound", "ope4-bound-first");
+    expect(first.status).toBe(201);
+    const canonical = await first.json() as Workspace;
+
+    const duplicate = await create("Duplicate", "ope4-bound-second");
+    expect(duplicate.status).toBe(409);
+    const body = await duplicate.json();
+    expect(body.error.code).toBe("PROJECT_ALREADY_REGISTERED");
+    expect(body.project).toEqual({ id: canonical.id, slug: canonical.slug, status: canonical.status });
   });
 
   test("Authorization: Bearer scheme is accepted", async () => {

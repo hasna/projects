@@ -129,6 +129,8 @@ export interface ExecuteWorkspaceCreationOptions {
   ensureChannel?: boolean;
   /** Conversations CLI runner override (used by tests). */
   channelRunner?: ConversationsChannelRunner;
+  /** Registry write seam; machine-local runtime steps remain in this module. */
+  createProject?: (input: CreateWorkspaceInput) => Promise<Workspace>;
 }
 
 export interface CleanupWorkspaceCreationOptions {
@@ -578,10 +580,10 @@ export function cleanupWorkspaceCreation(
   }, options);
 }
 
-export function executeWorkspaceCreation(
+export async function executeWorkspaceCreation(
   input: WorkspaceCreationPlanInput,
   options: ExecuteWorkspaceCreationOptions = {},
-): WorkspaceCreationExecution {
+): Promise<WorkspaceCreationExecution> {
   const plan = planWorkspaceCreation(input, { db: options.db });
   if (options.dryRun) {
     return {
@@ -617,7 +619,9 @@ export function executeWorkspaceCreation(
       }, options.db));
     }
 
-    workspace = createWorkspace(plan.workspace_input, options.db);
+    workspace = options.createProject
+      ? await options.createProject(plan.workspace_input)
+      : createWorkspace(plan.workspace_input, options.db);
     const runtimeDryRun = Boolean(options.runtimeDryRun);
     const prepare = prepareWorkspaceDirectory(workspace, {
       createDirectory: input.createDirectory || input.gitInit,

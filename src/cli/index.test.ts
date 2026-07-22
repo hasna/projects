@@ -8,13 +8,14 @@ import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, st
 import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
+const LOCAL_PROJECTS_ENV = { HASNA_PROJECTS_STORAGE_MODE: "local" } as const;
 
 function runProjects(args: string[], env: Record<string, string> = {}, cwd = process.cwd()) {
   return Bun.spawnSync({
     cmd: ["bun", "run", CLI_PATH, ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
     cwd,
   });
 }
@@ -438,10 +439,10 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "dashboard", "serve", "served-dashboard", "--host", "127.0.0.1", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
       });
       try {
-        const stdout = await readStreamChunk(proc.stdout);
+        const stdout = await readStreamChunk(proc.stdout, 20_000);
         expect(stdout).toContain("\"ok\": true");
         await Bun.sleep(500);
         expect(proc.exitCode).toBeNull();
@@ -452,7 +453,7 @@ describe("project-first CLI surface", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("reports serve defaults to network bind and keeps existing project registry semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "projects-reports-serve-"));
@@ -472,7 +473,7 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "reports", "serve", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
       });
       try {
         const stdout = await readStreamChunk(proc.stdout);
@@ -709,6 +710,101 @@ describe("project-first CLI surface", () => {
     const get = runProjects(["get", "surface-app", "--json"], env);
     expect(get.exitCode).toBe(0);
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
+  });
+
+  test("explicit create on a bound path fails closed while why remains read-only", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-bound-path-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const targetPath = join(root, "bound");
+    mkdirSync(targetPath, { recursive: true });
+    try {
+      const first = runProjects([
+        "create",
+        "--name",
+        "Bound Project",
+        "--slug",
+        "bound-project",
+        "--path",
+        targetPath,
+        "--marker",
+        "--json",
+      ], env);
+      expect(first.exitCode).toBe(0);
+      const canonical = (JSON.parse(text(first.stdout)) as { project: { id: string; slug: string; status: string } }).project;
+
+      const duplicate = runProjects([
+        "create",
+        "--name",
+        "Duplicate Project",
+        "--slug",
+        "duplicate-project",
+        "--path",
+        targetPath,
+        "--json",
+      ], env);
+      expect(duplicate.exitCode).not.toBe(0);
+      expect(text(duplicate.stderr)).toBe("");
+      const duplicateBody = JSON.parse(text(duplicate.stdout)) as {
+        error: { code: string };
+        project: { id: string; slug: string; status: string };
+      };
+      expect(duplicateBody.error.code).toBe("PROJECT_ALREADY_REGISTERED");
+      expect(duplicateBody.project).toEqual({
+        id: canonical.id,
+        slug: canonical.slug,
+        status: canonical.status,
+      });
+
+      const why = runProjects(["why", targetPath, "--json"], env);
+      expect(why.exitCode).toBe(0);
+      const whyBody = JSON.parse(text(why.stdout)) as { resolved: boolean; create_allowed: boolean; project?: { id: string } };
+      expect(whyBody.resolved).toBe(true);
+      expect(whyBody.create_allowed).toBe(false);
+      expect(whyBody.project?.id).toBe(canonical.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("context-bundle exposes the strict additive project context contract", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-context-bundle-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const targetPath = join(root, "bundle");
+    try {
+      const created = runProjects([
+        "create",
+        "--name",
+        "Context Bundle",
+        "--slug",
+        "context-bundle",
+        "--path",
+        targetPath,
+        "--todos-project-id",
+        "todo-project",
+        "--todos-task-list-id",
+        "todo-list",
+        "--integrations-json",
+        JSON.stringify({ conversations_channel: "internal-context-bundle", mementos_project_id: "memory-project", mementos_scope: "project" }),
+        "--json",
+      ], env);
+      expect(created.exitCode).toBe(0);
+
+      const result = runProjects(["context-bundle", targetPath, "--json"], env);
+      expect(result.exitCode).toBe(0);
+      const body = JSON.parse(text(result.stdout)) as {
+        schema: string;
+        project: { id: string; slug: string };
+        resolution: { source: string; conflict: boolean };
+        commands: Array<{ argv: string[] }>;
+      };
+      expect(body.schema).toBe("hasna.projects.project_context_bundle.v1");
+      expect(body.project.slug).toBe("context-bundle");
+      expect(body.resolution.conflict).toBe(false);
+      expect(body.commands.length).toBeLessThanOrEqual(6);
+      expect(Buffer.byteLength(text(result.stdout), "utf-8")).toBeLessThanOrEqual(8 * 1024);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("workspace store, app store, canvases, loops, and labels use temp home", () => {

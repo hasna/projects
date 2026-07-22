@@ -245,12 +245,12 @@ describe("ensureProjectChannel", () => {
 });
 
 describe("channel ensure on project create/start", () => {
-  test("executeWorkspaceCreation derives the channel integration and ensures the channel", () => {
+  test("executeWorkspaceCreation derives the channel integration and ensures the channel", async () => {
     const db = makeDb();
     const path = mkdtempSync(join(tmpdir(), "project-channel-create-"));
     const { calls, runner } = recordingRunner(() => ok);
     try {
-      const result = executeWorkspaceCreation({
+      const result = await executeWorkspaceCreation({
         name: "Fleet Comms Create",
         slug: "fleet-comms-create",
         kind: "project",
@@ -268,11 +268,11 @@ describe("channel ensure on project create/start", () => {
     }
   });
 
-  test("executeWorkspaceCreation stores the derived channel even when ensure is disabled", () => {
+  test("executeWorkspaceCreation stores the derived channel even when ensure is disabled", async () => {
     const db = makeDb();
     const path = mkdtempSync(join(tmpdir(), "project-channel-create-off-"));
     try {
-      const result = executeWorkspaceCreation({
+      const result = await executeWorkspaceCreation({
         name: "Quiet Create",
         slug: "quiet-create",
         kind: "open-source",
@@ -288,12 +288,12 @@ describe("channel ensure on project create/start", () => {
     }
   });
 
-  test("executeWorkspaceCreation keeps a caller-provided channel name", () => {
+  test("executeWorkspaceCreation keeps a caller-provided channel name", async () => {
     const db = makeDb();
     const path = mkdtempSync(join(tmpdir(), "project-channel-create-linked-"));
     const { calls, runner } = recordingRunner(() => ok);
     try {
-      const result = executeWorkspaceCreation({
+      const result = await executeWorkspaceCreation({
         name: "Prelinked",
         slug: "prelinked",
         kind: "project",

@@ -1,7 +1,7 @@
 // @generated from the projects-serve OpenAPI document by scripts/generate-sdk.ts.
 // DO NOT EDIT BY HAND. Regenerate: bun run sdk:generate
 // @generated from OpenAPI by @hasna/contracts SDK generator — DO NOT EDIT.
-// Source: Projects API 0.1.79
+// Source: Projects API 0.1.90
 
 export interface Root { "id": string; "slug": string; "name": string; "base_path": string; "tags"?: Array<string>; "default_kind"?: string | null; "repo_visibility"?: string | null; "allowed_recipes"?: Array<string>; "allowed_agents"?: Array<string>; "metadata"?: Record<string, unknown>; "created_at"?: string; "updated_at"?: string }
 
@@ -19,7 +19,9 @@ export interface CreateRecipe { "name": string; "slug"?: string; "description"?:
 
 export interface Workspace { "id": string; "slug": string; "name": string; "description"?: string | null; "kind": string; "status": "active" | "archived" | "deleted"; "root_id"?: string | null; "recipe_id"?: string | null; "primary_path"?: string | null; "git_remote"?: string | null; "tags"?: Array<string>; "integrations"?: Record<string, unknown>; "metadata"?: Record<string, unknown>; "created_at"?: string; "updated_at"?: string }
 
-export interface CreateWorkspace { "name": string; "slug"?: string; "description"?: string; "kind"?: string; "root_id"?: string; "recipe_id"?: string; "primary_path"?: string; "git_remote"?: string; "tags"?: Array<string>; "integrations"?: Record<string, unknown>; "metadata"?: Record<string, unknown>; "agent_id"?: string }
+export interface CreateWorkspace { "name": string; "slug"?: string; "description"?: string; "kind"?: string; "root_id"?: string; "recipe_id"?: string; "primary_path"?: string; "git_remote"?: string; "tags"?: Array<string>; "integrations"?: Record<string, unknown>; "metadata"?: Record<string, unknown>; "agent_id"?: string; "identity"?: ProjectIdentityLocator }
+
+export interface ProjectIdentityLocator { "location_owner_id"?: string; "real_path"?: string; "logical_path"?: string; "station_id"?: string; "machine_id"?: string }
 
 export interface UpdateWorkspace { "name"?: string; "slug"?: string; "description"?: string | null; "kind"?: string; "status"?: "active" | "archived" | "deleted"; "root_id"?: string | null; "recipe_id"?: string | null; "primary_path"?: string | null; "git_remote"?: string | null; "tags"?: Array<string>; "integrations"?: Record<string, unknown>; "metadata"?: Record<string, unknown>; "agent_id"?: string }
 
@@ -34,6 +36,8 @@ export interface AgentList { "agents": Array<Agent>; "count": number }
 export interface RecipeList { "recipes": Array<Recipe>; "count": number }
 
 export interface EventList { "events": Array<WorkspaceEvent>; "count": number }
+
+export interface ProjectContextBundle { "schema": "hasna.projects.project_context_bundle.v1"; "generated_at": string; "hash": string; "revision": string; "freshness": "fresh" | "stale" | "unknown"; "resolution": { "source": string; "conflict": boolean; "create_allowed": boolean }; "authority": { "owner": string; "mode": "local" | "api"; "storage": "sqlite" | "cloud" | "self-hosted"; "availability": "available" | "unavailable" }; "project": { "id": string; "slug": string; "name": string; "kind": string; "status": "active" | "archived" | "deleted"; "path": string | null; "updated_at": string }; "links": { "todos": { "state": "linked" | "partial" | "unlinked"; "project_id": string | null; "task_list_id": string | null }; "conversations": { "state": "linked" | "partial" | "unlinked"; "channel": string | null }; "mementos": { "state": "linked" | "partial" | "unlinked"; "project_id": string | null; "scope": string | null } }; "station": { "station_id": string | null; "machine_id": string | null } | null; "commands": Array<{ "name": "show" | "context" | "why" | "context-bundle"; "argv": Array<string> }> }
 
 export interface DeleteResult { "deleted": boolean; "hard"?: boolean; "id"?: string }
 
@@ -189,6 +193,15 @@ export class ProjectsClient {
     /** Archive a project */
     async archiveProject(id: string, init?: RequestInit): Promise<Workspace> {
       return this.request("POST", `/v1/projects/${encodeURIComponent(String(id))}/archive`, {
+        body: undefined,
+        query: undefined,
+        init,
+      });
+    }
+
+    /** Get a strict, allowlisted project context bundle */
+    async getProjectContextBundle(id: string, init?: RequestInit): Promise<ProjectContextBundle> {
+      return this.request("GET", `/v1/projects/${encodeURIComponent(String(id))}/context-bundle`, {
         body: undefined,
         query: undefined,
         init,

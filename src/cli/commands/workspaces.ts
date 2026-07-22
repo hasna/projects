@@ -130,6 +130,12 @@ import {
   toAgentText,
 } from "../../lib/project-agent-assist.js";
 import {
+  buildProjectContextBundle,
+  encodeProjectContextBundle,
+} from "../../lib/project-context-bundle.js";
+import { isProjectContextError } from "../../lib/project-context-errors.js";
+import { resolveProjectStore } from "../../store/project-store.js";
+import {
   createProjectBudget,
   getProjectBudgetStatuses,
   listProjectBudgets,
@@ -192,6 +198,22 @@ function printObject(value: unknown, opts?: { json?: boolean }): void {
   if (wantsJson(opts)) {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
   }
+}
+
+function reportProjectCommandError(error: unknown, opts?: { json?: boolean }): void {
+  if (wantsJson(opts) && isProjectContextError(error)) {
+    printObject({
+      error: {
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      },
+      ...(error.project ? { project: error.project } : {}),
+    }, opts);
+  } else {
+    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+  }
+  process.exitCode = 1;
 }
 
 function printRenderSpec(value: unknown): void {
@@ -858,9 +880,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--siblings-limit <n>", "Maximum sibling projects to include", "12")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const context = buildProjectAgentContext({
+        const context = await buildProjectAgentContext({
           target,
           cwd: resolveCwdOption(opts),
           eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 8,
@@ -876,15 +898,47 @@ function registerAgentAssistCommands(program: Command): void {
     });
 
   program
+    .command("context-bundle [target]")
+    .description("Emit the strict hasna.projects.project_context_bundle.v1 contract")
+    .option("--cwd <path>", "Working directory used when target is omitted")
+    .option("-j, --json", "Output JSON")
+    .action(async (target, opts) => {
+      try {
+        const store = resolveProjectStore();
+        const resolution = await store.resolveTargetResolution(
+          typeof target === "string" && target.trim() ? target : resolveCwdOption(opts),
+          { allowPath: true, allowMarker: true, intent: "read" },
+        );
+        const bundle = await buildProjectContextBundle({
+          project: resolution.project,
+          resolution: {
+            source: resolution.source,
+            conflict: false,
+            create_allowed: resolution.create_allowed,
+          },
+          authority: resolution.authority,
+          station: {
+            station_id: process.env.HASNA_STATION_ID ?? process.env.STATION_ID,
+            machine_id: process.env.HASNA_MACHINE_ID ?? process.env.MACHINE_ID,
+          },
+        });
+        console.log(encodeProjectContextBundle(bundle));
+      } catch (err) {
+        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+        process.exit(1);
+      }
+    });
+
+  program
     .command("next [target]")
     .description("Suggest high-leverage next actions for a project to an agent")
     .option("--cwd <path>", "Working directory used when target is omitted")
     .option("--limit <n>", "Maximum suggestions", "6")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = suggestProjectNextActions({
+        const result = await suggestProjectNextActions({
           target,
           cwd: resolveCwdOption(opts),
           limit: parsePositiveInteger(opts.limit, "--limit") ?? 6,
@@ -913,9 +967,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--cwd <path>", "Working directory used when target is omitted")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = explainProjectResolution(target, { cwd: resolveCwdOption(opts) });
+        const result = await explainProjectResolution(target, { cwd: resolveCwdOption(opts) });
         if (wantsAgentText(opts)) { console.log(toAgentText(result)); return; }
         if (wantsJson(opts)) { printObject(result, opts); return; }
         console.log(toAgentText(result));
@@ -934,18 +988,19 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--dry-run", "With --ensure: report what would happen without creating anything")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
         const effectiveTarget = typeof target === "string" && target.trim() ? target : resolveCwdOption(opts);
-        const project = resolveRegisteredProjectTargetOrThrow(effectiveTarget).project;
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(effectiveTarget, { allowPath: true, allowMarker: true, intent: "read" });
         if (!opts.ensure) {
           const resolution = resolveProjectChannelForProject(project);
           if (wantsJson(opts)) { printObject(resolution, opts); return; }
           console.log(resolution.channel);
           return;
         }
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const result = ensureProjectChannel(project, {
+        const agentId = store.mode === "local" ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id) : undefined;
+        const result = await store.ensureChannel(project, {
           agentId,
           source: "cli",
           command: process.argv.join(" "),
@@ -986,9 +1041,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--runs-limit <n>", "Maximum recent agent runs to include", "5")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const handoff = buildProjectHandoff({
+        const handoff = await buildProjectHandoff({
           target,
           cwd: resolveCwdOption(opts),
           eventsLimit: parsePositiveInteger(opts.eventsLimit, "--events-limit") ?? 10,
@@ -1013,9 +1068,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--status <status>", "Filter by status: planned, running, completed, failed")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((target, opts) => {
+    .action(async (target, opts) => {
       try {
-        const result = listProjectAgentRunsView({
+        const result = await listProjectAgentRunsView({
           target,
           cwd: resolveCwdOption(opts),
           limit: parsePositiveInteger(opts.limit, "--limit") ?? 20,
@@ -1046,9 +1101,9 @@ function registerAgentAssistCommands(program: Command): void {
     .option("--cwd <path>", "Working directory used when target is omitted")
     .option("--for-agent", "Output LLM-friendly text instead of JSON")
     .option("-j, --json", "Output JSON")
-    .action((runId, target, opts) => {
+    .action(async (runId, target, opts) => {
       try {
-        const detail = getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
+        const detail = await getProjectAgentRunDetail({ runId, target, cwd: resolveCwdOption(opts) });
         if (wantsJson(opts)) {
           printObject(detail, opts);
           return;
@@ -1559,22 +1614,7 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (opts) => {
       try {
-        const cloud = resolveProjectsBackend();
-        if (cloud) {
-          const project = await cloud.createWorkspace({
-            name: opts.name,
-            slug: opts.slug,
-            description: opts.description,
-            kind: parseKind(opts.kind),
-            tags: splitList(opts.tags),
-            metadata: parseJsonObject(opts.metadataJson, "--metadata-json") ?? undefined,
-            integrations: parseIntegrationsJson(opts.integrationsJson) ?? undefined,
-          });
-          if (wantsJson(opts)) { printObject({ project }, opts); return; }
-          console.log(chalk.green(`✓ Project created (cloud): ${project.slug}`));
-          return;
-        }
-        const agentId = resolveAgentId(opts.agent);
+        const store = resolveProjectStore();
         const tmuxWindows = parseTmuxWindowsJson(opts.tmuxWindowsJson);
         const baseMetadata = parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
         const startWindows = parseTmuxWindowsJson(opts.startWindowsJson, "--start-windows-json");
@@ -1595,27 +1635,55 @@ function registerProjectCommands(program: Command): void {
           brief_id: opts.briefId,
           brief_path: opts.briefPath,
         }) ?? baseIntegrations;
-        const result = executeWorkspaceCreation({
+        const root = opts.root ? await store.getRoot(opts.root) : null;
+        if (opts.root && !root) throw new Error(`Root not found: ${opts.root}`);
+        const recipe = opts.recipe ? await store.getRecipe(opts.recipe) : null;
+        if (opts.recipe && !recipe) throw new Error(`Recipe not found: ${opts.recipe}`);
+        const agent = opts.agent ? await store.getAgent(opts.agent) : null;
+        if (opts.agent && !agent) throw new Error(`Agent not found: ${opts.agent}`);
+        const agentId = store.mode === "local" ? resolveAgentId(opts.agent) : agent?.id;
+        const projectInput = {
           name: opts.name,
           slug: opts.slug,
           description: opts.description,
           kind: parseKind(opts.kind),
-          root_id: resolveRootId(opts.root),
-          recipe_id: resolveRecipeId(opts.recipe),
+          root_id: root?.id,
+          recipe_id: recipe?.id,
           primary_path: opts.path,
           git_remote: opts.gitRemote,
           tags: splitList(opts.tags),
           integrations,
           metadata: managementMetadata,
           agent_id: agentId,
-          source: "cli",
+          source: "cli" as const,
           command: process.argv.join(" "),
+        };
+        if (store.mode === "api") {
+          if (opts.mkdir || opts.gitInit || opts.marker || opts.tmuxSession || tmuxWindows || opts.tmuxProfile) {
+            throw new Error("Local directory, marker, git, and tmux activation flags are unavailable in API mode.");
+          }
+          if (opts.dryRun || opts.dryRunRuntime) {
+            if (wantsJson(opts)) { printObject({ dry_run: true, project: projectInput }, opts); return; }
+            console.log(chalk.dim(`[dry-run] Project create: ${opts.slug ?? opts.name}`));
+            return;
+          }
+          const project = await store.createProject(projectInput);
+          if (wantsJson(opts)) { printObject({ project }, opts); return; }
+          console.log(chalk.green(`✓ Project created: ${project.slug}`));
+          return;
+        }
+        const result = await executeWorkspaceCreation({
+          ...projectInput,
           createDirectory: opts.mkdir || opts.gitInit,
           gitInit: opts.gitInit,
           writeMarker: opts.marker,
           tmux: opts.tmuxSession || tmuxWindows ? { session: opts.tmuxSession, windows: tmuxWindows } : undefined,
           tmux_profile: opts.tmuxProfile,
-        }, { dryRun: opts.dryRun, runtimeDryRun: opts.dryRunRuntime });
+        }, {
+          dryRun: opts.dryRun,
+          runtimeDryRun: opts.dryRunRuntime,
+          createProject: (input) => store.createProject(input),
+        });
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         if (result.dry_run) {
           console.log(chalk.dim(`[dry-run] Project plan: ${result.plan.workspace.slug}`));
@@ -1637,8 +1705,7 @@ function registerProjectCommands(program: Command): void {
           console.log(`  ${chalk.dim("tmux:")} ${status} ${result.tmux.session_name}`);
         }
       } catch (err) {
-        console.error(chalk.red(err instanceof Error ? err.message : String(err)));
-        process.exit(1);
+        reportProjectCommandError(err, opts);
       }
     });
 
@@ -1723,7 +1790,8 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action(async (repo, opts) => {
       try {
-        const result = await importWorkspaceFromGitHub(repo, {
+        const store = resolveProjectStore();
+        const result = await importWorkspaceFromGitHub(store, repo, {
           root: opts.root,
           path: opts.path,
           clone: opts.clone,
@@ -1732,7 +1800,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: Boolean(opts.dryRun),
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: store.mode === "local" && opts.agent ? resolveAgentId(opts.agent) : undefined,
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -1768,7 +1836,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       try {
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
-        const result = await syncWorkspaceGitHubRoots({
+        const store = resolveProjectStore();
+        const result = await syncWorkspaceGitHubRoots(store, {
           root: opts.root,
           repoPrefix: opts.repoPrefix,
           limit,
@@ -1776,7 +1845,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: true,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: store.mode === "local" && opts.agent ? resolveAgentId(opts.agent) : undefined,
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -1806,7 +1875,8 @@ function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       try {
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 500;
-        const result = await syncWorkspaceGitHubRoots({
+        const store = resolveProjectStore();
+        const result = await syncWorkspaceGitHubRoots(store, {
           root: opts.root,
           repoPrefix: opts.repoPrefix,
           limit,
@@ -1814,7 +1884,7 @@ function registerProjectCommands(program: Command): void {
           tags: splitList(opts.tags),
           remoteProtocol: parseGitHubRemoteProtocol(opts.remoteProtocol),
           dryRun: opts.dryRun,
-          agent_id: opts.agent ? resolveAgentId(opts.agent) : undefined,
+          agent_id: store.mode === "local" && opts.agent ? resolveAgentId(opts.agent) : undefined,
           source: "cli",
           command: process.argv.join(" "),
         });
@@ -2419,9 +2489,10 @@ function registerProjectCommands(program: Command): void {
     .option("--integrations-json <json>", "Additional integrations JSON object")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug, { intent: "read" });
         const integrations = mergeIntegrations(
           {
             github_repo: opts.githubRepo,
@@ -2438,12 +2509,12 @@ function registerProjectCommands(program: Command): void {
           parseIntegrationPairs(opts.integration),
           parseIntegrationsJson(opts.integrationsJson),
         );
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const updated = withWorkspaceLock(project, agentId, "project integration link", () => linkWorkspaceExternalIntegrations(project, integrations, {
+        const agentId = store.mode === "local" ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id) : undefined;
+        const updated = await linkWorkspaceExternalIntegrations(store, project, integrations, {
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
-        }));
+        });
         if (wantsJson(opts)) { printObject(updated, opts); return; }
         console.log(chalk.green(`✓ Linked integrations for ${updated.slug}`));
       } catch (err) {
@@ -2506,11 +2577,12 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview GitHub and git actions without mutating")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const publish = () => publishWorkspaceToGitHub(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug, { intent: "read" });
+        const agentId = store.mode === "local" ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id) : undefined;
+        const result = await publishWorkspaceToGitHub(store, project, {
           org: opts.org,
           repoName: opts.repo,
           visibility: parseGitHubVisibility(opts.visibility),
@@ -2522,9 +2594,6 @@ function registerProjectCommands(program: Command): void {
           source: "cli",
           command: process.argv.join(" "),
         });
-        const result = opts.dryRun
-          ? publish()
-          : withWorkspaceLock(project, agentId, "project GitHub publish", publish);
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         const marker = result.dry_run ? chalk.dim("[dry-run]") : chalk.green("✓");
         console.log(`${marker} GitHub publish ${result.full_name}`);
@@ -2544,20 +2613,18 @@ function registerProjectCommands(program: Command): void {
     .option("--dry-run", "Preview changes without mutating")
     .option("--agent <id-or-slug>", "Attributing agent")
     .option("-j, --json", "Output JSON")
-    .action((idOrSlug, opts) => {
+    .action(async (idOrSlug, opts) => {
       try {
-        const project = resolveProjectTarget(idOrSlug);
-        const agentId = opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id;
-        const unpublish = () => unpublishWorkspaceFromGitHub(project, {
+        const store = resolveProjectStore();
+        const project = await store.resolveTarget(idOrSlug, { intent: "read" });
+        const agentId = store.mode === "local" ? (opts.agent ? resolveAgentId(opts.agent) : ensureCliAgent().id) : undefined;
+        const result = await unpublishWorkspaceFromGitHub(store, project, {
           clearIntegrations: opts.clearIntegrations,
           dryRun: opts.dryRun,
           agent_id: agentId,
           source: "cli",
           command: process.argv.join(" "),
         });
-        const result = opts.dryRun
-          ? unpublish()
-          : withWorkspaceLock(project, agentId, "project GitHub unpublish", unpublish);
         if (wantsJson(opts)) { printObject(projectPayload(result), opts); return; }
         const marker = result.dry_run ? chalk.dim("[dry-run]") : chalk.green("✓");
         console.log(`${marker} GitHub unpublish ${project.slug}`);

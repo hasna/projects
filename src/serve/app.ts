@@ -6,6 +6,8 @@
 
 import { verifyApiKey, type ApiKeyVerifier, type AuthAuditHook } from "@hasna/contracts/auth";
 import { NotFoundError, ProjectsPgStore, ValidationError } from "./pg-store.js";
+import { ProjectContextError, isProjectContextError } from "../lib/project-context-errors.js";
+import { buildProjectContextBundle } from "../lib/project-context-bundle.js";
 import { buildOpenApiSpec } from "./openapi.js";
 
 export interface ServeAppOptions {
@@ -34,9 +36,52 @@ function errorResponse(message: string, status: number, reason?: string): Respon
 }
 
 function statusForError(err: unknown): number {
+  if (err && typeof err === "object" && "status" in err) {
+    const status = Number((err as { status: unknown }).status);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) return status;
+  }
   if (err instanceof NotFoundError) return 404;
   if (err instanceof ValidationError) return 400;
   return 500;
+}
+
+function projectErrorResponse(error: unknown, status: number): Response {
+  if (isProjectContextError(error)) {
+    const message = error.message.startsWith(`${error.code}: `)
+      ? error.message.slice(error.code.length + 2)
+      : error.message;
+    const rawProject = error.project as Record<string, unknown> | undefined;
+    const project = rawProject
+      && typeof rawProject["id"] === "string"
+      && typeof rawProject["slug"] === "string"
+      && typeof rawProject["status"] === "string"
+      ? { id: rawProject["id"], slug: rawProject["slug"], status: rawProject["status"] }
+      : undefined;
+    return jsonResponse({
+      error: { code: error.code, message },
+      ...(project ? { project } : {}),
+    }, status);
+  }
+  const candidate = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  if (typeof candidate["code"] === "string") {
+    const rawProject = candidate["project"] && typeof candidate["project"] === "object"
+      ? candidate["project"] as Record<string, unknown>
+      : null;
+    const project = rawProject
+      && typeof rawProject["id"] === "string"
+      && typeof rawProject["slug"] === "string"
+      && typeof rawProject["status"] === "string"
+      ? { id: rawProject["id"], slug: rawProject["slug"], status: rawProject["status"] }
+      : undefined;
+    return jsonResponse({
+      error: {
+        code: candidate["code"],
+        message: error instanceof Error ? error.message : "request failed",
+      },
+      ...(project ? { project } : {}),
+    }, status);
+  }
+  return errorResponse(error instanceof Error ? error.message : "internal error", status);
 }
 
 function toBool(value: string | null): boolean {
@@ -109,12 +154,14 @@ export function createFetchHandler(options: ServeAppOptions): (req: Request) => 
     }
 
     try {
-      return await route(req, url, path, method, store);
+      return await route(req, url, path, method, store, {
+        owner: appName,
+        storage: mode === "self-hosted" ? "self-hosted" : "cloud",
+      });
     } catch (err) {
       const status = statusForError(err);
-      const message = err instanceof Error ? err.message : "internal error";
       if (status === 500) console.error("projects-serve error:", err);
-      return errorResponse(message, status);
+      return projectErrorResponse(err, status);
     }
   };
 }
@@ -125,6 +172,7 @@ async function route(
   path: string,
   method: string,
   store: ProjectsPgStore,
+  authority: { owner: string; storage: "cloud" | "self-hosted" },
 ): Promise<Response> {
   const segments = path.split("/").filter(Boolean); // e.g. ["v1","projects","abc","events"]
   const [, resource, id, sub] = segments;
@@ -148,7 +196,38 @@ async function route(
       }
       if (method === "POST") {
         const body = await readJsonBody(req);
-        const workspace = await store.createWorkspace(body as never);
+        const identity = body["identity"];
+        if (identity !== undefined && (!identity || typeof identity !== "object" || Array.isArray(identity))) {
+          throw new ValidationError("identity must be a JSON object");
+        }
+        const identityRecord = identity as Record<string, unknown> | undefined;
+        const identityKeys = new Set(["location_owner_id", "real_path", "logical_path", "station_id", "machine_id"]);
+        for (const key of Object.keys(identityRecord ?? {})) {
+          if (!identityKeys.has(key)) throw new ValidationError(`identity contains unsupported property: ${key}`);
+        }
+        const stringOrUndefined = (key: string): string | undefined => {
+          const value = identityRecord?.[key];
+          if (value === undefined || value === null) return undefined;
+          if (typeof value !== "string" || !value.trim()) throw new ValidationError(`identity.${key} must be a non-empty string`);
+          return value.trim();
+        };
+        const { identity: _identity, ...workspaceInput } = body;
+        if (typeof workspaceInput["primary_path"] === "string"
+          && (!stringOrUndefined("location_owner_id") || !stringOrUndefined("real_path"))) {
+          throw new ProjectContextError(
+            "PROJECT_IDENTITY_CONFLICT",
+            "primary_path requires identity.location_owner_id and identity.real_path",
+            { status: 409, details: { identity_required: true } },
+          );
+        }
+        const workspace = await store.createWorkspace(workspaceInput as never, {
+          idempotencyKey: req.headers.get("idempotency-key") ?? undefined,
+          locationOwnerId: stringOrUndefined("location_owner_id"),
+          realPath: stringOrUndefined("real_path"),
+          logicalPath: stringOrUndefined("logical_path"),
+          stationId: stringOrUndefined("station_id"),
+          machineId: stringOrUndefined("machine_id"),
+        });
         return jsonResponse(workspace, 201);
       }
       return errorResponse("Method not allowed", 405);
@@ -170,6 +249,14 @@ async function route(
 
     if (sub === "archive" && method === "POST") return jsonResponse(await store.archiveWorkspace(id));
     if (sub === "unarchive" && method === "POST") return jsonResponse(await store.unarchiveWorkspace(id));
+    if (sub === "context-bundle" && method === "GET") {
+      const project = await store.requireWorkspace(id);
+      return jsonResponse(await buildProjectContextBundle({
+        project,
+        resolution: { source: "id-or-slug", conflict: false, create_allowed: false },
+        authority: { ...authority, mode: "api", availability: "available" },
+      }));
+    }
     if (sub === "events" && method === "GET") {
       const ws = await store.requireWorkspace(id);
       const limit = url.searchParams.get("limit");

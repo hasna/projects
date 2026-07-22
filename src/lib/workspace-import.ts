@@ -13,6 +13,8 @@ import {
   workspaceSlugify,
 } from "../db/workspaces.js";
 import type { EventSource, JsonObject, Root, Workspace, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
+import { isProjectContextError } from "./project-context-errors.js";
+import { resolveProjectStoreForTarget, type ProjectStore } from "../store/project-store.js";
 import { LEGACY_WORKSPACE_MARKER_FILENAME, PROJECT_MARKER_FILENAME } from "./workspace-runtime.js";
 
 export interface WorkspaceImportPreview {
@@ -37,6 +39,7 @@ export interface ImportWorkspaceOptions {
   prompt?: string;
   command?: string;
   db?: Database;
+  store?: ProjectStore;
 }
 
 export interface ImportWorkspaceResult {
@@ -123,7 +126,7 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
   const tags = [...new Set(options.tags ?? [])];
   const slug = workspaceSlugify(name);
   const kind = inferWorkspaceKind(slug, absPath, tags);
-  const root = matchRootForPath(absPath, options.db);
+  const root = options.store?.mode === "api" ? null : matchRootForPath(absPath, options.db);
   if (root) signals.push(`root:${root.slug}`);
   const remote = gitRemote(absPath) ?? undefined;
   if (remote) signals.push("git-remote");
@@ -144,8 +147,27 @@ export function planWorkspaceImport(path: string, options: ImportWorkspaceOption
 
 export async function importWorkspace(path: string, options: ImportWorkspaceOptions = {}): Promise<ImportWorkspaceResult> {
   try {
-    const preview = planWorkspaceImport(path, options);
-    if (getWorkspaceByPath(preview.path, options.db)) {
+    const selectedStore = resolveProjectStoreForTarget(options);
+    const store = options.db && selectedStore.mode === "local"
+      ? undefined
+      : selectedStore;
+    let preview = planWorkspaceImport(path, { ...options, store });
+    if (store) {
+      const root = (await store.matchRoots({ path: preview.path, kind: preview.kind, tags: preview.tags }))[0]?.root;
+      if (root) {
+        preview = {
+          ...preview,
+          root_id: root.id,
+          signals: [...new Set([...preview.signals, `root:${root.slug}`])],
+        };
+      }
+      try {
+        await store.resolveTargetResolution(preview.path, { intent: "read" });
+        return { skipped: "already-registered", preview };
+      } catch (error) {
+        if (!(isProjectContextError(error) && error.code === "PROJECT_NOT_FOUND")) throw error;
+      }
+    } else if (getWorkspaceByPath(preview.path, options.db)) {
       return { skipped: "already-registered", preview };
     }
     if (options.dryRun) {
@@ -153,7 +175,7 @@ export async function importWorkspace(path: string, options: ImportWorkspaceOpti
     }
     const locks: WorkspaceLock[] = [];
     try {
-      for (const lock of importLocks(preview)) {
+      for (const lock of store?.mode === "api" ? [] : importLocks(preview)) {
         locks.push(acquireWorkspaceLock({
           lock_key: lock.key,
           agent_id: options.agent_id,
@@ -161,7 +183,7 @@ export async function importWorkspace(path: string, options: ImportWorkspaceOpti
           ttl_seconds: 600,
         }, options.db));
       }
-      const workspace = createWorkspace({
+      const createInput = {
         name: preview.name,
         slug: preview.slug,
         kind: preview.kind,
@@ -178,12 +200,16 @@ export async function importWorkspace(path: string, options: ImportWorkspaceOpti
         source: options.source ?? "cli",
         prompt: options.prompt,
         command: options.command ?? "projects import",
-      }, options.db);
+      };
+      const workspace = store
+        ? await store.createProject(createInput)
+        : createWorkspace(createInput, options.db);
       return { workspace, preview };
     } finally {
       releaseLocks(locks, options.db);
     }
   } catch (err) {
+    if (isProjectContextError(err)) throw err;
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -217,13 +243,18 @@ export async function importRegisteredRoots(options: ImportWorkspaceOptions = {}
     skipped: [],
     errors: [],
   };
-  for (const root of listRoots(options.db)) {
+  const selectedStore = resolveProjectStoreForTarget(options);
+  const store = options.db && selectedStore.mode === "local"
+    ? undefined
+    : selectedStore;
+  for (const root of store ? await store.listRoots() : listRoots(options.db)) {
     if (!existsSync(root.base_path)) {
       result.errors.push({ path: root.base_path, error: "Root path does not exist" });
       continue;
     }
     const rootResult = await importWorkspaceBulk(root.base_path, {
       ...options,
+      store,
       dryRun: options.dryRun !== false,
       tags: [...new Set([...(options.tags ?? []), ...root.tags])],
     });

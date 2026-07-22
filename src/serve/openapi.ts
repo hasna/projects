@@ -178,8 +178,20 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
             integrations: { type: "object", additionalProperties: true },
             metadata: { type: "object", additionalProperties: true },
             agent_id: { type: "string" },
+            identity: ref("ProjectIdentityLocator"),
           },
           required: ["name"],
+        },
+        ProjectIdentityLocator: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            location_owner_id: { type: "string" },
+            real_path: { type: "string" },
+            logical_path: { type: "string" },
+            station_id: { type: "string" },
+            machine_id: { type: "string" },
+          },
         },
         UpdateWorkspace: {
           type: "object",
@@ -239,6 +251,124 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           type: "object",
           properties: { events: { type: "array", items: ref("WorkspaceEvent") }, count: { type: "integer" } },
           required: ["events", "count"],
+        },
+        ProjectContextBundle: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            schema: { type: "string", enum: ["hasna.projects.project_context_bundle.v1"] },
+            generated_at: { type: "string" },
+            hash: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
+            revision: { type: "string" },
+            freshness: { type: "string", enum: ["fresh", "stale", "unknown"] },
+            resolution: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                source: { type: "string" },
+                conflict: { type: "boolean" },
+                create_allowed: { type: "boolean" },
+              },
+              required: ["source", "conflict", "create_allowed"],
+            },
+            authority: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                owner: { type: "string" },
+                mode: { type: "string", enum: ["local", "api"] },
+                storage: { type: "string", enum: ["sqlite", "cloud", "self-hosted"] },
+                availability: { type: "string", enum: ["available", "unavailable"] },
+              },
+              required: ["owner", "mode", "storage", "availability"],
+            },
+            project: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                slug: { type: "string" },
+                name: { type: "string" },
+                kind: { type: "string" },
+                status: { type: "string", enum: ["active", "archived", "deleted"] },
+                path: { type: "string", nullable: true },
+                updated_at: { type: "string" },
+              },
+              required: ["id", "slug", "name", "kind", "status", "path", "updated_at"],
+            },
+            links: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                todos: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    project_id: { type: "string", nullable: true },
+                    task_list_id: { type: "string", nullable: true },
+                  },
+                  required: ["state", "project_id", "task_list_id"],
+                },
+                conversations: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    channel: { type: "string", nullable: true },
+                  },
+                  required: ["state", "channel"],
+                },
+                mementos: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    project_id: { type: "string", nullable: true },
+                    scope: { type: "string", nullable: true },
+                  },
+                  required: ["state", "project_id", "scope"],
+                },
+              },
+              required: ["todos", "conversations", "mementos"],
+            },
+            station: {
+              type: "object",
+              nullable: true,
+              additionalProperties: false,
+              properties: {
+                station_id: { type: "string", nullable: true },
+                machine_id: { type: "string", nullable: true },
+              },
+              required: ["station_id", "machine_id"],
+            },
+            commands: {
+              type: "array",
+              maxItems: 6,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  name: { type: "string", enum: ["show", "context", "why", "context-bundle"] },
+                  argv: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
+                },
+                required: ["name", "argv"],
+              },
+            },
+          },
+          required: [
+            "schema",
+            "generated_at",
+            "hash",
+            "revision",
+            "freshness",
+            "resolution",
+            "authority",
+            "project",
+            "links",
+            "station",
+            "commands",
+          ],
         },
         DeleteResult: {
           type: "object",
@@ -351,6 +481,14 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           summary: "List a project's events",
           parameters: [ID_PARAM, { name: "limit", in: "query", required: false, schema: { type: "integer" } }],
           responses: { "200": jsonResp("EventList"), "404": jsonResp("Error", "Not found") },
+        },
+      },
+      "/v1/projects/{id}/context-bundle": {
+        get: {
+          operationId: "getProjectContextBundle",
+          summary: "Get a strict, allowlisted project context bundle",
+          parameters: [ID_PARAM],
+          responses: { "200": jsonResp("ProjectContextBundle"), "404": jsonResp("Error", "Not found") },
         },
       },
       "/v1/roots": {

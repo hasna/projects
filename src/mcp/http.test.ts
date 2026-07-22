@@ -6,17 +6,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildServer } from "./index.js";
 import { handleMcpRequest, resolveMcpHttpPort, DEFAULT_MCP_HTTP_PORT } from "./http.js";
+import { __resetProjectStore } from "../store/project-store.js";
 
 describe("projects MCP HTTP transport", () => {
   let httpServer: ReturnType<typeof Bun.serve>;
   let port: number;
   let root: string;
   let previousDbPath: string | undefined;
+  let previousStorageMode: string | undefined;
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), "projects-mcp-http-"));
     previousDbPath = process.env.HASNA_PROJECTS_DB_PATH;
+    previousStorageMode = process.env.HASNA_PROJECTS_STORAGE_MODE;
     process.env.HASNA_PROJECTS_DB_PATH = join(root, "projects.db");
+    process.env.HASNA_PROJECTS_STORAGE_MODE = "local";
+    __resetProjectStore();
     httpServer = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -41,6 +46,12 @@ describe("projects MCP HTTP transport", () => {
     } else {
       process.env.HASNA_PROJECTS_DB_PATH = previousDbPath;
     }
+    if (previousStorageMode === undefined) {
+      delete process.env.HASNA_PROJECTS_STORAGE_MODE;
+    } else {
+      process.env.HASNA_PROJECTS_STORAGE_MODE = previousStorageMode;
+    }
+    __resetProjectStore();
     rmSync(root, { recursive: true, force: true });
   });
 

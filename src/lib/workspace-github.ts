@@ -1,27 +1,14 @@
 import { execFileSync } from "node:child_process";
-import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import {
-  acquireWorkspaceLock,
-  createWorkspace,
   assertAgentPermission,
-  getRecipe,
-  getRoot,
-  getRootBySlug,
-  getWorkspaceByPath,
-  getWorkspaceBySlug,
   inferWorkspaceKind,
-  listRoots,
-  listWorkspaces,
-  linkWorkspaceIntegrations,
-  matchRootForPath,
-  recordWorkspaceEvent,
-  releaseWorkspaceLock,
   renderTemplate,
-  updateWorkspace,
   workspaceSlugify,
 } from "../db/workspaces.js";
+import type { ProjectStore } from "../store/project-store.js";
+import { isProjectContextError } from "./project-context-errors.js";
 import type { EventSource, JsonObject, Root, Workspace, WorkspaceIntegrations, WorkspaceKind, WorkspaceLock } from "../types/workspace.js";
 
 export type GitHubVisibility = "public" | "private";
@@ -39,7 +26,6 @@ export interface WorkspaceGitHubPublishOptions {
   source?: EventSource;
   prompt?: string;
   command?: string;
-  db?: Database;
 }
 
 export interface WorkspaceGitHubPublishResult {
@@ -67,7 +53,6 @@ export interface WorkspaceGitHubUnpublishOptions {
   source?: EventSource;
   prompt?: string;
   command?: string;
-  db?: Database;
 }
 
 export interface WorkspaceGitHubUnpublishResult {
@@ -93,7 +78,6 @@ export interface WorkspaceGitHubImportOptions {
   source?: EventSource;
   prompt?: string;
   command?: string;
-  db?: Database;
 }
 
 export interface WorkspaceGitHubImportResult {
@@ -162,14 +146,22 @@ function metadataVisibility(metadata: JsonObject | undefined): GitHubVisibility 
   return value === "public" || value === "private" ? value : undefined;
 }
 
-function resolvePublishRoot(workspace: Workspace, db?: Database): Root | null {
-  if (workspace.root_id) return getRoot(workspace.root_id, db);
-  if (workspace.primary_path) return matchRootForPath(workspace.primary_path, db);
+async function resolvePublishRoot(store: ProjectStore, workspace: Workspace): Promise<Root | null> {
+  if (workspace.root_id) return store.getRoot(workspace.root_id);
+  if (workspace.primary_path) {
+    const matches = await store.matchRoots({ path: workspace.primary_path });
+    return matches[0]?.root ?? null;
+  }
   return null;
 }
 
-function publishVisibility(workspace: Workspace, root: Root | null, db?: Database, requested?: GitHubVisibility): GitHubVisibility {
-  const recipe = workspace.recipe_id ? getRecipe(workspace.recipe_id, db) : null;
+async function publishVisibility(
+  store: ProjectStore,
+  workspace: Workspace,
+  root: Root | null,
+  requested?: GitHubVisibility,
+): Promise<GitHubVisibility> {
+  const recipe = workspace.recipe_id ? await store.getRecipe(workspace.recipe_id) : null;
   return requested
     ?? root?.repo_visibility
     ?? metadataVisibility(recipe?.metadata)
@@ -220,8 +212,30 @@ function setOrigin(path: string, remote: string): void {
   }
 }
 
-function releaseLocks(locks: WorkspaceLock[], db?: Database): void {
-  for (const lock of locks.slice().reverse()) releaseWorkspaceLock(lock.lock_key, db);
+// Import reservation locks are a machine-local coordination primitive: they
+// serialize concurrent local imports racing for the same slug/path. In api mode
+// the Store cannot acquire local locks (uniqueness is enforced cloud-side), so
+// we skip them rather than writing invisible local-sqlite locks (split-brain).
+async function acquireImportLocks(
+  store: ProjectStore,
+  specs: Array<{ key: string; reason: string }>,
+  agentId?: string,
+): Promise<WorkspaceLock[]> {
+  if (store.mode !== "local") return [];
+  const acquired: WorkspaceLock[] = [];
+  try {
+    for (const spec of specs) {
+      acquired.push(await store.acquireLock({ key: spec.key, agentId, reason: spec.reason, ttlSeconds: 600 }));
+    }
+  } catch (err) {
+    await releaseImportLocks(store, acquired);
+    throw err;
+  }
+  return acquired;
+}
+
+async function releaseImportLocks(store: ProjectStore, locks: WorkspaceLock[]): Promise<void> {
+  for (const lock of locks.slice().reverse()) await store.releaseLock(lock.lock_key);
 }
 
 function githubImportLocks(plan: WorkspaceGitHubImportResult): Array<{ key: string; reason: string }> {
@@ -242,12 +256,12 @@ export function parseGitHubRepo(input: string): { org: string; repo: string; ful
   return { org, repo, fullName: `${org}/${repo}` };
 }
 
-export function planWorkspaceGitHubPublish(workspace: Workspace, options: WorkspaceGitHubPublishOptions = {}): WorkspaceGitHubPublishResult {
-  const root = resolvePublishRoot(workspace, options.db);
+export async function planWorkspaceGitHubPublish(store: ProjectStore, workspace: Workspace, options: WorkspaceGitHubPublishOptions = {}): Promise<WorkspaceGitHubPublishResult> {
+  const root = await resolvePublishRoot(store, workspace);
   const org = options.org ?? root?.github_org ?? metadataString(workspace.metadata, "github_org") ?? "hasnaxyz";
   const repoName = normalizeRepoName(options.repoName ?? workspace.slug ?? workspace.name);
   const fullName = `${org}/${repoName}`;
-  const visibility = publishVisibility(workspace, root, options.db, options.visibility);
+  const visibility = await publishVisibility(store, workspace, root, options.visibility);
   const protocol = options.remoteProtocol ?? "https";
   const remote = remoteFor(fullName, protocol);
   const url = `https://github.com/${fullName}`;
@@ -280,10 +294,12 @@ export function planWorkspaceGitHubPublish(workspace: Workspace, options: Worksp
   };
 }
 
-export function publishWorkspaceToGitHub(workspace: Workspace, options: WorkspaceGitHubPublishOptions = {}): WorkspaceGitHubPublishResult {
-  const plan = planWorkspaceGitHubPublish(workspace, options);
+export async function publishWorkspaceToGitHub(store: ProjectStore, workspace: Workspace, options: WorkspaceGitHubPublishOptions = {}): Promise<WorkspaceGitHubPublishResult> {
+  const plan = await planWorkspaceGitHubPublish(store, workspace, options);
   if (options.dryRun) return plan;
-  assertAgentPermission(options.agent_id, "github:publish", options.db);
+  // Authz: in api/cloud mode the server enforces the bearer key's scope; the
+  // local agent-permission table is meaningless there, so only check on-box.
+  if (store.mode === "local") assertAgentPermission(options.agent_id, "github:publish");
 
   const createArgs = ["repo", "create", plan.full_name, `--${plan.visibility}`];
   const description = options.description ?? workspace.description ?? undefined;
@@ -301,17 +317,16 @@ export function publishWorkspaceToGitHub(workspace: Workspace, options: Workspac
     }
   }
 
-  const updated = updateWorkspace(workspace.id, {
+  const updated = await store.updateProject(workspace.id, {
     git_remote: plan.remote,
     integrations: { ...workspace.integrations, ...workspaceGithubIntegrations(plan.full_name, plan.url) },
     agent_id: options.agent_id,
     source: options.source ?? "cli",
     prompt: options.prompt,
     command: options.command,
-  }, options.db);
-  recordWorkspaceEvent({
-    workspace_id: workspace.id,
-    agent_id: options.agent_id,
+  });
+  await store.recordEvent(workspace.id, {
+    agentId: options.agent_id,
     event_type: "github_published",
     source: options.source ?? "cli",
     prompt: options.prompt,
@@ -324,7 +339,7 @@ export function publishWorkspaceToGitHub(workspace: Workspace, options: Workspac
       pushed,
       git_remote_updated: gitRemoteUpdated,
     },
-  }, options.db);
+  });
 
   return {
     ...plan,
@@ -336,7 +351,7 @@ export function publishWorkspaceToGitHub(workspace: Workspace, options: Workspac
   };
 }
 
-export function unpublishWorkspaceFromGitHub(workspace: Workspace, options: WorkspaceGitHubUnpublishOptions = {}): WorkspaceGitHubUnpublishResult {
+export async function unpublishWorkspaceFromGitHub(store: ProjectStore, workspace: Workspace, options: WorkspaceGitHubUnpublishOptions = {}): Promise<WorkspaceGitHubUnpublishResult> {
   const localPath = workspace.primary_path ? resolve(workspace.primary_path) : null;
   const planned: WorkspaceGitHubUnpublishResult = {
     status: options.dryRun ? "planned" : "unpublished",
@@ -358,39 +373,38 @@ export function unpublishWorkspaceFromGitHub(workspace: Workspace, options: Work
     }
   }
 
-  let updated = updateWorkspace(workspace.id, {
+  let updated = await store.updateProject(workspace.id, {
     git_remote: null,
     agent_id: options.agent_id,
     source: options.source ?? "cli",
     prompt: options.prompt,
     command: options.command,
-  }, options.db);
+  });
   if (options.clearIntegrations) {
     const { github_repo: _repo, github_url: _url, ...rest } = updated.integrations;
-    updated = updateWorkspace(workspace.id, {
+    updated = await store.updateProject(workspace.id, {
       integrations: rest,
       agent_id: options.agent_id,
       source: options.source ?? "cli",
       prompt: options.prompt,
       command: options.command,
-    }, options.db);
+    });
   }
-  recordWorkspaceEvent({
-    workspace_id: workspace.id,
-    agent_id: options.agent_id,
+  await store.recordEvent(workspace.id, {
+    agentId: options.agent_id,
     event_type: "github_unpublished",
     source: options.source ?? "cli",
     prompt: options.prompt,
     command: options.command,
     after: { remote_removed: remoteRemoved, integrations_cleared: Boolean(options.clearIntegrations) },
-  }, options.db);
+  });
 
   return { ...planned, workspace: updated, dry_run: false, remote_removed: remoteRemoved };
 }
 
-function resolveImportRoot(input: string | undefined, db?: Database): Root | null {
+async function resolveImportRoot(store: ProjectStore, input: string | undefined): Promise<Root | null> {
   if (!input) return null;
-  const root = getRoot(input, db) ?? getRootBySlug(input, db);
+  const root = await store.getRoot(input);
   if (!root) throw new Error(`Root not found: ${input}`);
   return root;
 }
@@ -406,11 +420,11 @@ function rootDerivedPath(root: Root, slug: string, name: string, kind: Workspace
   return isAbsolute(rendered) ? resolve(rendered) : resolve(join(root.base_path, rendered));
 }
 
-export function planWorkspaceGitHubImport(repoInput: string, options: WorkspaceGitHubImportOptions = {}): WorkspaceGitHubImportResult {
+export async function planWorkspaceGitHubImport(store: ProjectStore, repoInput: string, options: WorkspaceGitHubImportOptions = {}): Promise<WorkspaceGitHubImportResult> {
   const parsed = parseGitHubRepo(repoInput);
   const protocol = options.remoteProtocol ?? "https";
   const remote = remoteFor(parsed.fullName, protocol);
-  const root = resolveImportRoot(options.root, options.db);
+  const root = await resolveImportRoot(store, options.root);
   const slug = normalizeRepoName(parsed.repo);
   const tags = [...new Set(["github", ...(options.tags ?? [])])];
   const explicitPath = options.path ? resolve(options.path) : undefined;
@@ -443,10 +457,10 @@ export function planWorkspaceGitHubImport(repoInput: string, options: WorkspaceG
   };
 }
 
-function findExistingGitHubWorkspace(plan: WorkspaceGitHubImportResult, db?: Database): Workspace | null {
+function findExistingGitHubWorkspace(plan: WorkspaceGitHubImportResult, projects: Workspace[]): Workspace | null {
   const remotes = githubRemoteSet(plan);
   const normalizedFullName = plan.full_name.toLowerCase();
-  return listWorkspaces({ limit: 10000 }, db).find((workspace) => {
+  return projects.find((workspace) => {
     const repo = workspace.integrations.github_repo?.toLowerCase();
     if (repo === normalizedFullName) return true;
     const url = workspace.integrations.github_url?.toLowerCase();
@@ -476,40 +490,53 @@ function existingPathSkipReason(plan: WorkspaceGitHubImportResult): string | nul
   return null;
 }
 
-function reconciledGitHubWorkspace(workspace: Workspace, plan: WorkspaceGitHubImportResult, options: WorkspaceGitHubImportOptions): Workspace {
+async function reconciledGitHubWorkspace(store: ProjectStore, workspace: Workspace, plan: WorkspaceGitHubImportResult, options: WorkspaceGitHubImportOptions): Promise<Workspace> {
   const integrations = { ...workspace.integrations, ...workspaceGithubIntegrations(plan.full_name, plan.url) };
-  return updateWorkspace(workspace.id, {
+  return store.updateProject(workspace.id, {
     git_remote: workspace.git_remote ?? plan.remote,
     integrations,
     agent_id: options.agent_id,
     source: options.source ?? "cli",
     prompt: options.prompt,
     command: options.command ?? "workspaces import-github",
-  }, options.db);
+  });
 }
 
-export async function importWorkspaceFromGitHub(repoInput: string, options: WorkspaceGitHubImportOptions = {}): Promise<WorkspaceGitHubImportResult> {
-  const plan = planWorkspaceGitHubImport(repoInput, options);
+export async function importWorkspaceFromGitHub(store: ProjectStore, repoInput: string, options: WorkspaceGitHubImportOptions = {}): Promise<WorkspaceGitHubImportResult> {
+  const plan = await planWorkspaceGitHubImport(store, repoInput, options);
+  if (plan.path) {
+    try {
+      const resolution = await store.resolveTargetResolution(plan.path, {
+        allowPath: true,
+        allowMarker: true,
+        intent: "read",
+      });
+      return {
+        ...plan,
+        status: "skipped",
+        dry_run: Boolean(options.dryRun),
+        workspace: resolution.project,
+        skipped: "path-already-registered",
+      };
+    } catch (error) {
+      if (!isProjectContextError(error) || error.code !== "PROJECT_NOT_FOUND") throw error;
+    }
+  }
   if (options.dryRun) return plan;
 
-  const locks: WorkspaceLock[] = [];
+  const locks = await acquireImportLocks(store, githubImportLocks(plan), options.agent_id);
   try {
-    for (const lock of githubImportLocks(plan)) {
-      locks.push(acquireWorkspaceLock({
-        lock_key: lock.key,
-        agent_id: options.agent_id,
-        reason: lock.reason,
-        ttl_seconds: 600,
-      }, options.db));
-    }
-
-    const existingByIdentity = findExistingGitHubWorkspace(plan, options.db);
+    // Dedup against the registry through the active Store (cloud in api mode,
+    // sqlite in local) so imports never create duplicate rows on the wrong side.
+    const projects = await store.listProjects({ limit: 10000 });
+    const existingByIdentity = findExistingGitHubWorkspace(plan, projects);
     if (existingByIdentity) {
-      const workspace = reconciledGitHubWorkspace(existingByIdentity, plan, options);
+      const workspace = await reconciledGitHubWorkspace(store, existingByIdentity, plan, options);
       return { ...plan, status: "skipped", dry_run: false, workspace, skipped: "github-already-registered" };
     }
     if (plan.path) {
-      const existingByPath = getWorkspaceByPath(plan.path, options.db);
+      const targetPath = resolve(plan.path);
+      const existingByPath = projects.find((w) => w.primary_path && resolve(w.primary_path) === targetPath) ?? null;
       if (existingByPath) {
         return { ...plan, status: "skipped", dry_run: false, workspace: existingByPath, skipped: "path-already-registered" };
       }
@@ -518,7 +545,8 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
         return { ...plan, status: "skipped", dry_run: false, skipped: existingPathReason };
       }
     }
-    const existingBySlug = getWorkspaceBySlug(workspaceSlugify(plan.repo_name), options.db);
+    const importSlug = workspaceSlugify(plan.repo_name);
+    const existingBySlug = projects.find((w) => w.slug === importSlug) ?? null;
     if (existingBySlug) {
       return { ...plan, status: "skipped", dry_run: false, workspace: existingBySlug, skipped: "slug-already-registered" };
     }
@@ -529,9 +557,9 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
       cloned = true;
     }
 
-    const workspace = createWorkspace({
+    const workspace = await store.createProject({
       name: plan.repo_name,
-      slug: workspaceSlugify(plan.repo_name),
+      slug: importSlug,
       kind: plan.kind,
       root_id: plan.root_id ?? undefined,
       primary_path: plan.path ?? undefined,
@@ -548,20 +576,19 @@ export async function importWorkspaceFromGitHub(repoInput: string, options: Work
       source: options.source ?? "cli",
       prompt: options.prompt,
       command: options.command ?? "workspaces import-github",
-    }, options.db);
-    recordWorkspaceEvent({
-      workspace_id: workspace.id,
-      agent_id: options.agent_id,
+    });
+    await store.recordEvent(workspace.id, {
+      agentId: options.agent_id,
       event_type: "github_imported",
       source: options.source ?? "cli",
       prompt: options.prompt,
       command: options.command ?? "workspaces import-github",
       after: plan as unknown as JsonObject,
-    }, options.db);
+    });
 
     return { ...plan, status: "imported", dry_run: false, workspace };
   } finally {
-    releaseLocks(locks, options.db);
+    await releaseImportLocks(store, locks);
   }
 }
 
@@ -595,8 +622,8 @@ function listGitHubRepoNames(org: string, limit: number): string[] {
   return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-function githubSyncRoots(options: WorkspaceGitHubRootSyncOptions): Root[] {
-  const roots = listRoots(options.db).filter((root) => root.github_org);
+async function githubSyncRoots(store: ProjectStore, options: WorkspaceGitHubRootSyncOptions): Promise<Root[]> {
+  const roots = (await store.listRoots()).filter((root) => root.github_org);
   const filtered = options.root
     ? roots.filter((root) => root.id === options.root || root.slug === options.root)
     : roots;
@@ -604,7 +631,7 @@ function githubSyncRoots(options: WorkspaceGitHubRootSyncOptions): Root[] {
   return filtered;
 }
 
-export async function syncWorkspaceGitHubRoots(options: WorkspaceGitHubRootSyncOptions = {}): Promise<WorkspaceGitHubRootSyncResult> {
+export async function syncWorkspaceGitHubRoots(store: ProjectStore, options: WorkspaceGitHubRootSyncOptions = {}): Promise<WorkspaceGitHubRootSyncResult> {
   const dryRun = Boolean(options.dryRun);
   const result: WorkspaceGitHubRootSyncResult = {
     dry_run: dryRun,
@@ -614,14 +641,14 @@ export async function syncWorkspaceGitHubRoots(options: WorkspaceGitHubRootSyncO
     skipped: [],
     errors: [],
   };
-  for (const root of githubSyncRoots(options)) {
+  for (const root of await githubSyncRoots(store, options)) {
     const org = root.github_org!;
     const repoNames = (options.repoNamesByOrg?.[org] ?? listGitHubRepoNames(org, options.limit ?? 500))
       .filter((name) => !options.repoPrefix || name.startsWith(options.repoPrefix));
     const rootResult: WorkspaceGitHubRootSyncRootResult = { root, repos: repoNames, results: [], errors: [] };
     for (const repo of repoNames) {
       try {
-        const item = await importWorkspaceFromGitHub(org + "/" + repo, {
+        const item = await importWorkspaceFromGitHub(store, org + "/" + repo, {
           root: root.id,
           clone: options.clone ?? !dryRun,
           tags: options.tags,
@@ -633,7 +660,6 @@ export async function syncWorkspaceGitHubRoots(options: WorkspaceGitHubRootSyncO
           source: options.source ?? "cli",
           prompt: options.prompt,
           command: options.command ?? (dryRun ? "projects scan-roots" : "projects sync-roots"),
-          db: options.db,
         });
         rootResult.results.push(item);
         if (item.status === "planned") result.planned.push(item);
@@ -649,15 +675,25 @@ export async function syncWorkspaceGitHubRoots(options: WorkspaceGitHubRootSyncO
   }
   return result;
 }
-export function linkWorkspaceExternalIntegrations(
+export async function linkWorkspaceExternalIntegrations(
+  store: ProjectStore,
   workspace: Workspace,
   integrations: WorkspaceIntegrations,
-  options: Pick<WorkspaceGitHubPublishOptions, "agent_id" | "source" | "prompt" | "command" | "db"> = {},
-): Workspace {
-  return linkWorkspaceIntegrations(workspace.id, normalizeWorkspaceIntegrations(integrations), {
+  options: Pick<WorkspaceGitHubPublishOptions, "agent_id" | "source" | "prompt" | "command"> = {},
+): Promise<Workspace> {
+  // Merge onto the current integrations client-side (ignoring empty values) and
+  // persist through the Store so the link lands wherever the project lives.
+  const merged: WorkspaceIntegrations = { ...workspace.integrations };
+  for (const [key, value] of Object.entries(normalizeWorkspaceIntegrations(integrations))) {
+    if (value === undefined) continue;
+    const trimmed = value.trim();
+    if (trimmed.length > 0) merged[key] = trimmed;
+  }
+  return store.updateProject(workspace.id, {
+    integrations: merged,
     agent_id: options.agent_id,
     source: options.source ?? "cli",
     prompt: options.prompt,
     command: options.command,
-  }, options.db);
+  });
 }

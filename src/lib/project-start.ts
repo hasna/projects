@@ -1,9 +1,5 @@
 import type { Database } from "bun:sqlite";
-import {
-  listTmuxProfileWindows,
-  recordWorkspaceEvent,
-  resolveTmuxProfile,
-} from "../db/workspaces.js";
+import { listTmuxProfileWindows, recordWorkspaceEvent, resolveTmuxProfile } from "../db/workspaces.js";
 import type { EventSource, JsonObject, TmuxProfile, Workspace } from "../types/workspace.js";
 import {
   PROJECT_START_AGENTS,
@@ -16,7 +12,6 @@ import {
   isProjectDirectory,
   isProjectPathLike,
   normalizeProjectPath,
-  resolveRegisteredProjectTarget,
 } from "./project-resolver.js";
 import {
   ensureProjectChannel,
@@ -25,6 +20,8 @@ import {
   type ProjectChannelEnsureResult,
 } from "./project-channel.js";
 import { importWorkspace, planWorkspaceImport, type WorkspaceImportPreview } from "./workspace-import.js";
+import { isProjectContextError } from "./project-context-errors.js";
+import { resolveProjectStoreForTarget, type ProjectStore } from "../store/project-store.js";
 import { applyWorkspaceTmux, tmuxProfileToSpec, type WorkspaceTmuxResult, type WorkspaceTmuxWindowSpec } from "./workspace-runtime.js";
 import { attachSession } from "./tmux.js";
 import { buildProjectStartRender, PROJECT_RENDER_SCHEMA_VERSION } from "./project-render.js";
@@ -60,6 +57,7 @@ export interface ProjectStartOptions {
   /** Conversations CLI runner override (used by tests). */
   channelRunner?: ConversationsChannelRunner;
   db?: Database;
+  store?: ProjectStore;
 }
 
 export interface ProjectStartResult {
@@ -321,11 +319,15 @@ function defaultStartWindows(
 
 export async function resolveProjectStartTarget(
   target: string | undefined,
-  options: Pick<ProjectStartOptions, "register" | "dryRun" | "agentId" | "db" | "importTags" | "importMetadata" | "source" | "auditCommand"> = {},
+  options: Pick<ProjectStartOptions, "register" | "dryRun" | "agentId" | "db" | "store" | "importTags" | "importMetadata" | "source" | "auditCommand"> = {},
 ): Promise<{ project: Workspace; resolution: ProjectStartResolution }> {
   const normalizedTarget = target?.trim() || ".";
-  const existing = resolveRegisteredProjectTarget(normalizedTarget, { db: options.db });
-  if (existing) {
+  const store = resolveProjectStoreForTarget(options);
+  try {
+    const existing = await store.resolveTargetResolution(normalizedTarget, {
+      db: options.db,
+      intent: "mutate",
+    });
     return {
       project: existing.project,
       resolution: {
@@ -334,6 +336,8 @@ export async function resolveProjectStartTarget(
         registered: true,
       },
     };
+  } catch (error) {
+    if (!(isProjectContextError(error) && error.code === "PROJECT_NOT_FOUND")) throw error;
   }
 
   const path = normalizeProjectPath(normalizedTarget);
@@ -348,6 +352,7 @@ export async function resolveProjectStartTarget(
         metadata: options.importMetadata,
         agent_id: options.agentId,
         db: options.db,
+        store,
       });
       return {
         project: previewToWorkspace(preview),
@@ -362,6 +367,7 @@ export async function resolveProjectStartTarget(
       source: options.source,
       command: options.auditCommand,
       db: options.db,
+      store,
     });
     if (imported.workspace) {
       return {
@@ -379,7 +385,8 @@ export async function startProject(
   target: string | undefined,
   options: ProjectStartOptions = {},
 ): Promise<ProjectStartResult> {
-  const { project, resolution } = await resolveProjectStartTarget(target, options);
+  const store = resolveProjectStoreForTarget(options);
+  const { project, resolution } = await resolveProjectStartTarget(target, { ...options, store });
   const defaults = projectManagementSummary(project);
   const defaultWindows = defaults.start_windows;
   const agentTool = parseProjectStartAgent(options.agentTool ?? defaults.start_agent ?? undefined);
@@ -391,10 +398,18 @@ export async function startProject(
   const command = preparedRename.command;
   const renameReport = preparedRename.report;
   const profileRef = options.profile ?? defaults.launch_profile ?? undefined;
-  const profile = profileRef ? resolveTmuxProfile(profileRef, options.db) : null;
+  const profile = profileRef
+    ? options.db
+      ? resolveTmuxProfile(profileRef, options.db)
+      : await store.getTmuxProfile(profileRef)
+    : null;
   if (profileRef && !profile) throw new Error(`Tmux profile not found: ${profileRef}`);
   const profileSpec = profile
-    ? tmuxProfileToSpec(project, profile, listTmuxProfileWindows(profile.id, options.db))
+    ? tmuxProfileToSpec(
+      project,
+      profile,
+      options.db ? listTmuxProfileWindows(profile.id, options.db) : await store.listTmuxProfileWindows(profile.id),
+    )
     : null;
   if (options.requestedWindows && options.requestedWindows.length === 0) {
     throw new Error("Requested start windows must include at least one window");
@@ -418,18 +433,27 @@ export async function startProject(
     source: options.source ?? "cli",
     command: options.auditCommand,
     db: options.db,
+    recordEvents: store.mode === "local",
   });
 
   let channel: ProjectChannelEnsureResult | null = null;
   if (options.ensureChannel ?? shouldEnsureProjectChannel()) {
-    channel = ensureProjectChannel(project, {
-      db: options.db,
-      agentId: options.agentId,
-      source: options.source ?? "cli",
-      command: options.auditCommand,
-      dryRun: options.dryRun,
-      runner: options.channelRunner,
-    });
+    channel = options.db
+      ? ensureProjectChannel(project, {
+        db: options.db,
+        agentId: options.agentId,
+        source: options.source ?? "cli",
+        command: options.auditCommand,
+        dryRun: options.dryRun,
+        runner: options.channelRunner,
+      })
+      : await store.ensureChannel(project, {
+        agentId: options.agentId,
+        source: options.source ?? "cli",
+        command: options.auditCommand,
+        dryRun: options.dryRun,
+        runner: options.channelRunner,
+      });
   }
   const startedProject = channel?.persisted ? channel.project : project;
 
@@ -440,9 +464,8 @@ export async function startProject(
   }
 
   if (!options.dryRun) {
-    recordWorkspaceEvent({
-      workspace_id: project.id,
-      agent_id: options.agentId,
+    const event = {
+      agentId: options.agentId,
       event_type: "started",
       source: options.source ?? "cli",
       command: options.auditCommand,
@@ -464,7 +487,19 @@ export async function startProject(
         channel,
         attached,
       } as unknown as JsonObject,
-    }, options.db);
+    } as const;
+    if (options.db) {
+      recordWorkspaceEvent({
+        workspace_id: project.id,
+        agent_id: event.agentId,
+        event_type: event.event_type,
+        source: event.source,
+        command: event.command,
+        after: event.after,
+      }, options.db);
+    } else {
+      await store.recordEvent(project.id, event);
+    }
   }
 
   const resultWithoutRender = {
