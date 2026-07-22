@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getWorkspace, linkWorkspaceIntegrations, recordWorkspaceEvent } from "../db/workspaces.js";
-import type { EventSource, Workspace, WorkspaceIntegrations, WorkspaceKind } from "../types/workspace.js";
+import type { EventSource, JsonObject, Workspace, WorkspaceIntegrations, WorkspaceKind } from "../types/workspace.js";
 import { resolveRegisteredProjectTargetOrThrow } from "./project-resolver.js";
 
 /**
@@ -297,6 +297,133 @@ export function ensureProjectChannel(
         message,
       },
     }, options.db);
+  }
+
+  return {
+    ...derivation,
+    status,
+    created: status === "created",
+    linked: Boolean(updated.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim()),
+    persisted,
+    message,
+    project: updated,
+  };
+}
+
+export interface ProjectChannelStore {
+  readonly mode: "local" | "api";
+  getProject(idOrSlug: string): Promise<Workspace | null>;
+  updateProject(
+    id: string,
+    patch: { integrations?: WorkspaceIntegrations; agent_id?: string; source?: EventSource; command?: string },
+  ): Promise<Workspace>;
+  recordEvent(
+    idOrSlug: string,
+    input: { event_type: string; source: EventSource; agentId?: string; command?: string; after?: JsonObject | null },
+  ): Promise<unknown>;
+}
+
+export interface StoreEnsureChannelOptions {
+  agentId?: string;
+  source?: EventSource;
+  command?: string;
+  from?: string;
+  persist?: boolean;
+  dryRun?: boolean;
+  runner?: ConversationsChannelRunner;
+}
+
+/** Store-routed channel ensure so API projects never persist into local SQLite. */
+export async function ensureProjectChannelViaStore(
+  store: ProjectChannelStore,
+  project: Workspace,
+  options: StoreEnsureChannelOptions = {},
+): Promise<ProjectChannelEnsureResult> {
+  let derivation: ProjectChannelDerivation;
+  try {
+    derivation = deriveProjectChannel(project);
+  } catch (error) {
+    return {
+      channel: "",
+      channel_class: "initiative",
+      source: "derived",
+      status: "error",
+      created: false,
+      linked: false,
+      persisted: false,
+      message: error instanceof Error ? error.message : String(error),
+      project,
+    };
+  }
+  const alreadyLinked = project.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() === derivation.channel;
+  if (options.dryRun) {
+    return {
+      ...derivation,
+      status: "planned",
+      created: false,
+      linked: alreadyLinked,
+      persisted: false,
+      project,
+      message: `Would ensure conversations channel ${derivation.channel} (${derivation.channel_class}).`,
+    };
+  }
+
+  const runner = options.runner ?? conversationsCliRunner();
+  const createArgs = [
+    "channel",
+    "create",
+    derivation.channel,
+    "--description",
+    projectChannelDescription(project, derivation.channel_class),
+    "-j",
+  ];
+  if (options.from?.trim()) createArgs.push("--from", options.from.trim());
+  const result = runner(createArgs);
+  let status: ProjectChannelEnsureResult["status"];
+  let message: string | undefined;
+  if (result.ok) {
+    status = "created";
+  } else if (`${result.stderr} ${result.stdout}`.toLowerCase().includes("exist")) {
+    status = "exists";
+  } else {
+    status = "error";
+    message = result.stderr.trim() || result.stdout.trim() || "conversations channel create failed";
+  }
+
+  let updated = project;
+  let persisted = false;
+  const inStore = await store.getProject(project.id);
+  if (
+    inStore
+    && options.persist !== false
+    && inStore.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() !== derivation.channel
+  ) {
+    updated = await store.updateProject(project.id, {
+      integrations: { ...inStore.integrations, [PROJECT_CHANNEL_INTEGRATION_KEY]: derivation.channel },
+      agent_id: options.agentId,
+      source: options.source,
+      command: options.command,
+    });
+    persisted = true;
+  } else if (inStore) {
+    updated = inStore;
+  }
+
+  if (inStore) {
+    await store.recordEvent(project.id, {
+      event_type: "channel_ensured",
+      source: options.source ?? "cli",
+      agentId: options.agentId,
+      command: options.command,
+      after: {
+        channel: derivation.channel,
+        channel_class: derivation.channel_class,
+        status,
+        created: status === "created",
+        persisted,
+        message: message ?? null,
+      },
+    });
   }
 
   return {

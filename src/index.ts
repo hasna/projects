@@ -234,7 +234,9 @@ export {
   isProjectDirectory,
   isProjectPathLike,
   normalizeProjectPath,
+  findNearestProjectMarker,
   readProjectMarker,
+  resolveCanonicalProjectTarget,
   resolveRegisteredProjectTarget,
   resolveRegisteredProjectTargetOrThrow,
 } from "./lib/project-resolver.js";
@@ -305,11 +307,51 @@ export type {
   OssTmuxHint,
 } from "./lib/oss-project-matrix.js";
 export type {
+  CanonicalProjectAuthority,
+  CanonicalProjectResolverOptions,
+  CanonicalProjectTargetResolution,
   ProjectMarkerReference,
   ProjectResolverOptions,
   ProjectResolverSource,
   ProjectTargetResolution,
 } from "./lib/project-resolver.js";
+export {
+  PROJECT_CONTEXT_ERROR_CODES,
+  ProjectContextError,
+  canonicalProjectSummary,
+  isProjectContextError,
+} from "./lib/project-context-errors.js";
+export type {
+  CanonicalProjectSummary,
+  ProjectContextErrorCode,
+} from "./lib/project-context-errors.js";
+export {
+  PROJECT_CONTEXT_BUNDLE_MAX_BYTES,
+  PROJECT_CONTEXT_BUNDLE_SCHEMA,
+  buildProjectContextBundle,
+  encodeProjectContextBundle,
+  parseProjectContextBundle,
+  projectContextBundleSchema,
+} from "./lib/project-context-bundle.js";
+export type {
+  BuildProjectContextBundleInput,
+  ProjectContextBundle,
+  ProjectContextBundleProviderResult,
+  ProjectContextBundleProviders,
+} from "./lib/project-context-bundle.js";
+export { __resetProjectStore, resolveProjectStore } from "./store/project-store.js";
+export type {
+  AddLocationInput,
+  AddLocationResult,
+  AgentRunFilter,
+  AssignAgentInput,
+  DeleteProjectResult,
+  DeleteRootResult,
+  MutationContext,
+  ProjectStore,
+  ProjectStoreMode,
+  RecordEventInput,
+} from "./store/project-store.js";
 export {
   PROJECT_MANAGEMENT_TAXONOMY,
   PROJECT_PRIORITIES,

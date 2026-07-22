@@ -50,3 +50,30 @@ export type {
   ProjectStoreSummary,
   ProjectStoreTable,
 } from "./db/project-store.js";
+export { __resetProjectStore, resolveProjectStore } from "./store/project-store.js";
+export type {
+  AddLocationInput,
+  AddLocationResult,
+  AgentRunFilter,
+  AssignAgentInput,
+  DeleteProjectResult,
+  DeleteRootResult,
+  MutationContext,
+  ProjectStore,
+  ProjectStoreMode,
+  RecordEventInput,
+} from "./store/project-store.js";
+export {
+  PROJECT_CONTEXT_BUNDLE_MAX_BYTES,
+  PROJECT_CONTEXT_BUNDLE_SCHEMA,
+  buildProjectContextBundle,
+  encodeProjectContextBundle,
+  parseProjectContextBundle,
+  projectContextBundleSchema,
+} from "./lib/project-context-bundle.js";
+export type {
+  BuildProjectContextBundleInput,
+  ProjectContextBundle,
+  ProjectContextBundleProviderResult,
+  ProjectContextBundleProviders,
+} from "./lib/project-context-bundle.js";

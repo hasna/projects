@@ -1,10 +1,12 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { customAlphabet } from "nanoid";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getDatabase, now, uuid } from "./database.js";
+import { migrateProjectIdentityBindings } from "./schema.js";
 import { assertProjectWorkspaceId, projectWorkspaceStorePath } from "../lib/project-store-paths.js";
+import { ProjectContextError } from "../lib/project-context-errors.js";
 import type {
   Agent,
   AgentRow,
@@ -316,10 +318,11 @@ export interface RootMatchResult {
   reasons: string[];
 }
 
-export function scoreRoots(input: RootMatchInput = {}, db?: Database): RootMatchResult[] {
+/** Pure root scoring shared by local and API Store transports. */
+export function rankRoots(roots: Root[], input: RootMatchInput = {}): RootMatchResult[] {
   const absPath = input.path ? resolve(input.path) : undefined;
   const tags = new Set(input.tags ?? []);
-  return listRoots(db)
+  return roots
     .map((root) => {
       let score = 0;
       const reasons: string[] = [];
@@ -344,6 +347,10 @@ export function scoreRoots(input: RootMatchInput = {}, db?: Database): RootMatch
     })
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.root.slug.localeCompare(b.root.slug));
+}
+
+export function scoreRoots(input: RootMatchInput = {}, db?: Database): RootMatchResult[] {
+  return rankRoots(listRoots(db), input);
 }
 
 export function matchRoot(input: RootMatchInput, db?: Database): Root | null {
@@ -596,8 +603,81 @@ export function listTmuxProfileWindows(profileId: string, db?: Database): TmuxPr
     .all(profileId) as TmuxProfileWindowRow[]).map(rowToTmuxProfileWindow);
 }
 
+export function projectLocationOwnerId(explicit?: string): string {
+  return explicit?.trim()
+    || process.env["HASNA_MACHINE_ID"]?.trim()
+    || process.env["HASNA_STATION_ID"]?.trim()
+    || process.env["MACHINE_ID"]?.trim()
+    || process.env["STATION_ID"]?.trim()
+    || process.env["HOSTNAME"]?.trim()
+    || hostname();
+}
+
 function machineId(): string {
-  return process.env["HOSTNAME"] || hostname();
+  return projectLocationOwnerId();
+}
+
+export function canonicalProjectLocationPath(path: string): string {
+  const logical = resolve(path);
+  if (!existsSync(logical)) return logical;
+  try {
+    return realpathSync.native(logical);
+  } catch {
+    return logical;
+  }
+}
+
+export interface WorkspaceIdentityBinding {
+  workspace_id: string;
+  location_owner_id: string;
+  real_path: string;
+  logical_path: string | null;
+}
+
+export function getWorkspaceIdentityBinding(
+  path: string,
+  options: { machineId?: string } = {},
+  db?: Database,
+): WorkspaceIdentityBinding | null {
+  const d = db || getDatabase();
+  return d.query(
+    `SELECT workspace_id, location_owner_id, real_path, logical_path
+     FROM workspace_identity_bindings
+     WHERE location_owner_id = ? AND real_path = ?`,
+  ).get(
+    projectLocationOwnerId(options.machineId),
+    canonicalProjectLocationPath(path),
+  ) as WorkspaceIdentityBinding | null;
+}
+
+function assertWorkspaceIdentityAvailable(
+  path: string,
+  owner: string,
+  workspaceId: string | undefined,
+  db: Database,
+  code: "PROJECT_ALREADY_REGISTERED" | "PROJECT_IDENTITY_CONFLICT",
+): void {
+  const binding = getWorkspaceIdentityBinding(path, { machineId: owner }, db);
+  if (!binding || binding.workspace_id === workspaceId) return;
+  const project = getWorkspace(binding.workspace_id, db);
+  if (!project) {
+    throw new ProjectContextError("PROJECT_IDENTITY_CONFLICT", "Canonical path binding references a missing project", {
+      status: 409,
+      details: {
+        location_owner_id: owner,
+        real_path: canonicalProjectLocationPath(path),
+        workspace_id: binding.workspace_id,
+      },
+    });
+  }
+  throw new ProjectContextError(code, "Project path is already registered for this machine", {
+    status: 409,
+    project,
+    details: {
+      location_owner_id: owner,
+      real_path: canonicalProjectLocationPath(path),
+    },
+  });
 }
 
 function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slug: string, id: string, kind: WorkspaceKind): string | null {
@@ -616,6 +696,11 @@ function deriveWorkspacePath(input: CreateWorkspaceInput, root: Root | null, slu
 
 export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Workspace {
   const d = db || getDatabase();
+  const create = d.transaction(() => createWorkspaceInTransaction(input, d));
+  return create();
+}
+
+function createWorkspaceInTransaction(input: CreateWorkspaceInput, d: Database): Workspace {
   const id = input.id ? assertProjectWorkspaceId(input.id) : generateWorkspaceId();
   const ts = now();
   const slug = ensureUniqueSlug("workspaces", input.slug ?? workspaceSlugify(input.name), d);
@@ -628,6 +713,15 @@ export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Wor
 
   const kind = input.kind ?? recipe?.kind ?? root?.default_kind ?? "generic";
   const primaryPath = deriveWorkspacePath(input, root, slug, id, kind);
+  if (primaryPath) {
+    assertWorkspaceIdentityAvailable(
+      primaryPath,
+      projectLocationOwnerId(),
+      undefined,
+      d,
+      "PROJECT_ALREADY_REGISTERED",
+    );
+  }
   const tags = normalizeList([
     ...(root?.tags ?? []),
     ...(recipe?.default_tags ?? []),
@@ -660,7 +754,7 @@ export function createWorkspace(input: CreateWorkspaceInput, db?: Database): Wor
   );
 
   if (primaryPath) {
-    addWorkspaceLocation({
+    addWorkspaceLocationInTransaction({
       workspace_id: id,
       path: primaryPath,
       label: "main",
@@ -706,19 +800,26 @@ export function getWorkspaceByPath(path: string, db?: Database): Workspace | nul
 }
 
 export function listWorkspacesByPath(path: string, db?: Database): Workspace[] {
+  return listWorkspacesByPathForMachine(path, {}, db);
+}
+
+export function listWorkspacesByPathForMachine(
+  path: string,
+  options: { machineId?: string } = {},
+  db?: Database,
+): Workspace[] {
   const d = db || getDatabase();
-  const absPath = resolve(path);
+  const realPath = canonicalProjectLocationPath(path);
+  const owner = projectLocationOwnerId(options.machineId);
   const rows = d
     .query(`
-      SELECT DISTINCT w.*
+      SELECT w.*
       FROM workspaces w
-      LEFT JOIN workspace_locations loc ON loc.workspace_id = w.id
-      WHERE w.primary_path = ? OR loc.path = ?
-      ORDER BY
-        CASE WHEN w.primary_path = ? THEN 0 ELSE 1 END,
-        w.name ASC
+      INNER JOIN workspace_identity_bindings binding ON binding.workspace_id = w.id
+      WHERE binding.location_owner_id = ? AND binding.real_path = ?
+      ORDER BY w.name ASC
     `)
-    .all(absPath, absPath, absPath) as WorkspaceRow[];
+    .all(owner, realPath) as WorkspaceRow[];
   return rows.map(rowToWorkspace);
 }
 
@@ -914,19 +1015,30 @@ export interface AddWorkspaceLocationInput {
   source?: EventSource;
   prompt?: string;
   command?: string;
+  /** Explicit machine/station owner. Defaults to the current machine identity. */
+  machine_id?: string;
 }
 
 export function addWorkspaceLocation(input: AddWorkspaceLocationInput, db?: Database): WorkspaceLocation {
   const d = db || getDatabase();
+  const add = d.transaction(() => addWorkspaceLocationInTransaction(input, d));
+  return add();
+}
+
+function addWorkspaceLocationInTransaction(input: AddWorkspaceLocationInput, d: Database): WorkspaceLocation {
   const workspace = getWorkspace(input.workspace_id, d);
   if (!workspace) throw new Error(`Workspace not found: ${input.workspace_id}`);
+
+  const path = resolve(input.path);
+  const realPath = canonicalProjectLocationPath(path);
+  const owner = projectLocationOwnerId(input.machine_id);
+  assertWorkspaceIdentityAvailable(path, owner, input.workspace_id, d, "PROJECT_IDENTITY_CONFLICT");
 
   if (input.is_primary) {
     d.run("UPDATE workspace_locations SET is_primary = 0 WHERE workspace_id = ?", [input.workspace_id]);
   }
 
   const id = generateLocationId();
-  const path = resolve(input.path);
   const ts = now();
   d.run(
     `INSERT INTO workspace_locations (
@@ -941,7 +1053,7 @@ export function addWorkspaceLocation(input: AddWorkspaceLocationInput, db?: Data
       id,
       input.workspace_id,
       path,
-      machineId(),
+      owner,
       input.label ?? "main",
       input.kind ?? "local",
       input.is_primary ? 1 : 0,
@@ -951,13 +1063,25 @@ export function addWorkspaceLocation(input: AddWorkspaceLocationInput, db?: Data
     ],
   );
 
+  d.run(
+    `INSERT INTO workspace_identity_bindings (
+      workspace_id, location_owner_id, real_path, logical_path, machine_id, source
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workspace_id, location_owner_id, real_path) DO UPDATE SET
+      logical_path = excluded.logical_path,
+      machine_id = excluded.machine_id,
+      source = excluded.source,
+      updated_at = datetime('now')`,
+    [input.workspace_id, owner, realPath, path, owner, input.source ?? "location"],
+  );
+
   if (input.is_primary) {
     d.run("UPDATE workspaces SET primary_path = ?, updated_at = ? WHERE id = ?", [path, now(), input.workspace_id]);
   }
 
   const row = d
     .query("SELECT * FROM workspace_locations WHERE workspace_id = ? AND path = ? AND machine_id = ?")
-    .get(input.workspace_id, path, machineId()) as WorkspaceLocationRow | null;
+    .get(input.workspace_id, path, owner) as WorkspaceLocationRow | null;
   if (!row) throw new Error(`Workspace location was not written: ${path}`);
   const location = rowToLocation(row);
   if (input.source || input.agent_id || input.prompt || input.command) {
@@ -1511,6 +1635,7 @@ export function migrateLegacyProjectsToWorkspaces(db?: Database): MigrationResul
     migrated++;
   }
   const workdirs = migrateLegacyWorkdirs(d);
+  migrateProjectIdentityBindings(d);
   const after = migrationCounts(d);
 
   return {

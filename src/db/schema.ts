@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 
 export const MIGRATIONS: string[] = [
   // Migration 1-4 were legacy project-only schemas. Fresh databases no longer create them.
@@ -296,7 +299,218 @@ export const MIGRATIONS: string[] = [
 
   INSERT OR IGNORE INTO _migrations (id) VALUES (6);
   `,
+
+  // Migration 7: canonical project identity bindings and authority idempotency.
+  // The data backfill is performed by migrateProjectIdentityBindings below so
+  // real paths can be resolved safely and historical collisions can be
+  // audited without selecting a winner.
+  `
+  CREATE TABLE IF NOT EXISTS workspace_identity_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    location_owner_id TEXT NOT NULL,
+    real_path TEXT NOT NULL,
+    logical_path TEXT,
+    station_id TEXT,
+    machine_id TEXT,
+    source TEXT NOT NULL DEFAULT 'location',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(location_owner_id, real_path),
+    UNIQUE(workspace_id, location_owner_id, real_path)
+  );
+
+  CREATE TABLE IF NOT EXISTS project_identity_migration_audit (
+    id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    location_owner_id TEXT NOT NULL,
+    real_path TEXT NOT NULL,
+    workspace_ids TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS project_idempotency (
+    operation TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    response_status INTEGER,
+    response_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(operation, idempotency_key)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_workspace_identity_workspace
+    ON workspace_identity_bindings(workspace_id);
+  CREATE INDEX IF NOT EXISTS idx_project_identity_audit_owner_path
+    ON project_identity_migration_audit(location_owner_id, real_path);
+
+  `,
 ];
+
+function canonicalMigrationPath(path: string): string {
+  const logical = resolve(path);
+  if (!existsSync(logical)) return logical;
+  try {
+    return realpathSync.native(logical);
+  } catch {
+    return logical;
+  }
+}
+
+interface HistoricalLocationRow {
+  workspace_id: string;
+  path: string;
+  machine_id: string;
+  workspace_exists: number;
+}
+
+interface HistoricalPrimaryPathRow {
+  workspace_id: string;
+  primary_path: string;
+}
+
+/**
+ * Audit historical identity candidates without promoting legacy logical paths
+ * into canonical machine+realpath bindings. Both ambiguous and single-project
+ * groups remain unbound until a current client supplies attested realpath
+ * evidence; guessing even an apparently unique historical row can bind the
+ * wrong workspace after symlink or station drift.
+ */
+export function migrateProjectIdentityBindings(db: Database): void {
+  const table = db.query(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_locations'",
+  ).get();
+  if (!table) return;
+
+  const rows = db.query(
+    `SELECT loc.workspace_id, loc.path, loc.machine_id,
+            CASE WHEN w.id IS NULL THEN 0 ELSE 1 END AS workspace_exists
+     FROM workspace_locations loc
+     LEFT JOIN workspaces w ON w.id = loc.workspace_id
+     ORDER BY loc.machine_id, loc.path, loc.workspace_id`,
+  ).all() as HistoricalLocationRow[];
+  const locationPaths = new Set<string>();
+  const groups = new Map<string, {
+    owner: string;
+    realPath: string;
+    logicalPaths: string[];
+    workspaceIds: Set<string>;
+  }>();
+  for (const row of rows) {
+    const owner = row.machine_id.trim();
+    if (!owner || !row.path.trim()) continue;
+    const realPath = canonicalMigrationPath(row.path);
+    locationPaths.add(`${row.workspace_id}\0${realPath}`);
+    if (!row.workspace_exists) {
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(["orphan", owner, realPath, row.workspace_id]))
+        .digest("hex");
+      db.run(
+        `INSERT OR IGNORE INTO project_identity_migration_audit (
+          id, reason, location_owner_id, real_path, workspace_ids, details
+        ) VALUES (?, 'historical_orphan_location', ?, ?, ?, ?)`,
+        [
+          `identity_orphan_${fingerprint}`,
+          owner,
+          realPath,
+          JSON.stringify([row.workspace_id]),
+          JSON.stringify({ logical_path: resolve(row.path) }),
+        ],
+      );
+      continue;
+    }
+    const key = `${owner}\0${realPath}`;
+    const group = groups.get(key) ?? {
+      owner,
+      realPath,
+      logicalPaths: [],
+      workspaceIds: new Set<string>(),
+    };
+    group.logicalPaths.push(resolve(row.path));
+    group.workspaceIds.add(row.workspace_id);
+    groups.set(key, group);
+  }
+
+  const workspaceColumns = db.query("PRAGMA table_info(workspaces)").all() as Array<{ name: string }>;
+  if (workspaceColumns.some((column) => column.name === "primary_path")) {
+    const primaryPaths = db.query(
+      `SELECT id AS workspace_id, primary_path
+       FROM workspaces
+       WHERE primary_path IS NOT NULL AND trim(primary_path) <> ''
+       ORDER BY id`,
+    ).all() as HistoricalPrimaryPathRow[];
+    for (const row of primaryPaths) {
+      const realPath = canonicalMigrationPath(row.primary_path);
+      if (locationPaths.has(`${row.workspace_id}\0${realPath}`)) continue;
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(["unattested-primary-path", row.workspace_id, realPath]))
+        .digest("hex");
+      db.run(
+        `INSERT OR IGNORE INTO project_identity_migration_audit (
+          id, reason, location_owner_id, real_path, workspace_ids, details
+        ) VALUES (?, 'historical_primary_path_unattested', 'unknown', ?, ?, ?)`,
+        [
+          `identity_unattested_${fingerprint}`,
+          realPath,
+          JSON.stringify([row.workspace_id]),
+          JSON.stringify({ logical_path: resolve(row.primary_path) }),
+        ],
+      );
+    }
+  }
+
+  const migrate = db.transaction(() => {
+    for (const group of groups.values()) {
+      const workspaceIds = [...group.workspaceIds].sort();
+      if (workspaceIds.length > 1) {
+        db.run(
+          "DELETE FROM workspace_identity_bindings WHERE location_owner_id = ? AND real_path = ?",
+          [group.owner, group.realPath],
+        );
+        const fingerprint = createHash("sha256")
+          .update(JSON.stringify([group.owner, group.realPath, workspaceIds]))
+          .digest("hex");
+        db.run(
+          `INSERT OR IGNORE INTO project_identity_migration_audit (
+            id, reason, location_owner_id, real_path, workspace_ids, details
+          ) VALUES (?, 'historical_identity_collision', ?, ?, ?, ?)`,
+          [
+            `identity_collision_${fingerprint}`,
+            group.owner,
+            group.realPath,
+            JSON.stringify(workspaceIds),
+            JSON.stringify({ logical_paths: [...new Set(group.logicalPaths)].sort() }),
+          ],
+        );
+        continue;
+      }
+      const workspaceId = workspaceIds[0];
+      if (!workspaceId) continue;
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(["unattested-location", group.owner, group.realPath, workspaceIds]))
+        .digest("hex");
+      db.run(
+        `INSERT OR IGNORE INTO project_identity_migration_audit (
+          id, reason, location_owner_id, real_path, workspace_ids, details
+        ) VALUES (?, 'historical_location_unattested', ?, ?, ?, ?)`,
+        [
+          `identity_unattested_location_${fingerprint}`,
+          group.owner,
+          group.realPath,
+          JSON.stringify(workspaceIds),
+          JSON.stringify({
+            source: "workspace_locations",
+            binding_created: false,
+            logical_paths: [...new Set(group.logicalPaths)].sort(),
+          }),
+        ],
+      );
+    }
+  });
+  migrate();
+}
 
 export function runMigrations(db: Database): void {
   db.run(`
@@ -312,7 +526,16 @@ export function runMigrations(db: Database): void {
       .query("SELECT id FROM _migrations WHERE id = ?")
       .get(migrationId);
     if (!exists) {
-      db.run(MIGRATIONS[i]!);
+      if (migrationId === 7) {
+        const applyIdentityMigration = db.transaction(() => {
+          db.run(MIGRATIONS[i]!);
+          migrateProjectIdentityBindings(db);
+          db.run("INSERT INTO _migrations (id) VALUES (7)");
+        });
+        applyIdentityMigration();
+      } else {
+        db.run(MIGRATIONS[i]!);
+      }
     }
   }
 }

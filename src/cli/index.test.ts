@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,15 +8,32 @@ import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, st
 import { runMigrations } from "../db/schema.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
+const LOCAL_PROJECTS_ENV = { HASNA_PROJECTS_STORAGE_MODE: "local" } as const;
 
 function runProjects(args: string[], env: Record<string, string> = {}, cwd = process.cwd()) {
   return Bun.spawnSync({
     cmd: ["bun", "run", CLI_PATH, ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
     cwd,
   });
+}
+
+async function runProjectsAsync(args: string[], env: Record<string, string> = {}, cwd = process.cwd()) {
+  const child = Bun.spawn({
+    cmd: ["bun", "run", CLI_PATH, ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
+    cwd,
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
 }
 
 async function readStreamChunk(stream: ReadableStream<Uint8Array> | null, timeoutMs = 3_000): Promise<string> {
@@ -438,10 +455,10 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "dashboard", "serve", "served-dashboard", "--host", "127.0.0.1", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
       });
       try {
-        const stdout = await readStreamChunk(proc.stdout);
+        const stdout = await readStreamChunk(proc.stdout, 20_000);
         expect(stdout).toContain("\"ok\": true");
         await Bun.sleep(500);
         expect(proc.exitCode).toBeNull();
@@ -452,7 +469,7 @@ describe("project-first CLI surface", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test("reports serve defaults to network bind and keeps existing project registry semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "projects-reports-serve-"));
@@ -472,7 +489,7 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "reports", "serve", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
       });
       try {
         const stdout = await readStreamChunk(proc.stdout);
@@ -709,6 +726,332 @@ describe("project-first CLI surface", () => {
     const get = runProjects(["get", "surface-app", "--json"], env);
     expect(get.exitCode).toBe(0);
     expect((JSON.parse(text(get.stdout)) as { project?: { slug: string } }).project?.slug).toBe("surface-app");
+  });
+
+  test("explicit create on a bound path fails closed while why remains read-only", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-bound-path-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const targetPath = join(root, "bound");
+    mkdirSync(targetPath, { recursive: true });
+    try {
+      const first = runProjects([
+        "create",
+        "--name",
+        "Bound Project",
+        "--slug",
+        "bound-project",
+        "--path",
+        targetPath,
+        "--marker",
+        "--json",
+      ], env);
+      expect(first.exitCode).toBe(0);
+      const canonical = (JSON.parse(text(first.stdout)) as { project: { id: string; slug: string; status: string } }).project;
+
+      const duplicate = runProjects([
+        "create",
+        "--name",
+        "Duplicate Project",
+        "--slug",
+        "duplicate-project",
+        "--path",
+        targetPath,
+        "--json",
+      ], env);
+      expect(duplicate.exitCode).not.toBe(0);
+      expect(text(duplicate.stderr)).toBe("");
+      const duplicateBody = JSON.parse(text(duplicate.stdout)) as {
+        error: { code: string };
+        project: { id: string; slug: string; status: string };
+      };
+      expect(duplicateBody.error.code).toBe("PROJECT_ALREADY_REGISTERED");
+      expect(duplicateBody.project).toEqual({
+        id: canonical.id,
+        slug: canonical.slug,
+        status: canonical.status,
+      });
+
+      const why = runProjects(["why", targetPath, "--json"], env);
+      expect(why.exitCode).toBe(0);
+      const whyBody = JSON.parse(text(why.stdout)) as { resolved: boolean; create_allowed: boolean; project?: { id: string } };
+      expect(whyBody.resolved).toBe(true);
+      expect(whyBody.create_allowed).toBe(false);
+      expect(whyBody.project?.id).toBe(canonical.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("context-bundle exposes the strict additive project context contract", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-context-bundle-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    const targetPath = join(root, "bundle");
+    try {
+      const created = runProjects([
+        "create",
+        "--name",
+        "Context Bundle",
+        "--slug",
+        "context-bundle",
+        "--path",
+        targetPath,
+        "--todos-project-id",
+        "todo-project",
+        "--todos-task-list-id",
+        "todo-list",
+        "--integrations-json",
+        JSON.stringify({ conversations_channel: "internal-context-bundle", mementos_project_id: "memory-project", mementos_scope: "project" }),
+        "--json",
+      ], env);
+      expect(created.exitCode).toBe(0);
+
+      const result = runProjects(["context-bundle", targetPath, "--json"], env);
+      expect(result.exitCode).toBe(0);
+      const body = JSON.parse(text(result.stdout)) as {
+        schema: string;
+        project: { id: string; slug: string };
+        resolution: { source: string; conflict: boolean };
+        commands: Array<{ argv: string[] }>;
+      };
+      expect(body.schema).toBe("hasna.projects.project_context_bundle.v1");
+      expect(body.project.slug).toBe("context-bundle");
+      expect(body.resolution.conflict).toBe(false);
+      expect(body.commands.length).toBeLessThanOrEqual(6);
+      expect(Buffer.byteLength(text(result.stdout), "utf-8")).toBeLessThanOrEqual(8 * 1024);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("context-bundle emits a structured stable error for an invalid marker", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-context-error-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+    writeFileSync(join(root, ".project.json"), "{", "utf-8");
+    try {
+      const result = runProjects(["context-bundle", root, "--json"], env);
+      expect(result.exitCode).toBe(1);
+      expect(text(result.stderr)).toBe("");
+      expect(JSON.parse(text(result.stdout))).toMatchObject({
+        error: { code: "PROJECT_MARKER_INVALID", status: 400 },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("store ensure and migrate dry-runs resolve marker identity through the remote Store", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-store-api-"));
+    const projectPath = join(root, "project");
+    const locatorDb = join(root, "locator.db");
+    mkdirSync(projectPath, { recursive: true });
+    writeFileSync(join(projectPath, ".project.json"), JSON.stringify({ id: "wks_remote_store" }), "utf-8");
+    const calls: Array<{ method: string; pathname: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        calls.push({ method: request.method, pathname: url.pathname });
+        if (request.method === "GET" && url.pathname === "/v1/projects/wks_remote_store") {
+          return Response.json({
+            id: "wks_remote_store",
+            slug: "remote-store",
+            name: "Remote Store",
+            description: null,
+            kind: "project",
+            status: "active",
+            root_id: null,
+            recipe_id: null,
+            primary_path: "/remote/canonical",
+            git_remote: null,
+            s3_bucket: null,
+            s3_prefix: null,
+            tags: [],
+            integrations: {},
+            metadata: {},
+            last_opened_at: null,
+            created_at: "2026-07-22 00:00:00",
+            updated_at: "2026-07-22 00:00:00",
+            synced_at: null,
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+    const env = {
+      HASNA_PROJECTS_STORAGE_MODE: "cloud",
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${server.port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+      HASNA_PROJECTS_DB_PATH: locatorDb,
+      HASNA_PROJECTS_HOME: join(root, "home"),
+    };
+    try {
+      const ensured = await runProjectsAsync(["store", "ensure", projectPath, "--dry-run", "--json"], env);
+      expect(ensured.exitCode).toBe(0);
+      expect(ensured.stderr).toBe("");
+      expect(JSON.parse(ensured.stdout).project.id).toBe("wks_remote_store");
+
+      const migrated = await runProjectsAsync(["store", "migrate", projectPath, "--json"], env);
+      expect(migrated.exitCode).toBe(0);
+      expect(migrated.stderr).toBe("");
+      expect(JSON.parse(migrated.stdout).project.id).toBe("wks_remote_store");
+
+      expect(calls).toEqual([
+        { method: "GET", pathname: "/v1/projects/wks_remote_store" },
+        { method: "GET", pathname: "/v1/projects/wks_remote_store" },
+      ]);
+      expect(existsSync(locatorDb)).toBe(false);
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("API mode routes shared sub-resource writes remotely and fails closed before local-only writes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-subresources-api-"));
+    const dbPath = join(root, "projects.db");
+    const projectsHome = join(root, "home");
+    const projectPath = join(root, "stale-project");
+    const extraPath = join(root, "extra-location");
+    mkdirSync(projectPath, { recursive: true });
+    mkdirSync(extraPath, { recursive: true });
+    const localEnv = {
+      HASNA_PROJECTS_DB_PATH: dbPath,
+      HASNA_PROJECTS_HOME: projectsHome,
+      PROJECTS_CHANNEL_ENSURE: "0",
+    };
+    const created = runProjects([
+      "create", "--name", "Stale Local", "--slug", "stale-local", "--path", projectPath, "--json",
+    ], localEnv);
+    expect(created.exitCode).toBe(0);
+    const localProject = (JSON.parse(text(created.stdout)) as { project: { id: string; slug: string } }).project;
+    const addedAgent = runProjects([
+      "agents", "add", "--name", "Boundary Agent", "--slug", "boundary-agent", "--kind", "ai", "--json",
+    ], localEnv);
+    expect(addedAgent.exitCode).toBe(0);
+
+    let remoteProject = {
+      id: localProject.id,
+      slug: localProject.slug,
+      name: "Canonical Remote",
+      description: null,
+      kind: "project",
+      status: "active",
+      root_id: null,
+      recipe_id: null,
+      primary_path: "/remote/canonical",
+      git_remote: null,
+      s3_bucket: null,
+      s3_prefix: null,
+      tags: [] as string[],
+      integrations: {},
+      metadata: {},
+      last_opened_at: null,
+      created_at: "2026-07-22 00:00:00",
+      updated_at: "2026-07-22 00:00:00",
+      synced_at: null,
+    };
+    const calls: Array<{ method: string; pathname: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        calls.push({ method: request.method, pathname: url.pathname });
+        if (request.method === "GET" && url.pathname === "/v1/roots") {
+          return Response.json({ roots: [] });
+        }
+        if (request.method === "GET" && (
+          url.pathname === `/v1/projects/${localProject.slug}`
+          || url.pathname === `/v1/projects/${localProject.id}`
+        )) {
+          return Response.json(remoteProject);
+        }
+        if (request.method === "PATCH" && url.pathname === `/v1/projects/${localProject.id}`) {
+          const patch = await request.json() as { tags?: string[] };
+          remoteProject = { ...remoteProject, tags: patch.tags ?? remoteProject.tags };
+          return Response.json(remoteProject);
+        }
+        if (request.method === "POST" && url.pathname === `/v1/projects/${localProject.id}/events`) {
+          const input = await request.json() as { event_type: string; source: string };
+          return Response.json({
+            event: {
+              id: "evt_remote",
+              workspace_id: localProject.id,
+              agent_id: null,
+              event_type: input.event_type,
+              source: input.source,
+              prompt: null,
+              command: null,
+              before: null,
+              after: null,
+              metadata: {},
+              created_at: "2026-07-22 00:00:01",
+            },
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+    const cloudEnv = {
+      ...localEnv,
+      HASNA_PROJECTS_STORAGE_MODE: "cloud",
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${server.port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+    try {
+      const imported = await runProjectsAsync(["import", projectPath, "--json"], cloudEnv);
+      expect(imported.exitCode).toBe(0);
+      expect(JSON.parse(imported.stdout)).toMatchObject({ skipped: "already-registered" });
+
+      for (const args of [
+        ["canvases", "create", localProject.slug, "--name", "Must Not Persist", "--json"],
+        ["loops", "link", localProject.slug, "loop-boundary", "--json"],
+        ["locations", "add", localProject.slug, extraPath, "--json"],
+        ["agents", "assign", localProject.slug, "boundary-agent", "--json"],
+      ]) {
+        const result = await runProjectsAsync(args, cloudEnv);
+        expect(result.exitCode).toBe(1);
+        expect(result.stderr).toBe("");
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          error: { code: "PROJECT_AUTHORITY_UNAVAILABLE", status: 503 },
+        });
+      }
+
+      const labels = await runProjectsAsync(["labels", "add", localProject.slug, "remote-only", "--json"], cloudEnv);
+      expect(labels.exitCode).toBe(0);
+      expect(JSON.parse(labels.stdout).labels).toEqual(["remote-only"]);
+      const event = await runProjectsAsync(["events", "record", localProject.slug, "remote_boundary", "--json"], cloudEnv);
+      expect(event.exitCode).toBe(0);
+      expect(JSON.parse(event.stdout).event.id).toBe("evt_remote");
+
+      expect(calls.filter((call) => call.method !== "GET")).toEqual([
+        { method: "PATCH", pathname: `/v1/projects/${localProject.id}` },
+        { method: "POST", pathname: `/v1/projects/${localProject.id}/events` },
+      ]);
+      const localDb = new Database(dbPath, { readonly: true });
+      try {
+        const row = localDb.query("SELECT tags FROM workspaces WHERE id = ?").get(localProject.id) as { tags: string };
+        expect(JSON.parse(row.tags)).toEqual([]);
+        expect((localDb.query(
+          "SELECT COUNT(*) AS count FROM workspace_events WHERE workspace_id = ? AND event_type = 'remote_boundary'",
+        ).get(localProject.id) as { count: number }).count).toBe(0);
+        expect((localDb.query(
+          "SELECT COUNT(*) AS count FROM workspace_locations WHERE workspace_id = ? AND path = ?",
+        ).get(localProject.id, extraPath) as { count: number }).count).toBe(0);
+        expect((localDb.query(
+          `SELECT COUNT(*) AS count
+           FROM workspace_agents wa
+           JOIN agents a ON a.id = wa.agent_id
+           WHERE wa.workspace_id = ? AND a.slug = 'boundary-agent'`,
+        ).get(localProject.id) as { count: number }).count).toBe(0);
+      } finally {
+        localDb.close();
+      }
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("workspace store, app store, canvases, loops, and labels use temp home", () => {

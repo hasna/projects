@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -54,6 +54,115 @@ describe("database", () => {
       expect(existsSync(secondPath)).toBe(true);
 
       rmSync(tmp, { recursive: true, force: true });
+    });
+
+    test("audits historical identity collisions instead of guessing during migration", () => {
+      const database = new Database(":memory:");
+      const realPath = mkdtempSync(join(tmpdir(), "projects-identity-migration-"));
+      const singlePath = join(realPath, "single");
+      try {
+        mkdirSync(singlePath);
+        database.run("PRAGMA foreign_keys=ON");
+        database.run(`
+          CREATE TABLE _migrations (
+            id INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO _migrations (id) VALUES (1), (2), (3), (4), (5), (6);
+          CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY,
+            slug TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            primary_path TEXT
+          );
+          CREATE TABLE workspace_locations (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+            path TEXT NOT NULL,
+            machine_id TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT 'main',
+            kind TEXT NOT NULL DEFAULT 'local',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            exists_at_create INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(workspace_id, path, machine_id)
+          );
+          INSERT INTO workspaces (id, slug, primary_path) VALUES
+            ('wks_a', 'a', NULL),
+            ('wks_b', 'b', NULL),
+            ('wks_single', 'single', NULL),
+            ('wks_unattested', 'unattested', '/historical/unattested');
+        `);
+        database.run(
+          "INSERT INTO workspace_locations (id, workspace_id, path, machine_id) VALUES (?, ?, ?, ?), (?, ?, ?, ?), (?, ?, ?, ?)",
+          [
+            "loc_a", "wks_a", realPath, "station-1",
+            "loc_b", "wks_b", realPath, "station-1",
+            "loc_single", "wks_single", singlePath, "station-2",
+          ],
+        );
+
+        runMigrations(database);
+
+        const audit = database.query(
+          "SELECT reason, location_owner_id, real_path, workspace_ids FROM project_identity_migration_audit WHERE reason = 'historical_identity_collision'",
+        ).get() as { reason: string; location_owner_id: string; real_path: string; workspace_ids: string };
+        expect(audit.reason).toBe("historical_identity_collision");
+        expect(audit.location_owner_id).toBe("station-1");
+        expect(audit.real_path).toBe(realPath);
+        expect(JSON.parse(audit.workspace_ids)).toEqual(["wks_a", "wks_b"]);
+        expect((database.query("SELECT COUNT(*) AS count FROM workspace_identity_bindings").get() as { count: number }).count).toBe(0);
+        const unattested = database.query(
+          "SELECT reason, location_owner_id, workspace_ids FROM project_identity_migration_audit WHERE reason = 'historical_primary_path_unattested'",
+        ).get() as { reason: string; location_owner_id: string; workspace_ids: string };
+        expect(unattested.reason).toBe("historical_primary_path_unattested");
+        expect(unattested.location_owner_id).toBe("unknown");
+        expect(JSON.parse(unattested.workspace_ids)).toEqual(["wks_unattested"]);
+        const locationUnattested = database.query(
+          "SELECT reason, location_owner_id, real_path, workspace_ids FROM project_identity_migration_audit WHERE reason = 'historical_location_unattested'",
+        ).get() as { reason: string; location_owner_id: string; real_path: string; workspace_ids: string };
+        expect(locationUnattested.reason).toBe("historical_location_unattested");
+        expect(locationUnattested.location_owner_id).toBe("station-2");
+        expect(locationUnattested.real_path).toBe(singlePath);
+        expect(JSON.parse(locationUnattested.workspace_ids)).toEqual(["wks_single"]);
+
+        database.run(
+          "INSERT INTO workspace_identity_bindings (workspace_id, location_owner_id, real_path) VALUES (?, ?, ?)",
+          ["wks_a", "station-1", realPath],
+        );
+        expect(() => database.run(
+          "INSERT INTO workspace_identity_bindings (workspace_id, location_owner_id, real_path) VALUES (?, ?, ?)",
+          ["wks_b", "station-1", realPath],
+        )).toThrow();
+      } finally {
+        database.close();
+        rmSync(realPath, { recursive: true, force: true });
+      }
+    });
+
+    test("runs the identity backfill only while applying migration 7", () => {
+      const database = new Database(":memory:");
+      const realPath = mkdtempSync(join(tmpdir(), "projects-identity-once-"));
+      try {
+        database.run("PRAGMA foreign_keys=ON");
+        runMigrations(database);
+        createWorkspace({ name: "One Time", slug: "one-time", kind: "project", primary_path: realPath }, database);
+        database.run(
+          "UPDATE workspace_identity_bindings SET updated_at = '2000-01-01 00:00:00' WHERE real_path = ?",
+          [realPath],
+        );
+
+        runMigrations(database);
+
+        const binding = database.query(
+          "SELECT updated_at FROM workspace_identity_bindings WHERE real_path = ?",
+        ).get(realPath) as { updated_at: string };
+        expect(binding.updated_at).toBe("2000-01-01 00:00:00");
+      } finally {
+        database.close();
+        rmSync(realPath, { recursive: true, force: true });
+      }
     });
   });
 

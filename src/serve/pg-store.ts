@@ -8,7 +8,9 @@
 // hits the database.
 
 import { nanoid } from "nanoid";
+import { stableJsonSha256 } from "../lib/stable-json.js";
 import type { TypedQueryClient } from "../generated/storage-kit/query.js";
+import { ProjectContextError, isProjectContextError } from "../lib/project-context-errors.js";
 import type {
   Agent,
   AgentRow,
@@ -80,6 +82,10 @@ function json(value: unknown): string {
 
 function normalizeList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((v) => v.trim()).filter(Boolean))];
+}
+
+export function projectCreateRequestHash(value: unknown): string {
+  return stableJsonSha256(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +173,38 @@ export interface WorkspaceFilter {
   offset?: number;
 }
 
+export interface CreateWorkspaceAuthorityOptions {
+  idempotencyKey?: string;
+  locationOwnerId?: string;
+  realPath?: string;
+  logicalPath?: string;
+  stationId?: string;
+  machineId?: string;
+}
+
+interface TransactionalQueryClient extends TypedQueryClient {
+  transaction?<T>(fn: (client: TypedQueryClient) => Promise<T>): Promise<T>;
+}
+
+interface IdempotencyRow {
+  request_hash: string;
+  response_status: number | null;
+  response_json: unknown;
+}
+
 export class ProjectsPgStore {
-  constructor(private readonly db: TypedQueryClient) {}
+  constructor(private readonly db: TransactionalQueryClient) {}
+
+  private async authorityTransaction<T>(fn: (client: TypedQueryClient) => Promise<T>): Promise<T> {
+    if (typeof this.db.transaction !== "function") {
+      throw new ProjectContextError(
+        "PROJECT_AUTHORITY_UNAVAILABLE",
+        "Projects authority does not expose transactional writes",
+        { status: 503 },
+      );
+    }
+    return this.db.transaction(fn);
+  }
 
   // --- slug uniqueness --------------------------------------------------
   private async ensureUniqueSlug(table: string, base: string, excludeId?: string): Promise<string> {
@@ -406,8 +442,161 @@ export class ProjectsPgStore {
     return ws;
   }
 
-  async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+  async createWorkspace(
+    input: CreateWorkspaceInput,
+    options: CreateWorkspaceAuthorityOptions = {},
+  ): Promise<Workspace> {
+    const hasBinding = Boolean(options.locationOwnerId || options.realPath);
+    if (Boolean(options.locationOwnerId) !== Boolean(options.realPath)) {
+      throw new ValidationError("locationOwnerId and realPath must be provided together");
+    }
+    if (input.primary_path && !hasBinding) {
+      throw new ProjectContextError(
+        "PROJECT_IDENTITY_CONFLICT",
+        "A project primary_path requires an attested machine/station realpath identity",
+        { status: 409, details: { identity_required: true } },
+      );
+    }
+    if (!options.idempotencyKey && !hasBinding) {
+      return this.createWorkspaceRecord(input);
+    }
+
+    const requestHash = projectCreateRequestHash({
+      input,
+      identity: hasBinding ? {
+        location_owner_id: options.locationOwnerId,
+        real_path: options.realPath,
+        logical_path: options.logicalPath ?? input.primary_path ?? null,
+        station_id: options.stationId ?? null,
+        machine_id: options.machineId ?? null,
+      } : null,
+    });
+    return this.authorityTransaction(async (client) => {
+      const transactionStore = new ProjectsPgStore(client);
+      if (!options.idempotencyKey) {
+        return transactionStore.createWorkspaceRecord(input, options);
+      }
+
+      const key = options.idempotencyKey.trim();
+      if (!key || key.length > 512) throw new ValidationError("invalid Idempotency-Key");
+      const inserted = await client.get<{ request_hash: string }>(
+        `INSERT INTO project_idempotency (
+          operation, idempotency_key, request_hash, response_status, response_json, updated_at
+        ) VALUES ('workspace.create', $1, $2, NULL, NULL, NOW())
+        ON CONFLICT (operation, idempotency_key) DO NOTHING
+        RETURNING request_hash`,
+        [key, requestHash],
+      );
+      const row = inserted
+        ? { request_hash: inserted.request_hash, response_status: null, response_json: null }
+        : await client.get<IdempotencyRow>(
+          `SELECT request_hash, response_status, response_json
+           FROM project_idempotency
+           WHERE operation = 'workspace.create' AND idempotency_key = $1
+           FOR UPDATE`,
+          [key],
+        );
+      if (!row) {
+        throw new ProjectContextError(
+          "PROJECT_AUTHORITY_UNAVAILABLE",
+          "Idempotency claim disappeared inside its transaction",
+          { status: 503 },
+        );
+      }
+      if (row.request_hash !== requestHash) {
+        throw new ProjectContextError(
+          "PROJECT_IDEMPOTENCY_KEY_REUSED",
+          "Idempotency key was already used for a different request",
+          { status: 409 },
+        );
+      }
+      if (!inserted) {
+        if (!row.response_json || row.response_status === null) {
+          throw new ProjectContextError(
+            "PROJECT_AUTHORITY_UNAVAILABLE",
+            "Idempotency record has no completed response",
+            { status: 503 },
+          );
+        }
+        const persisted = typeof row.response_json === "string"
+          ? JSON.parse(row.response_json) as Workspace
+          : row.response_json as Workspace;
+        if (!persisted || typeof persisted.id !== "string" || typeof persisted.slug !== "string") {
+          throw new ProjectContextError(
+            "PROJECT_AUTHORITY_UNAVAILABLE",
+            "Persisted idempotency response is invalid",
+            { status: 503 },
+          );
+        }
+        return persisted;
+      }
+
+      const workspace = await transactionStore.createWorkspaceRecord(input, options);
+      await client.execute(
+        `UPDATE project_idempotency
+         SET response_status = 201, response_json = $1::jsonb, updated_at = NOW()
+         WHERE operation = 'workspace.create' AND idempotency_key = $2`,
+        [JSON.stringify(workspace), key],
+      );
+      return workspace;
+    });
+  }
+
+  private async createWorkspaceRecord(
+    input: CreateWorkspaceInput,
+    options: CreateWorkspaceAuthorityOptions = {},
+  ): Promise<Workspace> {
     if (!input.name?.trim()) throw new ValidationError("workspace name is required");
+    if (options.locationOwnerId && options.realPath) {
+      const existing = await this.db.get<Pick<WorkspaceRow, "id" | "slug" | "status">>(
+        `SELECT w.id, w.slug, w.status
+         FROM workspace_identity_bindings binding
+         JOIN workspaces w ON w.id = binding.workspace_id
+         WHERE binding.location_owner_id = $1 AND binding.real_path = $2`,
+        [options.locationOwnerId, options.realPath],
+      );
+      if (existing) {
+        throw new ProjectContextError(
+          "PROJECT_ALREADY_REGISTERED",
+          "Project path is already registered for this machine",
+          { status: 409, project: existing },
+        );
+      }
+      const legacy = await this.db.get<Pick<WorkspaceRow, "id" | "slug" | "status">>(
+        `SELECT w.id, w.slug, w.status
+         FROM workspaces w
+         WHERE (w.primary_path = $1 OR w.primary_path = $2)
+           AND NOT EXISTS (
+             SELECT 1 FROM workspace_identity_bindings identity_binding
+             WHERE identity_binding.workspace_id = w.id
+           )
+         ORDER BY w.id
+         LIMIT 1`,
+        [options.realPath, options.logicalPath ?? input.primary_path ?? options.realPath],
+      );
+      if (legacy) {
+        throw new ProjectContextError(
+          "PROJECT_ALREADY_REGISTERED",
+          "Project path is retained by an unresolved historical workspace binding",
+          { status: 409, project: legacy, details: { migration_audit_required: true } },
+        );
+      }
+      const auditedCollision = await this.db.get<{ workspace_ids: unknown }>(
+        `SELECT workspace_ids
+         FROM project_identity_migration_audit
+         WHERE location_owner_id = $1 AND real_path = $2
+           AND reason IN ('historical_identity_collision', 'historical_location_unattested')
+         LIMIT 1`,
+        [options.locationOwnerId, options.realPath],
+      );
+      if (auditedCollision) {
+        throw new ProjectContextError(
+          "PROJECT_IDENTITY_CONFLICT",
+          "Project path has unresolved historical identity evidence",
+          { status: 409, details: { migration_audit_required: true } },
+        );
+      }
+    }
     const id = input.id ?? generateWorkspaceId();
     const ts = nowIso();
     const slug = await this.ensureUniqueSlug("workspaces", input.slug ?? slugify(input.name));
@@ -446,9 +635,42 @@ export class ProjectsPgStore {
           ts,
         ],
       );
+      if (options.locationOwnerId && options.realPath) {
+        const binding = await this.db.get<{ workspace_id: string }>(
+          `INSERT INTO workspace_identity_bindings (
+            workspace_id, location_owner_id, real_path, logical_path,
+            station_id, machine_id, source, updated_at
+          ) VALUES ($1,$2,$3,$4,$5,$6,'authority',NOW())
+          ON CONFLICT (location_owner_id, real_path) DO NOTHING
+          RETURNING workspace_id`,
+          [
+            id,
+            options.locationOwnerId,
+            options.realPath,
+            options.logicalPath ?? input.primary_path ?? null,
+            options.stationId ?? null,
+            options.machineId ?? null,
+          ],
+        );
+        if (!binding) {
+          const existing = await this.db.get<Pick<WorkspaceRow, "id" | "slug" | "status">>(
+            `SELECT w.id, w.slug, w.status
+             FROM workspace_identity_bindings identity_binding
+             JOIN workspaces w ON w.id = identity_binding.workspace_id
+             WHERE identity_binding.location_owner_id = $1 AND identity_binding.real_path = $2`,
+            [options.locationOwnerId, options.realPath],
+          );
+          throw new ProjectContextError(
+            existing ? "PROJECT_ALREADY_REGISTERED" : "PROJECT_IDENTITY_CONFLICT",
+            "Project path identity collided during create",
+            { status: 409, project: existing ?? undefined },
+          );
+        }
+      }
     } catch (err) {
+      if (isProjectContextError(err)) throw err;
       const msg = err instanceof Error ? err.message : String(err);
-      if (/duplicate key|unique/i.test(msg)) throw new ValidationError(`workspace conflict: ${msg}`);
+      if (/duplicate key|unique/i.test(msg)) throw new ValidationError("workspace conflict");
       throw err;
     }
 
@@ -468,6 +690,18 @@ export class ProjectsPgStore {
 
   async updateWorkspace(idOrSlug: string, input: UpdateWorkspaceInput): Promise<Workspace> {
     const before = await this.requireWorkspace(idOrSlug);
+    if (before.status === "deleted") {
+      throw new ProjectContextError("PROJECT_DELETED", "Deleted project cannot be mutated", {
+        status: 409,
+        project: before,
+      });
+    }
+    if (before.status === "archived" && input.status !== "active" && input.status !== "deleted") {
+      throw new ProjectContextError("PROJECT_ARCHIVED", "Archived project must be explicitly reactivated before mutation", {
+        status: 409,
+        project: before,
+      });
+    }
     const root = input.root_id ? await this.getRoot(input.root_id) : null;
     if (input.root_id && !root) throw new ValidationError(`Root not found: ${input.root_id}`);
     const recipe = input.recipe_id ? await this.getRecipe(input.recipe_id) : null;

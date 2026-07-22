@@ -1,17 +1,20 @@
 import { describe, test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMigrations } from "../db/schema.js";
 import { createWorkspace } from "../db/workspaces.js";
+
+const LOCAL_PROJECTS_ENV = { HASNA_PROJECTS_STORAGE_MODE: "local" } as const;
 
 function runMcpCli(args: string[]) {
   return Bun.spawnSync({
     cmd: ["bun", "run", "src/mcp/index.ts", ...args],
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV },
   });
 }
 
@@ -61,7 +64,7 @@ describe("projects-mcp CLI flags", () => {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, HASNA_PROJECTS_DB_PATH: join(root, "projects.db") },
+      env: { ...process.env, ...LOCAL_PROJECTS_ENV, HASNA_PROJECTS_DB_PATH: join(root, "projects.db") },
     });
     child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
     child.stdin.end();
@@ -126,6 +129,7 @@ describe("projects-mcp project-first surface", () => {
     expect(source).toContain("\"projects_render_show\"");
     expect(source).toContain("\"projects_render_list\"");
     expect(source).toContain("\"projects_store_inspect\"");
+    expect(source).toContain("\"projects_context_bundle\"");
     expect(source).toContain("\"projects_canvases_list\"");
     expect(source).toContain("\"projects_canvases_create\"");
     expect(source).toContain("\"projects_canvases_upsert\"");
@@ -158,6 +162,7 @@ describe("projects-mcp project-first surface", () => {
       stderr: "pipe",
       env: {
         ...process.env,
+        ...LOCAL_PROJECTS_ENV,
         HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
       },
     });
@@ -205,6 +210,7 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_render_show");
     expect(tools).toContain("projects_render_list");
     expect(tools).toContain("projects_store_inspect");
+    expect(tools).toContain("projects_context_bundle");
     expect(tools).toContain("projects_canvases_list");
     expect(tools).toContain("projects_canvases_create");
     expect(tools).toContain("projects_canvases_upsert");
@@ -214,6 +220,233 @@ describe("projects-mcp project-first surface", () => {
     expect(tools).toContain("projects_loops_list");
     expect(tools).not.toContain(legacyCreateTool);
     expect(tools).not.toContain("projects_sync");
+  });
+
+  test("returns a strict context bundle over an invoked MCP tool", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-context-bundle-"));
+    const dbPath = join(root, "projects.db");
+    const projectPath = join(root, "project");
+    mkdirSync(projectPath, { recursive: true });
+    const database = new Database(dbPath);
+    database.run("PRAGMA foreign_keys=ON");
+    runMigrations(database);
+    const project = createWorkspace({
+      name: "MCP Context Bundle",
+      slug: "mcp-context-bundle",
+      kind: "project",
+      primary_path: projectPath,
+      integrations: {
+        todos_project_id: "todo-project",
+        todos_task_list_id: "todo-list",
+        conversations_channel: "project-channel",
+        mementos_project_id: "memory-project",
+        mementos_scope: "project",
+      },
+    }, database);
+    database.close();
+
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "project-mcp-test", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "projects_context_bundle",
+          arguments: { project: project.id },
+        },
+      },
+    ];
+    const child = Bun.spawn({
+      cmd: ["bun", "run", "src/mcp/index.ts"],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        ...LOCAL_PROJECTS_ENV,
+        HASNA_PROJECTS_HOME: join(root, "home"),
+        HASNA_PROJECTS_DB_PATH: dbPath,
+      },
+    });
+    child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    child.stdin.end();
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    try {
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+        id?: number;
+        result?: { content?: Array<{ type: string; text: string }>; isError?: boolean };
+      }>;
+      const response = responses.find((item) => item.id === 2)?.result;
+      expect(response?.isError).not.toBe(true);
+      const body = JSON.parse(response?.content?.[0]?.text ?? "null") as unknown;
+      const { parseProjectContextBundle } = await import("../lib/project-context-bundle.js");
+      const bundle = parseProjectContextBundle(body);
+      expect(bundle.project.id).toBe(project.id);
+      expect(bundle.links.todos).toEqual({ state: "linked", project_id: "todo-project", task_list_id: "todo-list" });
+      expect(Buffer.byteLength(JSON.stringify(bundle), "utf-8")).toBeLessThanOrEqual(8 * 1024);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("returns structured stable errors from target-taking MCP tools", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-context-error-"));
+    writeFileSync(join(root, ".project.json"), "{", "utf-8");
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "project-mcp-test", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "projects_context_bundle", arguments: { project: root } },
+      },
+    ];
+    const child = Bun.spawn({
+      cmd: ["bun", "run", "src/mcp/index.ts"],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        ...LOCAL_PROJECTS_ENV,
+        HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      },
+    });
+    child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    child.stdin.end();
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    try {
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+        id?: number;
+        result?: { content?: Array<{ text: string }>; isError?: boolean };
+      }>;
+      const result = responses.find((item) => item.id === 2)?.result;
+      expect(result?.isError).toBe(true);
+      expect(JSON.parse(result?.content?.[0]?.text ?? "{}")).toMatchObject({
+        error: { code: "PROJECT_MARKER_INVALID", status: 400 },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("projects_render_list reads the selected remote Store", async () => {
+    const root = mkdtempSync(join(tmpdir(), "project-mcp-render-api-"));
+    const calls: Array<{ method: string; pathname: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url);
+        calls.push({ method: request.method, pathname: url.pathname });
+        if (request.method === "GET" && url.pathname === "/v1/projects") {
+          return Response.json({
+            workspaces: [{
+              id: "wks_remote_render",
+              slug: "remote-render",
+              name: "Remote Render",
+              description: null,
+              kind: "project",
+              status: "active",
+              root_id: null,
+              recipe_id: null,
+              primary_path: null,
+              git_remote: null,
+              tags: [],
+              integrations: {},
+              metadata: {},
+              created_at: "2026-07-22 00:00:00",
+              updated_at: "2026-07-22 00:00:00",
+            }],
+            count: 1,
+          });
+        }
+        return Response.json({ error: "not found" }, { status: 404 });
+      },
+    });
+    const messages = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "project-mcp-test", version: "0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "projects_render_list", arguments: {} } },
+    ];
+    const child = Bun.spawn({
+      cmd: ["bun", "run", "src/mcp/index.ts"],
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        HASNA_PROJECTS_STORAGE_MODE: "cloud",
+        HASNA_PROJECTS_API_URL: `http://127.0.0.1:${server.port}`,
+        HASNA_PROJECTS_API_KEY: "test-key",
+        HASNA_PROJECTS_DB_PATH: join(root, "locator.db"),
+      },
+    });
+    child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
+    child.stdin.end();
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    try {
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      const responses = stdout.trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+        id?: number;
+        result?: { content?: Array<{ text: string }>; isError?: boolean };
+      }>;
+      const result = responses.find((item) => item.id === 2)?.result;
+      expect(result?.isError).not.toBe(true);
+      expect(result?.content?.[0]?.text).toContain("remote-render");
+      expect(calls).toEqual([{ method: "GET", pathname: "/v1/projects" }]);
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("calls canvas compose and upsert MCP tools over stdio", async () => {
@@ -301,6 +534,7 @@ describe("projects-mcp project-first surface", () => {
       stderr: "pipe",
       env: {
         ...process.env,
+        ...LOCAL_PROJECTS_ENV,
         HASNA_PROJECTS_HOME: join(root, "home"),
         HASNA_PROJECTS_DB_PATH: dbPath,
       },

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runMigrations } from "./schema.js";
@@ -28,6 +28,7 @@ import {
   listWorkspaceEvents,
   listWorkspaceAgents,
   listWorkspaceLocations,
+  listWorkspacesByPathForMachine,
   listWorkspacesByPath,
   listWorkspaces,
   matchRootForPath,
@@ -79,6 +80,90 @@ describe("workspace schema", () => {
 });
 
 describe("workspace domain services", () => {
+  test("keeps one machine realpath binding across soft deletion", () => {
+    const db = makeDb();
+    const real = tmpDir();
+    const aliasParent = tmpDir();
+    const alias = join(aliasParent, "alias");
+    symlinkSync(real, alias, "dir");
+    try {
+      const first = createWorkspace({
+        name: "Canonical Binding",
+        slug: "canonical-binding",
+        kind: "project",
+        primary_path: real,
+      }, db);
+
+      expect(() => createWorkspace({
+        name: "Symlink Collision",
+        slug: "symlink-collision",
+        kind: "project",
+        primary_path: alias,
+      }, db)).toThrow(/PROJECT_ALREADY_REGISTERED/);
+
+      expect(deleteWorkspace(first.id, { source: "cli", command: "projects delete" }, db).workspace.status).toBe("deleted");
+      expect(() => createWorkspace({
+        name: "Deleted Binding Collision",
+        slug: "deleted-binding-collision",
+        kind: "project",
+        primary_path: alias,
+      }, db)).toThrow(/PROJECT_ALREADY_REGISTERED/);
+    } finally {
+      rmSync(aliasParent, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
+      db.close();
+    }
+  });
+
+  test("scopes canonical realpath bindings by explicit machine identity", () => {
+    const database = makeDb();
+    const real = tmpDir();
+    const aliasParent = tmpDir();
+    const alias = join(aliasParent, "alias");
+    symlinkSync(real, alias, "dir");
+    try {
+      const stationA = createWorkspace({
+        name: "Station A",
+        slug: "station-a",
+        kind: "remote-only",
+      }, database);
+      const stationB = createWorkspace({
+        name: "Station B",
+        slug: "station-b",
+        kind: "remote-only",
+      }, database);
+      const stationAConflict = createWorkspace({
+        name: "Station A Conflict",
+        slug: "station-a-conflict",
+        kind: "remote-only",
+      }, database);
+
+      addWorkspaceLocation({ workspace_id: stationA.id, path: real, machine_id: "station-a" }, database);
+      expect(() => addWorkspaceLocation({
+        workspace_id: stationAConflict.id,
+        path: alias,
+        machine_id: "station-a",
+      }, database)).toThrow(/PROJECT_IDENTITY_CONFLICT/);
+      expect(() => addWorkspaceLocation({
+        workspace_id: stationB.id,
+        path: alias,
+        machine_id: "station-b",
+      }, database)).not.toThrow();
+
+      const bindings = database.query(
+        "SELECT workspace_id, location_owner_id, real_path FROM workspace_identity_bindings ORDER BY location_owner_id",
+      ).all() as Array<{ workspace_id: string; location_owner_id: string; real_path: string }>;
+      expect(bindings).toEqual([
+        { workspace_id: stationA.id, location_owner_id: "station-a", real_path: real },
+        { workspace_id: stationB.id, location_owner_id: "station-b", real_path: real },
+      ]);
+    } finally {
+      rmSync(aliasParent, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
+      database.close();
+    }
+  });
+
   test("defaults rootless projects to the canonical ID-based workspace store", () => {
     const db = makeDb();
     const previousHome = process.env["HASNA_PROJECTS_HOME"];
@@ -381,7 +466,7 @@ describe("workspace domain services", () => {
     db.close();
   });
 
-  test("plans and executes workspace creation with locks and rollback records", () => {
+  test("plans and executes workspace creation with locks and rollback records", async () => {
     const db = makeDb();
     const rootDir = tmpDir();
     const root = createRoot({ name: "Plan Root", slug: "plan-root", base_path: rootDir, path_template: "{slug}" }, db);
@@ -410,7 +495,7 @@ describe("workspace domain services", () => {
     expect(plan.locks.map((lock) => lock.key)).toContain(`workspace-path:${join(rootDir, "planned-app")}`);
     expect(plan.rollback_actions.some((action) => action.action === "remove_file")).toBe(true);
 
-    const dryRun = executeWorkspaceCreation({
+    const dryRun = await executeWorkspaceCreation({
       name: "Dry Planned App",
       root_id: root.id,
       createDirectory: true,
@@ -419,7 +504,7 @@ describe("workspace domain services", () => {
     expect(dryRun.dry_run).toBe(true);
     expect(listWorkspaces({}, db)).toHaveLength(0);
 
-    const executed = executeWorkspaceCreation({
+    const executed = await executeWorkspaceCreation({
       name: "Planned App",
       root_id: root.id,
       createDirectory: true,
@@ -436,12 +521,12 @@ describe("workspace domain services", () => {
     db.close();
   });
 
-  test("cleans up workspace creation artifacts from rollback records", () => {
+  test("cleans up workspace creation artifacts from rollback records", async () => {
     const db = makeDb();
     const rootDir = tmpDir();
     const root = createRoot({ name: "Cleanup Root", slug: "cleanup-root", base_path: rootDir, path_template: "{slug}" }, db);
 
-    const executed = executeWorkspaceCreation({
+    const executed = await executeWorkspaceCreation({
       name: "Cleanup App",
       root_id: root.id,
       createDirectory: true,
@@ -657,16 +742,24 @@ describe("legacy project migration", () => {
     expect(first.validation.valid).toBe(true);
     expect(first.validation.workdir_source_count).toBe(1);
     expect(first.samples[0]?.old_project_id).toBe(project.id);
-    const workspace = getWorkspaceByPath(workdirPath, db);
-    expect(workspace?.slug).toBe("open-legacy");
-    expect(workspace?.metadata["migrated_from_project_id"]).toBe(project.id);
-    const locations = listWorkspaceLocations(workspace!.id, db);
+    const workspace = getWorkspaceBySlug("open-legacy", db)!;
+    expect(workspace.metadata["migrated_from_project_id"]).toBe(project.id);
+    expect(listWorkspacesByPathForMachine(workdirPath, { machineId: "legacy-machine" }, db)).toEqual([]);
+    const audit = db.query(
+      `SELECT reason, workspace_ids, details
+       FROM project_identity_migration_audit
+       WHERE location_owner_id = ? AND real_path = ?`,
+    ).get("legacy-machine", workdirPath) as { reason: string; workspace_ids: string; details: string };
+    expect(audit.reason).toBe("historical_location_unattested");
+    expect(JSON.parse(audit.workspace_ids)).toEqual([workspace.id]);
+    expect(JSON.parse(audit.details)).toMatchObject({ binding_created: false });
+    const locations = listWorkspaceLocations(workspace.id, db);
     const migratedWorkdir = locations.find((location) => location.machine_id === "legacy-machine");
     expect(migratedWorkdir?.path).toBe(workdirPath);
     expect(migratedWorkdir?.is_primary).toBe(true);
     expect(migratedWorkdir?.metadata["migrated_from_workdir_id"]).toBe("legacy_workdir_1");
-    expect(doctorWorkspace(workspace!, {}, db).checks.some((check) => check.code === "WORKSPACE_MIGRATION_MAP_OK")).toBe(true);
-    expect(listWorkspaceEvents(workspace!.id, db).some((event) => event.source === "migration")).toBe(true);
+    expect(doctorWorkspace(workspace, {}, db).checks.some((check) => check.code === "WORKSPACE_MIGRATION_MAP_OK")).toBe(true);
+    expect(listWorkspaceEvents(workspace.id, db).some((event) => event.source === "migration")).toBe(true);
 
     const second = migrateLegacyProjectsToWorkspaces(db);
     expect(second.migrated).toBe(0);

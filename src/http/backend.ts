@@ -11,10 +11,7 @@
 // local by design and are not part of this seam.
 
 import type { Workspace, WorkspaceEvent } from "../types/workspace.js";
-import { resolveStorageClient, type StorageClient, type QueryParams } from "./client.js";
-
-const APP = "projects";
-const RESOURCE = "projects";
+import { resolveProjectStore, type ProjectStore } from "../store/project-store.js";
 
 export interface WorkspaceListFilter {
   kind?: string;
@@ -39,52 +36,39 @@ export interface ProjectsBackend {
   listWorkspaceEvents(idOrSlug: string, limit?: number): Promise<WorkspaceEvent[]>;
 }
 
-function listQuery(filter?: WorkspaceListFilter): QueryParams {
-  if (!filter) return {};
-  return {
-    kind: filter.kind,
-    status: filter.status,
-    query: filter.query,
-    root_id: filter.root_id,
-    tag: filter.tags && filter.tags.length > 0 ? filter.tags[0] : undefined,
-    limit: filter.limit,
-    offset: filter.offset,
-  };
-}
-
-function cloudBackend(client: StorageClient): ProjectsBackend {
-  const t = client.transport;
-  const enc = (id: string) => encodeURIComponent(id);
+function cloudBackend(store: ProjectStore): ProjectsBackend {
   return {
     mode: "cloud-http",
-    baseUrl: client.baseUrl,
+    baseUrl: store.baseUrl,
     async listWorkspaces(filter) {
-      const raw = await t.get<{ workspaces?: Workspace[] }>("/projects", { query: listQuery(filter) });
-      return raw.workspaces ?? [];
+      return store.listProjects(filter as never);
     },
     async getWorkspace(idOrSlug) {
-      return client.get<Workspace>(RESOURCE, idOrSlug);
+      return store.getProject(idOrSlug);
     },
     async createWorkspace(input) {
-      return client.create<Workspace>(RESOURCE, input);
+      return store.createProject(input as never);
     },
     async updateWorkspace(idOrSlug, patch) {
-      return client.update<Workspace>(RESOURCE, idOrSlug, patch);
+      const project = await store.resolveTarget(idOrSlug, { intent: "mutate" });
+      return store.updateProject(project.id, patch as never);
     },
     async deleteWorkspace(idOrSlug, opts) {
-      const q = opts?.hard ? "?hard=true" : "";
-      const res = await t.del<{ deleted?: boolean; hard?: boolean; id?: string }>(`/projects/${enc(idOrSlug)}${q}`);
-      return { deleted: res?.deleted !== false, hard: Boolean(res?.hard), id: res?.id ?? idOrSlug };
+      const project = await store.resolveTarget(idOrSlug, { intent: "mutate" });
+      const result = await store.deleteProject(project.id, { hard: opts?.hard });
+      return { deleted: true, hard: result.hard, id: result.id };
     },
     async archiveWorkspace(idOrSlug) {
-      return t.post<Workspace>(`/projects/${enc(idOrSlug)}/archive`);
+      const project = await store.resolveTarget(idOrSlug, { intent: "mutate" });
+      return store.archiveProject(project.id);
     },
     async unarchiveWorkspace(idOrSlug) {
-      return t.post<Workspace>(`/projects/${enc(idOrSlug)}/unarchive`);
+      const project = await store.resolveTarget(idOrSlug, { intent: "read" });
+      return store.unarchiveProject(project.id);
     },
     async listWorkspaceEvents(idOrSlug, limit) {
-      const raw = await t.get<{ events?: WorkspaceEvent[] }>(`/projects/${enc(idOrSlug)}/events`, { query: limit ? { limit } : {} });
-      return raw.events ?? [];
+      const project = await store.resolveTarget(idOrSlug, { intent: "read" });
+      return store.listEvents(project.id, limit);
     },
   };
 }
@@ -98,8 +82,8 @@ export function resolveProjectsBackend(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): ProjectsBackend | null {
   if (env === process.env && cached) return cached;
-  const resolved = resolveStorageClient(APP, env);
-  const backend = resolved.transport === "cloud-http" ? cloudBackend(resolved.client) : null;
+  const store = resolveProjectStore(env);
+  const backend = store.mode === "api" ? cloudBackend(store) : null;
   if (env === process.env) cached = backend;
   return backend;
 }

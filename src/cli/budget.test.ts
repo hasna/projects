@@ -3,12 +3,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const LOCAL_PROJECTS_ENV = { HASNA_PROJECTS_STORAGE_MODE: "local" } as const;
+
 function runProjects(args: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync({
     cmd: ["bun", "run", "src/cli/index.ts", ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...LOCAL_PROJECTS_ENV, ...env },
   });
 }
 

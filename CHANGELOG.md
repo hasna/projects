@@ -6,6 +6,52 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.90] - 2026-07-22
+
+### Added
+
+- Added a shared local/API Project Store and hybrid identity resolver so marker
+  and machine-path evidence locate a canonical project without substituting
+  local SQLite attributes for remote authority fields.
+- Added the strict `hasna.projects.project_context_bundle.v1` CLI, API, MCP,
+  and SDK contract, capped at 8 KiB and limited to explicit project-context
+  fields and fixed structured commands.
+- Added transactional authority idempotency and retained
+  machine/station-plus-realpath identity bindings with collision auditing.
+
+### Fixed
+
+- Fail closed for archived, deleted, conflicting, invalid, orphaned, and
+  authority-unavailable project identity states, including existing-workspace
+  create attempts and remote outages.
+- Reconciled the Store/runtime architecture previously published on the
+  `npm/projects/v0.1.89` lineage with the current `main` feature lineage.
+- Routed project-store inspection/ensure/migration and MCP render reads through
+  the selected Store, and preserved structured project error codes across CLI,
+  MCP, API/OpenAPI, and SDK boundaries.
+- Routed CLI project sub-resources and legacy HTTP-backend compatibility through
+  the selected Store, with structured authority-unavailable failures for
+  machine-local writes in API mode instead of local SQLite fallback.
+- Kept historical location rows unattested during identity migration and added
+  remote audit-event transport plus strict allowlisted error-detail contracts.
+- Made the generated SDK reject non-strict, hash-invalid, or oversized project
+  context bundles before returning them to callers.
+
+### Changed
+
+- API creates that include `primary_path` now require an attested
+  machine/station-plus-realpath `identity`; older clients that omit it receive
+  `PROJECT_IDENTITY_CONFLICT` (HTTP 409) and must upgrade before creating
+  path-bound projects.
+- Legacy primary paths without a trustworthy location record are audited and
+  left unbound for explicit reconciliation. They are never guessed into a
+  canonical machine binding, and may remain unresolvable by path until fixed.
+
+### Tests
+
+- Added resolver, lifecycle, idempotency, concurrency, context-contract,
+  CLI/API/SDK/MCP, secret-exclusion, and size-bound regression coverage.
+
 ## [0.1.84] - 2026-07-07
 
 ### Fixed

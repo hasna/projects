@@ -2,6 +2,8 @@
 // served /openapi.json and for the generated SDK (scripts/generate-sdk.ts uses
 // @hasna/contracts/sdk `generateSdkFromOpenApi` on this exact object).
 
+import { PROJECT_CONTEXT_ERROR_CODES } from "../lib/project-context-errors.js";
+
 export function buildOpenApiSpec(version: string): Record<string, unknown> {
   const ID_PARAM = {
     name: "id",
@@ -178,8 +180,20 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
             integrations: { type: "object", additionalProperties: true },
             metadata: { type: "object", additionalProperties: true },
             agent_id: { type: "string" },
+            identity: ref("ProjectIdentityLocator"),
           },
           required: ["name"],
+        },
+        ProjectIdentityLocator: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            location_owner_id: { type: "string" },
+            real_path: { type: "string" },
+            logical_path: { type: "string" },
+            station_id: { type: "string" },
+            machine_id: { type: "string" },
+          },
         },
         UpdateWorkspace: {
           type: "object",
@@ -206,11 +220,32 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
             workspace_id: { type: "string", nullable: true },
             agent_id: { type: "string", nullable: true },
             event_type: { type: "string" },
-            source: { type: "string" },
+            source: { type: "string", enum: ["cli", "mcp", "agent", "migration", "system"] },
             metadata: { type: "object", additionalProperties: true },
             created_at: { type: "string" },
           },
           required: ["id", "event_type", "source"],
+        },
+        RecordWorkspaceEvent: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            event_type: { type: "string" },
+            source: { type: "string" },
+            agent_id: { type: "string" },
+            prompt: { type: "string" },
+            command: { type: "string" },
+            before: { type: "object", additionalProperties: true },
+            after: { type: "object", additionalProperties: true },
+            metadata: { type: "object", additionalProperties: true },
+          },
+          required: ["event_type"],
+        },
+        RecordWorkspaceEventResponse: {
+          type: "object",
+          additionalProperties: false,
+          properties: { event: ref("WorkspaceEvent") },
+          required: ["event"],
         },
         WorkspaceList: {
           type: "object",
@@ -240,6 +275,124 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           properties: { events: { type: "array", items: ref("WorkspaceEvent") }, count: { type: "integer" } },
           required: ["events", "count"],
         },
+        ProjectContextBundle: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            schema: { type: "string", enum: ["hasna.projects.project_context_bundle.v1"] },
+            generated_at: { type: "string" },
+            hash: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
+            revision: { type: "string" },
+            freshness: { type: "string", enum: ["fresh", "stale", "unknown"] },
+            resolution: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                source: { type: "string" },
+                conflict: { type: "boolean" },
+                create_allowed: { type: "boolean" },
+              },
+              required: ["source", "conflict", "create_allowed"],
+            },
+            authority: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                owner: { type: "string" },
+                mode: { type: "string", enum: ["local", "api"] },
+                storage: { type: "string", enum: ["sqlite", "cloud", "self-hosted"] },
+                availability: { type: "string", enum: ["available", "unavailable"] },
+              },
+              required: ["owner", "mode", "storage", "availability"],
+            },
+            project: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                slug: { type: "string" },
+                name: { type: "string" },
+                kind: { type: "string" },
+                status: { type: "string", enum: ["active", "archived", "deleted"] },
+                path: { type: "string", nullable: true },
+                updated_at: { type: "string" },
+              },
+              required: ["id", "slug", "name", "kind", "status", "path", "updated_at"],
+            },
+            links: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                todos: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    project_id: { type: "string", nullable: true },
+                    task_list_id: { type: "string", nullable: true },
+                  },
+                  required: ["state", "project_id", "task_list_id"],
+                },
+                conversations: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    channel: { type: "string", nullable: true },
+                  },
+                  required: ["state", "channel"],
+                },
+                mementos: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    state: { type: "string", enum: ["linked", "partial", "unlinked"] },
+                    project_id: { type: "string", nullable: true },
+                    scope: { type: "string", nullable: true },
+                  },
+                  required: ["state", "project_id", "scope"],
+                },
+              },
+              required: ["todos", "conversations", "mementos"],
+            },
+            station: {
+              type: "object",
+              nullable: true,
+              additionalProperties: false,
+              properties: {
+                station_id: { type: "string", nullable: true },
+                machine_id: { type: "string", nullable: true },
+              },
+              required: ["station_id", "machine_id"],
+            },
+            commands: {
+              type: "array",
+              maxItems: 6,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  name: { type: "string", enum: ["show", "context", "why", "context-bundle"] },
+                  argv: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 8 },
+                },
+                required: ["name", "argv"],
+              },
+            },
+          },
+          required: [
+            "schema",
+            "generated_at",
+            "hash",
+            "revision",
+            "freshness",
+            "resolution",
+            "authority",
+            "project",
+            "links",
+            "station",
+            "commands",
+          ],
+        },
         DeleteResult: {
           type: "object",
           properties: { deleted: { type: "boolean" }, hard: { type: "boolean" }, id: { type: "string" } },
@@ -250,10 +403,53 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           properties: { status: { type: "string" }, version: { type: "string" }, mode: { type: "string" } },
           required: ["status", "version", "mode"],
         },
-        Error: {
+        SimpleError: {
           type: "object",
+          additionalProperties: false,
           properties: { error: { type: "string" }, reason: { type: "string" } },
           required: ["error"],
+        },
+        ProjectContextErrorCode: {
+          type: "string",
+          enum: [...PROJECT_CONTEXT_ERROR_CODES],
+        },
+        ProjectContextErrorResponse: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            error: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                code: ref("ProjectContextErrorCode"),
+                message: { type: "string" },
+              },
+              required: ["code", "message"],
+            },
+            project: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                id: { type: "string" },
+                slug: { type: "string" },
+                status: { type: "string", enum: ["active", "archived", "deleted"] },
+              },
+              required: ["id", "slug", "status"],
+            },
+            details: ref("ProjectContextErrorDetails"),
+          },
+          required: ["error"],
+        },
+        ProjectContextErrorDetails: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            identity_required: { type: "boolean" },
+            migration_audit_required: { type: "boolean" },
+          },
+        },
+        Error: {
+          oneOf: [ref("SimpleError"), ref("ProjectContextErrorResponse")],
         },
       },
     },
@@ -302,7 +498,12 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "createProject",
           summary: "Create a project (workspace)",
           requestBody: jsonBody("CreateWorkspace"),
-          responses: { "201": jsonResp("Workspace", "Created"), "400": jsonResp("Error", "Invalid") },
+          responses: {
+            "201": jsonResp("Workspace", "Created"),
+            "400": jsonResp("Error", "Invalid request or project identity"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project identity or idempotency conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/projects/{id}": {
@@ -310,14 +511,24 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "getProject",
           summary: "Get a project by id or slug",
           parameters: [ID_PARAM],
-          responses: { "200": jsonResp("Workspace"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("Workspace"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
         patch: {
           operationId: "updateProject",
           summary: "Update a project",
           parameters: [ID_PARAM],
           requestBody: jsonBody("UpdateWorkspace"),
-          responses: { "200": jsonResp("Workspace"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("Workspace"),
+            "400": jsonResp("Error", "Invalid project update"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project lifecycle conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
         delete: {
           operationId: "deleteProject",
@@ -326,7 +537,12 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
             ID_PARAM,
             { name: "hard", in: "query", required: false, schema: { type: "boolean" } },
           ],
-          responses: { "200": jsonResp("DeleteResult"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("DeleteResult"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project lifecycle conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/projects/{id}/archive": {
@@ -334,7 +550,12 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "archiveProject",
           summary: "Archive a project",
           parameters: [ID_PARAM],
-          responses: { "200": jsonResp("Workspace"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("Workspace"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project lifecycle conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/projects/{id}/unarchive": {
@@ -342,7 +563,12 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "unarchiveProject",
           summary: "Unarchive a project",
           parameters: [ID_PARAM],
-          responses: { "200": jsonResp("Workspace"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("Workspace"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project lifecycle conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/projects/{id}/events": {
@@ -350,7 +576,39 @@ export function buildOpenApiSpec(version: string): Record<string, unknown> {
           operationId: "listProjectEvents",
           summary: "List a project's events",
           parameters: [ID_PARAM, { name: "limit", in: "query", required: false, schema: { type: "integer" } }],
-          responses: { "200": jsonResp("EventList"), "404": jsonResp("Error", "Not found") },
+          responses: {
+            "200": jsonResp("EventList"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
+        },
+        post: {
+          operationId: "recordProjectEvent",
+          summary: "Record a project audit event",
+          parameters: [ID_PARAM],
+          requestBody: jsonBody("RecordWorkspaceEvent"),
+          responses: {
+            "201": jsonResp("RecordWorkspaceEventResponse", "Created"),
+            "400": jsonResp("Error", "Invalid event"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project lifecycle conflict"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
+        },
+      },
+      "/v1/projects/{id}/context-bundle": {
+        get: {
+          operationId: "getProjectContextBundle",
+          summary: "Get a strict, allowlisted project context bundle",
+          parameters: [ID_PARAM],
+          responses: {
+            "200": jsonResp("ProjectContextBundle"),
+            "400": jsonResp("ProjectContextErrorResponse", "Invalid project target or bundle"),
+            "404": jsonResp("ProjectContextErrorResponse", "Project not found"),
+            "409": jsonResp("ProjectContextErrorResponse", "Project identity or lifecycle conflict"),
+            "500": jsonResp("ProjectContextErrorResponse", "Bundle contract failure"),
+            "503": jsonResp("ProjectContextErrorResponse", "Project authority unavailable"),
+          },
         },
       },
       "/v1/roots": {
