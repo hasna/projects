@@ -1560,7 +1560,11 @@ function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       try {
         const cloud = resolveProjectsBackend();
-        if (cloud) {
+        // --dry-run must preview only and never persist. The cloud backend has
+        // no plan/preview endpoint, so when a dry-run is requested we skip the
+        // cloud create entirely and fall through to the local planner, which
+        // builds the plan without writing to any registry (local or cloud).
+        if (cloud && !opts.dryRun) {
           const project = await cloud.createWorkspace({
             name: opts.name,
             slug: opts.slug,

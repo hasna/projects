@@ -1787,4 +1787,77 @@ describe("project-first CLI surface", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  test("create --dry-run previews only and never persists in cloud (self_hosted) mode", async () => {
+    // Regression: `projects create --dry-run` in cloud mode used to route
+    // straight to the cloud backend and POST a new project row, persisting a
+    // project despite --dry-run promising a preview-only, no-write run.
+    const root = mkdtempSync(join(tmpdir(), "projects-cloud-dryrun-"));
+    const port = reserveFreePort();
+    const requests: Array<{ method: string; path: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch(req) {
+        const url = new URL(req.url);
+        requests.push({ method: req.method, path: url.pathname });
+        if (req.method === "POST" && url.pathname === "/v1/projects") {
+          // A real cloud create would persist and return the new row.
+          return Response.json({
+            id: "wks_cloudpersisted000000",
+            slug: "cloud-dryrun-probe",
+            name: "Cloud Dryrun Probe",
+            kind: "generic",
+            status: "active",
+            primary_path: null,
+          });
+        }
+        if (url.pathname === "/v1/projects") return Response.json({ workspaces: [] });
+        return Response.json({});
+      },
+    });
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      HASNA_PROJECTS_HOME: join(root, "home"),
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+    try {
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          "run",
+          CLI_PATH,
+          "create",
+          "--name",
+          "Cloud Dryrun Probe",
+          "--path",
+          join(root, "cloud-dryrun-probe"),
+          "--kind",
+          "generic",
+          "--dry-run",
+          "--json",
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, ...env },
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+
+      expect(proc.exitCode).toBe(0);
+      // The dry-run must not have issued any create write to the cloud backend.
+      const creates = requests.filter((r) => r.method === "POST" && r.path === "/v1/projects");
+      expect(creates).toHaveLength(0);
+      // And it must report a dry-run preview rather than a persisted project.
+      const payload = JSON.parse(stdout) as { dry_run?: boolean; project?: unknown };
+      expect(payload.dry_run).toBe(true);
+      expect(payload.project).toBeNull();
+      expect(stderr).toBe("");
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30000);
+
 });
