@@ -1,6 +1,4 @@
-import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { runMigrations } from "../db/schema.js";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   completeAgentRun,
   createWorkspace,
@@ -10,19 +8,14 @@ import {
   recordWorkspaceEvent,
   startAgentRun,
 } from "../db/workspaces.js";
+import { closeDatabase, getDatabase, PROJECTS_DB_PATH_ENV } from "../db/database.js";
+import { resolveProjectStore, __resetProjectStore } from "../store/project-store.js";
 import { buildProjectHandoff, toAgentText } from "./project-agent-assist.js";
 import {
   PROJECT_REDACTED_VALUE,
   redactProjectText,
   redactProjectValue,
 } from "./redaction.js";
-
-function makeDb(): Database {
-  const db = new Database(":memory:");
-  db.run("PRAGMA foreign_keys=ON");
-  runMigrations(db);
-  return db;
-}
 
 describe("project redaction", () => {
   test("redacts secret-shaped keys and strings", () => {
@@ -44,9 +37,26 @@ describe("project redaction", () => {
     expect(redactProjectText("tool --token redaction-cli-token")).toContain("--token [REDACTED]");
   });
 
-  test("redacts registry rows, events, runs, and agent handoff text", () => {
-    const db = makeDb();
-    try {
+  describe("registry-backed redaction", () => {
+    // Route every read through the active ProjectStore backed by a fresh
+    // in-memory sqlite so the store seam sees the same rows the direct db
+    // writers persist.
+    beforeEach(() => {
+      process.env[PROJECTS_DB_PATH_ENV] = ":memory:";
+      delete process.env["HASNA_PROJECTS_API_URL"];
+      delete process.env["HASNA_PROJECTS_API_KEY"];
+      delete process.env["HASNA_PROJECTS_STORAGE_MODE"];
+      closeDatabase();
+      __resetProjectStore();
+    });
+
+    afterEach(() => {
+      closeDatabase();
+      __resetProjectStore();
+    });
+
+    test("redacts registry rows, events, runs, and agent handoff text", async () => {
+      const db = getDatabase();
       const project = createWorkspace({
         id: "wks_redaction",
         name: "Redaction Project",
@@ -90,7 +100,7 @@ describe("project redaction", () => {
         project: getWorkspaceBySlug("redaction-project", db),
         events: listWorkspaceEvents(project.id, db),
         runs: listAgentRuns({ workspace_id: project.id }, db),
-        handoff: toAgentText(buildProjectHandoff({ target: "redaction-project", db })),
+        handoff: toAgentText(await buildProjectHandoff(resolveProjectStore({}), { target: "redaction-project" })),
       };
 
       const serialized = JSON.stringify(payload);
@@ -108,8 +118,6 @@ describe("project redaction", () => {
       ]) {
         expect(serialized).not.toContain(leaked);
       }
-    } finally {
-      db.close();
-    }
+    });
   });
 });

@@ -378,13 +378,21 @@ describe("projects-mcp project-first surface", () => {
       { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "projects_list", arguments: { query: "mcp-redaction" } } },
       { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "projects_events_list", arguments: { project: "mcp-redaction" } } },
     ];
+    // Force local-store mode so the child reads the fixture DB rather than any
+    // ambient cloud registry configured on the host machine.
+    const {
+      HASNA_PROJECTS_API_URL: _apiUrl,
+      HASNA_PROJECTS_API_KEY: _apiKey,
+      HASNA_PROJECTS_STORAGE_MODE: _storageMode,
+      ...cleanEnv
+    } = process.env;
     const child = Bun.spawn({
       cmd: ["bun", "run", "src/mcp/index.ts"],
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
       env: {
-        ...process.env,
+        ...cleanEnv,
         HASNA_PROJECTS_DB_PATH: dbPath,
       },
     });
