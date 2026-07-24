@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { testSpawnEnv } from "../testing/spawn-env.js";
 
 function runProjects(args: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync({
     cmd: ["bun", "run", "src/cli/index.ts", ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...env },
+    env: testSpawnEnv(env),
   });
 }
 

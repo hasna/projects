@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { runMigrations } from "../db/schema.js";
 import { createWorkspace, recordWorkspaceEvent } from "../db/workspaces.js";
 import { PROJECT_REDACTED_VALUE } from "../lib/redaction.js";
+import { testSpawnEnv } from "../testing/spawn-env.js";
 
 function runMcpCli(args: string[]) {
   return Bun.spawnSync({
@@ -62,7 +63,7 @@ describe("projects-mcp CLI flags", () => {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, HASNA_PROJECTS_DB_PATH: join(root, "projects.db") },
+      env: testSpawnEnv({ HASNA_PROJECTS_DB_PATH: join(root, "projects.db") }),
     });
     child.stdin.write(messages.map((message) => JSON.stringify(message)).join("\n") + "\n");
     child.stdin.end();

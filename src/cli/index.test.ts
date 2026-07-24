@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Command } from "commander";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { acquireWorkspaceLock, completeAgentRun, createRoot, createWorkspace, st
 import { runMigrations } from "../db/schema.js";
 import { closeDatabase } from "../db/database.js";
 import { registerWorkspaceCommands } from "./commands/workspaces.js";
+import { API_MODE_ENV_KEYS, testSpawnEnv } from "../testing/spawn-env.js";
 
 const CLI_PATH = join(process.cwd(), "src/cli/index.ts");
 
@@ -17,7 +18,7 @@ function runProjects(args: string[], env: Record<string, string> = {}, cwd = pro
     cmd: ["bun", "run", CLI_PATH, ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...env },
+    env: testSpawnEnv(env),
     cwd,
   });
 }
@@ -28,6 +29,14 @@ async function runWorkspaceCommandInProcess(args: string[], env: Record<string, 
   registerWorkspaceCommands(program);
 
   const previousEnv = new Map<string, string | undefined>();
+  // Same reasoning as testSpawnEnv(): an operator shell that exports the cloud
+  // selectors would otherwise silently turn these in-process local-store runs
+  // into api-mode runs against the real backend.
+  for (const key of API_MODE_ENV_KEYS) {
+    if (key in env) continue;
+    previousEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
   for (const [key, value] of Object.entries(env)) {
     previousEnv.set(key, process.env[key]);
     process.env[key] = value;
@@ -505,7 +514,7 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "dashboard", "serve", "served-dashboard", "--host", "127.0.0.1", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: testSpawnEnv(env),
       });
       try {
         const stdout = await readStreamChunk(proc.stdout);
@@ -552,7 +561,7 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "reports", "serve", "--port", String(port), "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: testSpawnEnv(env),
       });
       try {
         const stdout = await readStreamChunk(proc.stdout);
@@ -2017,7 +2026,7 @@ describe("project-first CLI surface", () => {
         ],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: testSpawnEnv(env),
       });
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
@@ -2110,7 +2119,7 @@ describe("project-first CLI surface", () => {
         cmd: ["bun", "run", CLI_PATH, "channel", projectId, "--ensure", "--from", "agent-test", "--json"],
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, ...env },
+        env: testSpawnEnv(env),
       });
       const stdout = await new Response(proc.stdout).text();
       const stderr = await new Response(proc.stderr).text();
@@ -2157,6 +2166,111 @@ describe("project-first CLI surface", () => {
       expect(existing.linked).toBe(true);
       expect(existing.persisted).toBe(false);
       expect(requests.filter((r) => r.method === "PATCH").length).toBe(1);
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("create in cloud mode honors registry flags and refuses machine-local runtime flags before creating a row", async () => {
+    // Regression (issue #27): the api/cloud branch of `projects create` passed
+    // only a handful of registry fields, so `--path`, `--git-remote` and the
+    // management/integration flags were silently dropped, while machine-local
+    // runtime flags (`--mkdir`/`--git-init`/`--marker`/`--tmux-*`) were dropped
+    // *after* the remote row had already been created, leaving a partial
+    // row-only project behind.
+    const root = mkdtempSync(join(tmpdir(), "projects-cloud-create-flags-"));
+    const port = reserveFreePort();
+    const requests: Array<{ method: string; path: string; body: Record<string, unknown> | null }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      async fetch(req) {
+        const url = new URL(req.url);
+        let body: Record<string, unknown> | null = null;
+        try { body = (await req.json()) as Record<string, unknown>; } catch { body = null; }
+        requests.push({ method: req.method, path: url.pathname, body });
+        if (req.method === "POST" && url.pathname === "/v1/projects") {
+          return Response.json({
+            id: "wks_cloudcreateflags0001",
+            slug: "cloud-flag-probe",
+            name: "Cloud Flag Probe",
+            kind: "generic",
+            status: "active",
+            primary_path: (body?.primary_path as string | undefined) ?? null,
+          });
+        }
+        if (url.pathname === "/v1/projects") return Response.json({ workspaces: [] });
+        return Response.json({});
+      },
+    });
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      HASNA_PROJECTS_HOME: join(root, "home"),
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+    const targetPath = join(root, "cloud-flag-probe");
+    const runCreate = async (args: string[]) => {
+      const proc = Bun.spawn({
+        cmd: ["bun", "run", CLI_PATH, "create", "--name", "Cloud Flag Probe", ...args],
+        stdout: "pipe",
+        stderr: "pipe",
+        env: testSpawnEnv(env),
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+      return { exitCode: proc.exitCode, stdout, stderr };
+    };
+    try {
+      // 1. Machine-local runtime flags must fail atomically, before any create.
+      const refused = await runCreate([
+        "--path", targetPath,
+        "--mkdir",
+        "--marker",
+        "--tmux-session", "cloud-flag-probe",
+        "--json",
+      ]);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain("local-only operation and is not available in api/cloud mode");
+      expect(refused.stderr).toContain("--mkdir");
+      expect(refused.stderr).toContain("--marker");
+      expect(refused.stderr).toContain("--tmux-session");
+      expect(requests.filter((r) => r.method === "POST" && r.path === "/v1/projects")).toHaveLength(0);
+      expect(existsSync(targetPath)).toBe(false);
+
+      // 2. Registry-level flags must be forwarded to the cloud create, not dropped.
+      const created = await runCreate([
+        "--path", targetPath,
+        "--git-remote", "https://github.com/hasna/cloud-flag-probe.git",
+        "--description", "probe",
+        "--stage", "active",
+        "--priority", "high",
+        "--owner", "andrei",
+        "--todos-project-id", "prj_probe",
+        "--tags", "probe,cloud",
+        "--json",
+      ]);
+      expect(created.exitCode).toBe(0);
+      const creates = requests.filter((r) => r.method === "POST" && r.path === "/v1/projects");
+      expect(creates).toHaveLength(1);
+      const body = creates[0]!.body as {
+        primary_path?: string;
+        git_remote?: string;
+        description?: string;
+        tags?: string[];
+        metadata?: Record<string, unknown>;
+        integrations?: Record<string, unknown>;
+      };
+      expect(body.primary_path).toBe(targetPath);
+      expect(body.git_remote).toBe("https://github.com/hasna/cloud-flag-probe.git");
+      expect(body.description).toBe("probe");
+      expect(body.tags).toEqual(["probe", "cloud"]);
+      expect(body.metadata?.stage).toBe("active");
+      expect(body.metadata?.priority).toBe("high");
+      expect(body.metadata?.owner).toBe("andrei");
+      expect(body.integrations?.todos_project_id).toBe("prj_probe");
     } finally {
       server.stop(true);
       rmSync(root, { recursive: true, force: true });

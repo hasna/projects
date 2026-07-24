@@ -4,6 +4,41 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.94]
+
+### Fixed
+
+- **`projects create` no longer drops registry flags in api/cloud mode
+  ([#27](https://github.com/hasna/projects/issues/27)).** The api branch
+  forwarded only `name`/`slug`/`description`/`kind`/`root`/`recipe`/`tags` plus
+  the raw `--metadata-json`/`--integrations-json` blobs, so `--path`,
+  `--git-remote` and every management/integration flag (`--stage`,
+  `--priority`, `--owner`, `--launch-profile`, `--start-agent`,
+  `--start-command`, `--start-session-policy`, `--start-windows-json`,
+  `--todos-project-id`, `--todos-task-list-id`, `--brief-id`, `--brief-path`)
+  were silently ignored, producing a bare row that then had to be repaired with
+  `projects update --path`. Registry input is now parsed and merged once, ahead
+  of the store branch, and forwarded to the cloud create exactly as it is for a
+  local create.
+
+### Changed
+
+- **`projects create` now fails before creating a row when machine-local
+  runtime flags are requested in api/cloud mode
+  ([#27](https://github.com/hasna/projects/issues/27)).** `--mkdir`,
+  `--git-init`, `--marker`, `--tmux-session`, `--tmux-windows-json` and
+  `--tmux-profile` cannot be applied to a remote project row, and no api-mode
+  command can apply them afterwards. Instead of creating the row and silently
+  skipping the runtime work (leaving a partial, row-only project), the command
+  now exits non-zero with a `local-only operation ...` message naming the
+  offending flags, and issues no create request at all. Use `--dry-run` to
+  preview the full local plan.
+- **Tests no longer inherit the operator shell's cloud selectors.** A new
+  `testSpawnEnv()` helper (and the matching in-process guard) strips
+  `HASNA_PROJECTS_API_URL`/`HASNA_PROJECTS_API_KEY` unless a test opts into api
+  mode explicitly, so `bun test` exercises the local store instead of silently
+  running against — and creating real rows in — the live cloud registry.
+
 ## [0.1.93]
 
 ### Fixed

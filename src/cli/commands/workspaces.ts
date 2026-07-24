@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { Command } from "commander";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   ensureCliAgent,
   getAgent,
@@ -1587,31 +1587,9 @@ function registerProjectCommands(program: Command): void {
     .action(async (opts) => {
       try {
         const store = resolveProjectStore();
-        // --dry-run must preview only and never persist. The api (cloud) Store
-        // has no plan/preview endpoint, so when a dry-run is requested we skip
-        // the remote create entirely and fall through to the local planner,
-        // which builds the plan without writing to any registry (local or cloud).
-        if (store.mode === "api" && !opts.dryRun) {
-          // Cloud project rows are created through the Store; machine-local
-          // runtime (directory/git/tmux/marker) does not apply to a remote row.
-          // Root/recipe are shared registry resources: resolve slug->id through
-          // the Store so the intent is honored (not silently dropped) in api mode.
-          const project = await store.createProject({
-            name: opts.name,
-            slug: opts.slug,
-            description: opts.description,
-            kind: parseKind(opts.kind),
-            root_id: await resolveRootId(store, opts.root),
-            recipe_id: await resolveRecipeId(store, opts.recipe),
-            tags: splitList(opts.tags),
-            metadata: parseJsonObject(opts.metadataJson, "--metadata-json") ?? undefined,
-            integrations: parseIntegrationsJson(opts.integrationsJson) ?? undefined,
-          });
-          if (wantsJson(opts)) { printObject({ project }, opts); return; }
-          console.log(chalk.green(`✓ Project created (cloud): ${project.slug}`));
-          return;
-        }
-        const agentId = resolveAgentId(opts.agent);
+        // Registry-level input is store-agnostic: parse/merge it once so api
+        // (cloud) creation honors exactly the same flags as local creation
+        // instead of silently dropping them.
         const tmuxWindows = parseTmuxWindowsJson(opts.tmuxWindowsJson);
         const baseMetadata = parseJsonObject(opts.metadataJson, "--metadata-json") ?? {};
         const startWindows = parseTmuxWindowsJson(opts.startWindowsJson, "--start-windows-json");
@@ -1632,6 +1610,53 @@ function registerProjectCommands(program: Command): void {
           brief_id: opts.briefId,
           brief_path: opts.briefPath,
         }) ?? baseIntegrations;
+        // --dry-run must preview only and never persist. The api (cloud) Store
+        // has no plan/preview endpoint, so when a dry-run is requested we skip
+        // the remote create entirely and fall through to the local planner,
+        // which builds the plan without writing to any registry (local or cloud).
+        if (store.mode === "api" && !opts.dryRun) {
+          // Machine-local runtime (directory/git/marker/tmux) cannot be applied
+          // to a remote row, and there is no api-mode command that can apply it
+          // afterwards. Refuse BEFORE the create so a rejected request never
+          // leaves a partial, row-only project behind in the cloud registry.
+          const unsupported = [
+            opts.mkdir ? "--mkdir" : null,
+            opts.gitInit ? "--git-init" : null,
+            opts.marker ? "--marker" : null,
+            opts.tmuxSession ? "--tmux-session" : null,
+            opts.tmuxWindowsJson ? "--tmux-windows-json" : null,
+            opts.tmuxProfile ? "--tmux-profile" : null,
+          ].filter((flag): flag is string => Boolean(flag));
+          if (unsupported.length) {
+            throw new Error(
+              `create with machine-local runtime flags (${unsupported.join(", ")}) is a local-only operation and is not available in api/cloud mode. `
+              + "No project was created. Re-run without those flags (registry fields such as --path, --git-remote, --stage and --priority are honored in api/cloud mode), "
+              + "or preview the full local plan with --dry-run.",
+            );
+          }
+          // Cloud project rows are created through the Store. Root/recipe are
+          // shared registry resources: resolve slug->id through the Store so the
+          // intent is honored (not silently dropped) in api mode. Agent
+          // attribution stays server-side (see mutationAgentId).
+          const project = await store.createProject({
+            name: opts.name,
+            slug: opts.slug,
+            description: opts.description,
+            kind: parseKind(opts.kind),
+            root_id: await resolveRootId(store, opts.root),
+            recipe_id: await resolveRecipeId(store, opts.recipe),
+            primary_path: opts.path ? resolve(opts.path) : undefined,
+            git_remote: opts.gitRemote,
+            tags: splitList(opts.tags),
+            metadata: Object.keys(managementMetadata).length ? managementMetadata : undefined,
+            integrations: Object.keys(integrations).length ? integrations : undefined,
+          });
+          if (wantsJson(opts)) { printObject({ project }, opts); return; }
+          console.log(chalk.green(`✓ Project created (cloud): ${project.slug}`));
+          if (project.primary_path) console.log(`  ${chalk.dim("path:")} ${project.primary_path}`);
+          return;
+        }
+        const agentId = resolveAgentId(opts.agent);
         const result = await executeWorkspaceCreation({
           name: opts.name,
           slug: opts.slug,
