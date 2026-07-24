@@ -87,6 +87,21 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("subcommand --help/-h print commander usage instead of invoking the prompt agent", () => {
+    for (const helpFlag of ["--help", "-h"]) {
+      const result = runProjects(["create", helpFlag]);
+      const stdout = text(result.stdout);
+
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toContain("Usage: projects create [options]");
+      expect(stdout).toContain("Create or plan a project anywhere on disk");
+      // Regression guard: prompt-agent output describes "parameters" in prose and
+      // never emits a commander usage banner. If routing regresses, the help flag
+      // is treated as a natural-language prompt and this banner disappears.
+      expect(stdout).toContain("--name <name>");
+    }
+  });
+
   test("dashboard validate emits structured JSON errors for malformed input", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-dashboard-invalid-"));
     const invalidFile = join(root, "invalid.json");
@@ -505,31 +520,69 @@ describe("project-first CLI surface", () => {
     }
   });
 
-  test("completion emits project commands", () => {
+  // Parse the top-level command surface advertised by `--help`.
+  // `primary` = canonical command names; `all` = names plus aliases (e.g. show|get).
+  function actualTopLevelCommands(): { primary: Set<string>; all: Set<string> } {
+    const help = text(runProjects(["--help"]).stdout);
+    const start = help.indexOf("Commands:");
+    expect(start).toBeGreaterThanOrEqual(0);
+    // The Commands: block runs until the next blank line / section header.
+    const block = help.slice(start).split("\n\n")[0] ?? "";
+    const primary = new Set<string>();
+    const all = new Set<string>();
+    for (const line of block.split("\n")) {
+      const match = line.match(/^ {2}([a-z][a-z-]*(?:\|[a-z-]+)?)/);
+      if (!match) continue;
+      const tokens = match[1]!.split("|");
+      if (tokens[0] === "help") continue;
+      primary.add(tokens[0]!);
+      for (const token of tokens) all.add(token);
+    }
+    return { primary, all };
+  }
+
+  test("completion command list matches the actual CLI surface", () => {
+    const { primary, all } = actualTopLevelCommands();
+    // Sanity: help parsing found a plausible surface.
+    expect(primary.size).toBeGreaterThan(20);
+
     const result = runProjects(["completion"]);
     const stdout = text(result.stdout);
-
     expect(result.exitCode).toBe(0);
-    expect(stdout).toContain("local commands=\"start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why channel handoff runs oss store canvases loops locations");
-    expect(stdout).toContain("storage reports completion");
+
+    const listMatch = stdout.match(/local commands="([^"]+)"/);
+    expect(listMatch).not.toBeNull();
+    const offered = new Set(listMatch![1]!.split(" ").filter(Boolean));
+
+    // No omissions: every real command/alias is offered by bash completion.
+    for (const command of all) {
+      expect(offered.has(command)).toBe(true);
+    }
+    // No stale tokens: every offered token is a real command/alias.
+    for (const token of offered) {
+      expect(all.has(token)).toBe(true);
+    }
+
+    // Regression guard for the specific commands the static list dropped/misnamed.
+    for (const command of ["budgets", "dashboard", "webhooks", "hasna-events", "store"]) {
+      expect(offered.has(command)).toBe(true);
+    }
+    expect(offered.has("storage")).toBe(all.has("storage"));
+
     expect(stdout).toContain("projects list");
     expect(stdout).toContain("project>");
-    expect(stdout).not.toContain(["projects", "workspaces", "list"].join(" "));
     expect(stdout).not.toContain("workspace>");
 
+    // zsh completion is derived from the same live command surface (primary names).
     const zsh = runProjects(["completion", "--shell", "zsh"]);
     const zshStdout = text(zsh.stdout);
     expect(zsh.exitCode).toBe(0);
-    expect(zshStdout).toContain("'scan-roots:Dry-run import plans for configured GitHub roots'");
-    expect(zshStdout).toContain("'sync-roots:Import repositories from configured GitHub roots'");
-    expect(zshStdout).toContain("'context:Emit an agent-priming bundle for a project'");
-    expect(zshStdout).toContain("'runs:Inspect prompt-agent run ledger entries'");
-    expect(zshStdout).toContain("'oss:Open-source workspace routing helpers'");
-    expect(zshStdout).toContain("'store:Inspect, ensure, and migrate canonical project stores'");
-    expect(zshStdout).toContain("'canvases:Manage per-project React Flow canvases'");
-    expect(zshStdout).toContain("'loops:Link projects to OpenLoops SDK loops'");
-    expect(zshStdout).toContain("'labels:Manage project labels'");
-    expect(zshStdout).toContain("'reports:Serve registered project report files'");
+    for (const command of primary) {
+      expect(zshStdout).toContain(`'${command}:`);
+    }
+    for (const command of ["budgets", "dashboard", "webhooks", "hasna-events"]) {
+      expect(zshStdout).toContain(`'${command}:`);
+    }
   });
 
   test("oss matrix CLI emits capped JSON without optional external refs", () => {
@@ -1129,6 +1182,36 @@ describe("project-first CLI surface", () => {
     expect(compactText).toContain("security_reviewed");
     expect(compactText).toContain("Showing latest 1 of ");
     expect(compactText).toContain("older hidden. Use --limit <n>, --verbose, or --json for details.");
+  });
+
+  test("events record gates cleanly as local-only in api/cloud mode instead of leaking a raw 404", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-events-cloud-"));
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      // Force the cloud/self-hosted backend to resolve; the /v1 API exposes no
+      // POST /projects/:id/events route, so recording must fail fast with a
+      // clear local-only message rather than POSTing and leaking a raw 404.
+      HASNA_PROJECTS_STORAGE_MODE: "self_hosted",
+      HASNA_PROJECTS_API_URL: "https://projects.invalid.hasna.test",
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+
+    const record = runProjects([
+      "events",
+      "record",
+      "some-project",
+      "custom_event",
+      "--prompt",
+      "x",
+      "--json",
+    ], env);
+
+    expect(record.exitCode).toBe(1);
+    const stderr = text(record.stderr);
+    expect(stderr).toContain("local-only operation and is not available in api/cloud mode");
+    // Must not leak the raw upstream transport error or hit the network.
+    expect(stderr).not.toContain("Hasna request failed");
+    expect(stderr).not.toContain("404");
   });
 
   test("project agents can be assigned and shown as project metadata", () => {
@@ -1814,5 +1897,78 @@ describe("project-first CLI surface", () => {
     expect((JSON.parse(text(allowed.stdout)) as { errors: unknown[] }).errors).toHaveLength(1);
     rmSync(root, { recursive: true, force: true });
   });
+
+  test("create --dry-run previews only and never persists in cloud (self_hosted) mode", async () => {
+    // Regression: `projects create --dry-run` in cloud mode used to route
+    // straight to the cloud backend and POST a new project row, persisting a
+    // project despite --dry-run promising a preview-only, no-write run.
+    const root = mkdtempSync(join(tmpdir(), "projects-cloud-dryrun-"));
+    const port = reserveFreePort();
+    const requests: Array<{ method: string; path: string }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch(req) {
+        const url = new URL(req.url);
+        requests.push({ method: req.method, path: url.pathname });
+        if (req.method === "POST" && url.pathname === "/v1/projects") {
+          // A real cloud create would persist and return the new row.
+          return Response.json({
+            id: "wks_cloudpersisted000000",
+            slug: "cloud-dryrun-probe",
+            name: "Cloud Dryrun Probe",
+            kind: "generic",
+            status: "active",
+            primary_path: null,
+          });
+        }
+        if (url.pathname === "/v1/projects") return Response.json({ workspaces: [] });
+        return Response.json({});
+      },
+    });
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      HASNA_PROJECTS_HOME: join(root, "home"),
+      HASNA_PROJECTS_API_URL: `http://127.0.0.1:${port}`,
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+    try {
+      const proc = Bun.spawn({
+        cmd: [
+          "bun",
+          "run",
+          CLI_PATH,
+          "create",
+          "--name",
+          "Cloud Dryrun Probe",
+          "--path",
+          join(root, "cloud-dryrun-probe"),
+          "--kind",
+          "generic",
+          "--dry-run",
+          "--json",
+        ],
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, ...env },
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+
+      expect(proc.exitCode).toBe(0);
+      // The dry-run must not have issued any create write to the cloud backend.
+      const creates = requests.filter((r) => r.method === "POST" && r.path === "/v1/projects");
+      expect(creates).toHaveLength(0);
+      // And it must report a dry-run preview rather than a persisted project.
+      const payload = JSON.parse(stdout) as { dry_run?: boolean; project?: unknown };
+      expect(payload.dry_run).toBe(true);
+      expect(payload.project).toBeNull();
+      expect(stderr).toBe("");
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30000);
 
 });

@@ -1,12 +1,51 @@
 import type { Command } from "commander";
 
-const BASH_COMPLETION = `
+interface TopLevelCommand {
+  name: string;
+  aliases: string[];
+  description: string;
+}
+
+/**
+ * Enumerate the real, user-facing top-level commands from the live commander
+ * program so completion scripts never drift from the actual CLI surface.
+ * Hidden commands and the auto-generated `help` command are excluded.
+ */
+function collectTopLevelCommands(program: Command): TopLevelCommand[] {
+  const commands: TopLevelCommand[] = [];
+  for (const command of program.commands) {
+    const name = command.name();
+    if (name === "help") continue;
+    // commander marks hidden commands via the internal `_hidden` flag.
+    if ((command as unknown as { _hidden?: boolean })._hidden) continue;
+    commands.push({
+      name,
+      aliases: command.aliases(),
+      description: command.description(),
+    });
+  }
+  return commands;
+}
+
+/** All completion tokens (primary names + aliases) in registration order. */
+function completionTokens(commands: TopLevelCommand[]): string[] {
+  const tokens: string[] = [];
+  for (const command of commands) {
+    tokens.push(command.name);
+    for (const alias of command.aliases) tokens.push(alias);
+  }
+  return tokens;
+}
+
+function buildBashCompletion(commands: TopLevelCommand[]): string {
+  const commandList = completionTokens(commands).join(" ");
+  return `
 # projects bash completion
 _projects_completion() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="start status sessions create cleanup-create cleanup-evals import import-github scan-roots sync-roots list show events update tag untag labels label link unlink publish unpublish archive unarchive delete lock locks unlock doctor agent-eval context next why channel handoff runs oss store canvases loops locations roots recipes agents tmux-profiles storage reports completion"
+  local commands="${commandList}"
   local oss_commands="matrix"
   local store_commands="inspect ensure migrate"
   local canvas_commands="create list show upsert compose"
@@ -98,59 +137,24 @@ _projects_completion() {
 }
 complete -F _projects_completion projects
 `;
+}
 
-const ZSH_COMPLETION = `
+/** Escape a description so it is safe inside a single-quoted zsh `_describe` entry. */
+function zshEscape(value: string): string {
+  // Only the single quotes that wrap the entry need escaping. In `_describe`
+  // only the first colon separates name from description, so colons in the
+  // description itself are safe (command names never contain colons).
+  return value.replace(/'/g, "'\\''");
+}
+
+function buildZshCompletion(commands: TopLevelCommand[]): string {
+  const entries = commands.map((command) => `    '${command.name}:${zshEscape(command.description)}'`).join("\n");
+  return `
 # projects zsh completion
 _project() {
   local -a commands
   commands=(
-    'start:Start a project tmux session'
-    'status:Show project launch and tmux status'
-    'sessions:Report project start sessions and rename status'
-    'create:Create or plan a project'
-    'cleanup-create:Clean up files and DB rows from a project creation run'
-    'cleanup-evals:Preview or remove prompt-agent eval fixture records'
-    'import:Import an existing folder as a project'
-    'import-github:Import a GitHub repository as a project'
-    'scan-roots:Dry-run import plans for configured GitHub roots'
-    'sync-roots:Import repositories from configured GitHub roots'
-    'list:List registered projects'
-    'show:Show project details'
-    'events:Inspect and record project audit events'
-    'update:Update project metadata'
-    'tag:Add project tags'
-    'untag:Remove project tags'
-    'labels:Manage project labels'
-    'link:Link external integrations'
-    'unlink:Clear external integrations'
-    'publish:Plan or publish a project to GitHub'
-    'unpublish:Remove local GitHub publication metadata from a project'
-    'archive:Archive a project'
-    'unarchive:Unarchive a project'
-    'delete:Delete a project'
-    'lock:Acquire a project mutation lock'
-    'locks:List active project mutation locks'
-    'unlock:Release a project mutation lock'
-    'doctor:Validate project records'
-    'agent-eval:Run project prompt-agent eval cases'
-    'store:Inspect, ensure, and migrate canonical project stores'
-    'canvases:Manage per-project React Flow canvases'
-    'loops:Link projects to OpenLoops SDK loops'
-    'context:Emit an agent-priming bundle for a project'
-    'next:Suggest high-leverage next actions for a project'
-    'why:Explain how a project target resolves'
-    'channel:Resolve the project conversations channel'
-    'handoff:Emit a cross-agent handoff bundle'
-    'runs:Inspect prompt-agent run ledger entries'
-    'oss:Open-source workspace routing helpers'
-    'locations:Manage project folder locations'
-    'roots:Manage project root folders'
-    'recipes:Manage project recipes'
-    'agents:Manage project agents'
-    'tmux-profiles:Manage project tmux profiles'
-    'storage:Storage sync commands'
-    'reports:Serve registered project report files'
-    'completion:Print shell completion script'
+${entries}
   )
 
   _describe 'command' commands
@@ -158,6 +162,7 @@ _project() {
 
 compdef _project projects
 `;
+}
 
 const WORKON_FUNCTION = [
   "",
@@ -185,12 +190,15 @@ export function registerCompletionCommand(program: Command): void {
     .description("Print shell completion script")
     .option("--shell <shell>", "Shell type: bash or zsh (default: bash)", "bash")
     .action((opts) => {
+      // Read the live command surface at invocation time so completion always
+      // reflects the commands actually registered on the program.
+      const commands = collectTopLevelCommands(program);
       if (opts.shell === "zsh") {
-        console.log(ZSH_COMPLETION.trim());
+        console.log(buildZshCompletion(commands).trim());
         console.log(WORKON_FUNCTION.trim());
         console.log('\n# Add to ~/.zshrc:\n# eval "$(projects completion --shell zsh)"');
       } else {
-        console.log(BASH_COMPLETION.trim());
+        console.log(buildBashCompletion(commands).trim());
         console.log(WORKON_FUNCTION.trim());
         console.log('\n# Add to ~/.bashrc:\n# eval "$(projects completion)"');
       }
