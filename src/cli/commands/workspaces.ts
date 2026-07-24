@@ -26,6 +26,7 @@ import {
   listRoots,
   listTmuxProfileWindows,
   listTmuxProfiles,
+  listStartedWorkspaceEvents,
   listWorkspaceEvents,
   listWorkspaceAgents,
   listWorkspaceLocations,
@@ -105,7 +106,7 @@ import {
   type ProjectCanvasBlockLink,
   type ProjectCanvasBlockSpec,
 } from "../../lib/project-canvas-blocks.js";
-import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
+import { buildProjectCanvasPayload, buildProjectCanvasesPayload, buildProjectDetailPayload, buildProjectListRender, buildProjectSessionsPayload, buildProjectStartBulkRender, buildRecentSessionsPayload, buildRecipesRender, buildRootsRender } from "../../lib/project-render.js";
 import {
   createProjectCanvas,
   ensureDefaultProjectCanvas,
@@ -1297,8 +1298,29 @@ function registerProjectSessionsCommand(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action((target, opts) => {
       try {
-        const project = resolveProjectTarget(target);
         const limit = parsePositiveInteger(opts.limit, "--limit") ?? 20;
+        if (target === undefined) {
+          const payload = buildRecentSessionsPayload({
+            startEvents: listStartedWorkspaceEvents(),
+            limit,
+            unrenamedOnly: opts.unrenamed,
+          });
+          if (wantsRenderSpec(opts)) { printRenderSpec(payload.render); return; }
+          if (wantsJson(opts)) { printObject(projectPayload(payload), opts); return; }
+          const sessions = payload.sessions as Array<Record<string, unknown>>;
+          console.log(chalk.bold("Recent project sessions"));
+          console.log(`  ${chalk.dim("sessions:")} ${payload.returned}/${payload.total} shown, ${payload.unrenamed_count} pending rename`);
+          if (!sessions.length) {
+            console.log(chalk.dim("  No project start session records found."));
+            return;
+          }
+          for (const session of sessions) {
+            const unrenamed = session.unrenamed ? chalk.yellow("rename pending") : chalk.green("rename ok");
+            console.log(`  ${session.created_at} ${chalk.dim(String(session.project_slug ?? ""))} ${chalk.dim(String(session.session_name ?? ""))} ${session.session_action ?? ""} ${unrenamed}`);
+          }
+          return;
+        }
+        const project = resolveProjectTarget(target);
         const payload = buildProjectSessionsPayload({
           project,
           events: listWorkspaceEvents(project.id),

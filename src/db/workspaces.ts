@@ -1057,6 +1057,26 @@ export function listWorkspaceEvents(workspaceId: string, db?: Database): Workspa
     .all(workspaceId) as WorkspaceEventRow[]).map(rowToEvent);
 }
 
+export function listStartedWorkspaceEvents(
+  options: { limit?: number } = {},
+  db?: Database,
+): Array<{ event: WorkspaceEvent; project_slug: string }> {
+  const d = db || getDatabase();
+  const params: SQLQueryBindings[] = [];
+  let sql =
+    `SELECT e.*, w.slug AS workspace_slug
+     FROM workspace_events e
+     JOIN workspaces w ON w.id = e.workspace_id
+     WHERE e.event_type = 'started'
+     ORDER BY e.created_at DESC`;
+  if (options.limit && options.limit > 0) {
+    sql += " LIMIT ?";
+    params.push(options.limit);
+  }
+  const rows = d.query(sql).all(...params) as Array<WorkspaceEventRow & { workspace_slug: string }>;
+  return rows.map((row) => ({ event: rowToEvent(row), project_slug: row.workspace_slug }));
+}
+
 export function startAgentRun(
   input: { agent_id?: string; workspace_id?: string; provider?: string; model?: string; prompt: string; plan?: JsonObject; metadata?: JsonObject },
   db?: Database,

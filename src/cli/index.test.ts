@@ -1673,6 +1673,34 @@ describe("project-first CLI surface", () => {
     expect(payload.render).toBeTruthy();
   });
 
+  test("top-level sessions with no target reports recent sessions instead of failing", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-sessions-no-target-"));
+    const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };
+
+    expect(runProjects(["create", "--name", "Alpha App", "--path", join(root, "alpha-app"), "--json"], env).exitCode).toBe(0);
+    expect(runProjects(["create", "--name", "Beta App", "--path", join(root, "beta-app"), "--json"], env).exitCode).toBe(0);
+
+    const sessions = runProjects(["sessions", "--json"], env, root);
+
+    expect(sessions.exitCode).toBe(0);
+    expect(text(sessions.stderr)).not.toContain("Project not found");
+    const payload = JSON.parse(text(sessions.stdout)) as {
+      schema_version: number;
+      kind: string;
+      project: unknown;
+      total: number;
+      sessions: unknown[];
+      render?: unknown;
+    };
+    expect(payload.schema_version).toBe(1);
+    expect(payload.kind).toBe("projects.sessions");
+    expect(payload.project).toBeNull();
+    expect(typeof payload.total).toBe("number");
+    expect(Array.isArray(payload.sessions)).toBe(true);
+    expect(payload.render).toBeTruthy();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   test("top-level start rejects attach for bulk starts", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-bulk-guard-"));
     const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };

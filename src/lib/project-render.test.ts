@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { createWorkspace } from "../db/workspaces.js";
+import { createWorkspace, listStartedWorkspaceEvents, recordWorkspaceEvent } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
 import { defaultProjectCanvasInput } from "../db/project-store.js";
 import {
   buildProjectCanvasPayload,
   buildProjectListRender,
   buildProjectStatusRender,
+  buildRecentSessionsPayload,
   projectsJsonRenderCatalog,
   validateProjectsRenderSpec,
 } from "./project-render.js";
@@ -221,6 +222,55 @@ describe("Projects JSON Render specs", () => {
     expect(props.src).toBeNull();
     expect(props.file?.uri).toBeNull();
     expect(props.file?.referenceLabel).toBe("redacted reference");
+    db.close();
+  });
+
+  test("aggregates recent start sessions across projects when no target is given", () => {
+    const db = makeDb();
+    const alpha = createWorkspace(
+      { name: "Alpha", slug: "alpha", kind: "project", primary_path: "/tmp/alpha" },
+      db,
+    );
+    const beta = createWorkspace(
+      { name: "Beta", slug: "beta", kind: "project", primary_path: "/tmp/beta" },
+      db,
+    );
+
+    recordWorkspaceEvent(
+      {
+        workspace_id: alpha.id,
+        event_type: "started",
+        source: "cli",
+        after: { tmux: { session_name: "alpha", session_action: "created" } },
+      },
+      db,
+    );
+    recordWorkspaceEvent(
+      {
+        workspace_id: beta.id,
+        event_type: "started",
+        source: "cli",
+        after: { tmux: { session_name: "beta", session_action: "reused" } },
+      },
+      db,
+    );
+
+    const startEvents = listStartedWorkspaceEvents({}, db);
+    expect(startEvents).toHaveLength(2);
+
+    const payload = buildRecentSessionsPayload({ startEvents });
+
+    expect(payload.kind).toBe("projects.sessions");
+    expect(payload.project).toBeNull();
+    expect(payload.total).toBe(2);
+    expect(payload.returned).toBe(2);
+    const sessions = payload.sessions as Array<{ project_slug: string }>;
+    expect(sessions.map((session) => session.project_slug).sort()).toEqual(["alpha", "beta"]);
+    validateProjectsRenderSpec(payload.render as Parameters<typeof validateProjectsRenderSpec>[0]);
+
+    const limited = buildRecentSessionsPayload({ startEvents, limit: 1 });
+    expect(limited.total).toBe(2);
+    expect(limited.returned).toBe(1);
     db.close();
   });
 });

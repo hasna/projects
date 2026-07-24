@@ -862,37 +862,42 @@ export interface ProjectSessionRecord extends JsonObject {
   unrenamed: boolean;
 }
 
+export function startEventToSessionRecord(
+  event: WorkspaceEvent,
+  projectSlug: string,
+): ProjectSessionRecord {
+  const after = objectValue(event.after_json);
+  const tmux = objectValue(after?.tmux);
+  const windows = Array.isArray(tmux?.windows)
+    ? tmux.windows.filter(
+        (item): item is JsonObject =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+  const renameReport = renameReportFromEvent(event);
+  return {
+    event_id: event.id,
+    project_id: event.workspace_id,
+    project_slug: projectSlug,
+    created_at: event.created_at,
+    source: event.source,
+    session_name:
+      typeof tmux?.session_name === "string" ? tmux.session_name : null,
+    session_action:
+      typeof tmux?.session_action === "string" ? tmux.session_action : null,
+    windows,
+    rename_report: renameReport,
+    unrenamed: renameReport.some(isUnrenamedReport),
+  };
+}
+
 export function projectSessionRecords(
   project: Workspace,
   events: WorkspaceEvent[],
 ): ProjectSessionRecord[] {
   return events
     .filter((event) => event.event_type === "started")
-    .map((event) => {
-      const after = objectValue(event.after_json);
-      const tmux = objectValue(after?.tmux);
-      const windows = Array.isArray(tmux?.windows)
-        ? tmux.windows.filter(
-            (item): item is JsonObject =>
-              Boolean(item) && typeof item === "object" && !Array.isArray(item),
-          )
-        : [];
-      const renameReport = renameReportFromEvent(event);
-      return {
-        event_id: event.id,
-        project_id: event.workspace_id,
-        project_slug: project.slug,
-        created_at: event.created_at,
-        source: event.source,
-        session_name:
-          typeof tmux?.session_name === "string" ? tmux.session_name : null,
-        session_action:
-          typeof tmux?.session_action === "string" ? tmux.session_action : null,
-        windows,
-        rename_report: renameReport,
-        unrenamed: renameReport.some(isUnrenamedReport),
-      };
-    })
+    .map((event) => startEventToSessionRecord(event, project.slug))
     .reverse();
 }
 
@@ -943,6 +948,62 @@ export function buildProjectSessionsPayload(args: {
         {
           label: "start",
           command: renderCommand("projects", ["start", args.project.slug]),
+        },
+      ],
+    ),
+  };
+}
+
+export function buildRecentSessionsPayload(args: {
+  startEvents: Array<{ event: WorkspaceEvent; project_slug: string }>;
+  limit?: number;
+  unrenamedOnly?: boolean;
+}): JsonObject {
+  const allRecords = args.startEvents
+    .map(({ event, project_slug }) => startEventToSessionRecord(event, project_slug))
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  const filtered = args.unrenamedOnly
+    ? allRecords.filter((record) => record.unrenamed)
+    : allRecords;
+  const sessions = filtered.slice(0, args.limit ?? 20);
+  const unrenamedCount = allRecords.filter((record) => record.unrenamed).length;
+  const projectCount = new Set(allRecords.map((record) => record.project_slug)).size;
+  return {
+    schema_version: PROJECT_RENDER_SCHEMA_VERSION,
+    kind: "projects.sessions",
+    project: null,
+    total: allRecords.length,
+    returned: sessions.length,
+    unrenamed_count: unrenamedCount,
+    sessions,
+    render: renderBlock(
+      "projects.sessions",
+      "Recent project sessions",
+      unrenamedCount > 0 ? "attention" : "ok",
+      `${sessions.length}/${allRecords.length} start session records`,
+      [
+        { label: "projects", value: projectCount },
+        { label: "total", value: allRecords.length },
+        { label: "returned", value: sessions.length },
+        { label: "unrenamed", value: unrenamedCount },
+      ],
+      [
+        {
+          title: "sessions",
+          items: sessions.map((session) => ({
+            created_at: session.created_at,
+            project: session.project_slug,
+            session: session.session_name,
+            action: session.session_action,
+            unrenamed: session.unrenamed,
+            rename_report: session.rename_report,
+          })),
+        },
+      ],
+      [
+        {
+          label: "list projects",
+          command: renderCommand("projects", ["list"]),
         },
       ],
     ),
