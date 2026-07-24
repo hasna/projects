@@ -87,12 +87,35 @@ export interface EnsureProjectChannelOptions {
   runner?: ConversationsChannelRunner;
 }
 
+/**
+ * What actually landed during an ensure run. Ensure touches three independent
+ * systems (conversations channel, project integration link, audit event), so a
+ * single boolean cannot describe the outcome: callers need to know which side
+ * effects were committed before deciding whether (and how) to retry.
+ */
+export interface ProjectChannelSideEffects {
+  /** The conversations channel was created by this run. */
+  channel_created: boolean;
+  /** The conversations channel exists now (created by this run or already there). */
+  channel_present: boolean;
+  /** `integrations.conversations_channel` holds the derived channel on the project record. */
+  integration_linked: boolean;
+  /** The `channel_ensured` audit event was recorded on the project. */
+  event_recorded: boolean;
+}
+
 export interface ProjectChannelEnsureResult extends ProjectChannelDerivation {
   status: "created" | "exists" | "planned" | "error";
   created: boolean;
   linked: boolean;
   persisted: boolean;
   message?: string;
+  /**
+   * Non-fatal problems (e.g. the audit event could not be recorded). Present
+   * even on success; they never change `status`.
+   */
+  warnings: string[];
+  side_effects: ProjectChannelSideEffects;
   project: Workspace;
 }
 
@@ -198,6 +221,114 @@ function projectChannelDescription(project: Workspace, channelClass: ProjectChan
   return `Project channel for ${project.name.trim() || project.slug} (${project.slug}) — class ${channelClass}; auto-created by @hasna/projects.`;
 }
 
+function projectChannelTopic(project: Workspace, channelClass: ProjectChannelClass): string {
+  return `${project.name.trim() || project.slug} (${project.slug}) — ${channelClass} channel`;
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * `conversations channel create` args. The derived channel class is passed
+ * through as `--class` (stored by conversations at
+ * `metadata.channel_schema.class`) so project channels satisfy the fleet
+ * naming/class convention instead of landing class-less; `--topic` gives the
+ * channel a human label. Older `conversations` builds do not know those flags,
+ * so callers fall back to the minimal arg set — see {@link createConversationsChannel}.
+ */
+export function buildChannelCreateArgs(
+  project: Workspace,
+  derivation: ProjectChannelDerivation,
+  options: { from?: string; withMetadata?: boolean } = {},
+): string[] {
+  const args = [
+    "channel",
+    "create",
+    derivation.channel,
+    "--description",
+    projectChannelDescription(project, derivation.channel_class),
+  ];
+  if (options.withMetadata !== false) {
+    args.push("--class", derivation.channel_class, "--topic", projectChannelTopic(project, derivation.channel_class));
+  }
+  args.push("-j");
+  if (options.from?.trim()) args.push("--from", options.from.trim());
+  return args;
+}
+
+/** A CLI rejection caused by an option the installed conversations build lacks. */
+function isUnsupportedOptionFailure(result: ConversationsRunResult): boolean {
+  const output = `${result.stderr} ${result.stdout}`.toLowerCase();
+  return /unknown option|unrecognized option|unknown argument|invalid option|unknown flag/.test(output);
+}
+
+/**
+ * Create the channel, retrying without the class/topic metadata flags when the
+ * installed conversations CLI is too old to understand them. Never throws.
+ */
+function createConversationsChannel(
+  runner: ConversationsChannelRunner,
+  project: Workspace,
+  derivation: ProjectChannelDerivation,
+  from: string | undefined,
+): { status: Exclude<ProjectChannelEnsureResult["status"], "planned">; message?: string } {
+  let result = runner(buildChannelCreateArgs(project, derivation, { from }));
+  if (!result.ok && isUnsupportedOptionFailure(result)) {
+    result = runner(buildChannelCreateArgs(project, derivation, { from, withMetadata: false }));
+  }
+  if (result.ok) return { status: "created" };
+  const output = `${result.stderr} ${result.stdout}`.toLowerCase();
+  // `channel create` on an existing channel fails with an "already exists"
+  // message, which doubles as the existence probe.
+  if (output.includes("exist")) return { status: "exists" };
+  return {
+    status: "error",
+    message: result.stderr.trim() || result.stdout.trim() || "conversations channel create failed",
+  };
+}
+
+const NO_SIDE_EFFECTS: ProjectChannelSideEffects = {
+  channel_created: false,
+  channel_present: false,
+  integration_linked: false,
+  event_recorded: false,
+};
+
+function derivationErrorResult(project: Workspace, message: string): ProjectChannelEnsureResult {
+  return {
+    channel: "",
+    channel_class: "initiative",
+    source: "derived",
+    status: "error",
+    created: false,
+    linked: false,
+    persisted: false,
+    message,
+    warnings: [],
+    side_effects: { ...NO_SIDE_EFFECTS },
+    project,
+  };
+}
+
+function plannedResult(
+  project: Workspace,
+  derivation: ProjectChannelDerivation,
+  alreadyLinked: boolean,
+): ProjectChannelEnsureResult {
+  return {
+    ...derivation,
+    status: "planned",
+    created: false,
+    linked: alreadyLinked,
+    persisted: false,
+    warnings: [],
+    side_effects: { ...NO_SIDE_EFFECTS, integration_linked: alreadyLinked },
+    project,
+    message: `Would ensure conversations channel ${derivation.channel} (${derivation.channel_class}).`,
+  };
+}
+
 /**
  * Ensure the project's conversations channel exists and is linked on the
  * project record. Failures (unreachable conversations CLI, underivable slug)
@@ -212,63 +343,24 @@ export function ensureProjectChannel(
   try {
     derivation = deriveProjectChannel(project);
   } catch (err) {
-    return {
-      channel: "",
-      channel_class: "initiative",
-      source: "derived",
-      status: "error",
-      created: false,
-      linked: false,
-      persisted: false,
-      message: err instanceof Error ? err.message : String(err),
-      project,
-    };
+    return derivationErrorResult(project, errorText(err));
   }
   const alreadyLinked = project.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() === derivation.channel;
 
   if (options.dryRun) {
-    return {
-      ...derivation,
-      status: "planned",
-      created: false,
-      linked: alreadyLinked,
-      persisted: false,
-      project,
-      message: `Would ensure conversations channel ${derivation.channel} (${derivation.channel_class}).`,
-    };
+    return plannedResult(project, derivation, alreadyLinked);
   }
 
   const runner = options.runner ?? conversationsCliRunner();
-  let status: ProjectChannelEnsureResult["status"];
-  let message: string | undefined;
-
-  // Create-first: `conversations channel create` on an existing channel fails
-  // with an "already exists" message, which doubles as the existence probe —
-  // one CLI call per ensure instead of listing every channel on each start.
-  const createArgs = [
-    "channel",
-    "create",
-    derivation.channel,
-    "--description",
-    projectChannelDescription(project, derivation.channel_class),
-    "-j",
-  ];
-  if (options.from?.trim()) createArgs.push("--from", options.from.trim());
-  const created = runner(createArgs);
-  if (created.ok) {
-    status = "created";
-  } else {
-    const output = `${created.stderr} ${created.stdout}`.toLowerCase();
-    if (output.includes("exist")) {
-      status = "exists";
-    } else {
-      status = "error";
-      message = created.stderr.trim() || created.stdout.trim() || "conversations channel create failed";
-    }
-  }
+  // Create-first: one CLI call per ensure instead of listing every channel.
+  const create = createConversationsChannel(runner, project, derivation, options.from);
+  const status: ProjectChannelEnsureResult["status"] = create.status;
+  const message = create.message;
+  const warnings: string[] = [];
 
   let updated = project;
   let persisted = false;
+  let eventRecorded = false;
   const inStore = getWorkspace(project.id, options.db);
   if (inStore && options.persist !== false && inStore.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() !== derivation.channel) {
     updated = linkWorkspaceIntegrations(project.id, { [PROJECT_CHANNEL_INTEGRATION_KEY]: derivation.channel }, {
@@ -282,30 +374,46 @@ export function ensureProjectChannel(
   }
 
   if (inStore) {
-    recordWorkspaceEvent({
-      workspace_id: project.id,
-      agent_id: options.agentId,
-      event_type: "channel_ensured",
-      source: options.source ?? "cli",
-      command: options.command,
-      after: {
-        channel: derivation.channel,
-        channel_class: derivation.channel_class,
-        status,
-        created: status === "created",
-        persisted,
-        message,
-      },
-    }, options.db);
+    // Best-effort audit trail: the channel and the project link are already
+    // committed at this point, so a failure to append the event must not turn a
+    // completed ensure into a reported failure (see issue #28).
+    try {
+      recordWorkspaceEvent({
+        workspace_id: project.id,
+        agent_id: options.agentId,
+        event_type: "channel_ensured",
+        source: options.source ?? "cli",
+        command: options.command,
+        after: {
+          channel: derivation.channel,
+          channel_class: derivation.channel_class,
+          status,
+          created: status === "created",
+          persisted,
+          message,
+        },
+      }, options.db);
+      eventRecorded = true;
+    } catch (err) {
+      warnings.push(`Channel ensure audit event was not recorded: ${errorText(err)}`);
+    }
   }
 
+  const linked = Boolean(updated.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim());
   return {
     ...derivation,
     status,
     created: status === "created",
-    linked: Boolean(updated.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim()),
+    linked,
     persisted,
     message,
+    warnings,
+    side_effects: {
+      channel_created: status === "created",
+      channel_present: status === "created" || status === "exists",
+      integration_linked: linked,
+      event_recorded: eventRecorded,
+    },
     project: updated,
   };
 }
@@ -360,101 +468,99 @@ export async function ensureProjectChannelViaStore(
   try {
     derivation = deriveProjectChannel(project);
   } catch (err) {
-    return {
-      channel: "",
-      channel_class: "initiative",
-      source: "derived",
-      status: "error",
-      created: false,
-      linked: false,
-      persisted: false,
-      message: err instanceof Error ? err.message : String(err),
-      project,
-    };
+    return derivationErrorResult(project, errorText(err));
   }
   const alreadyLinked = project.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() === derivation.channel;
 
   if (options.dryRun) {
-    return {
-      ...derivation,
-      status: "planned",
-      created: false,
-      linked: alreadyLinked,
-      persisted: false,
-      project,
-      message: `Would ensure conversations channel ${derivation.channel} (${derivation.channel_class}).`,
-    };
+    return plannedResult(project, derivation, alreadyLinked);
   }
 
   const runner = options.runner ?? conversationsCliRunner();
-  let status: ProjectChannelEnsureResult["status"];
-  let message: string | undefined;
-
-  const createArgs = [
-    "channel",
-    "create",
-    derivation.channel,
-    "--description",
-    projectChannelDescription(project, derivation.channel_class),
-    "-j",
-  ];
-  if (options.from?.trim()) createArgs.push("--from", options.from.trim());
-  const created = runner(createArgs);
-  if (created.ok) {
-    status = "created";
-  } else {
-    const output = `${created.stderr} ${created.stdout}`.toLowerCase();
-    if (output.includes("exist")) {
-      status = "exists";
-    } else {
-      status = "error";
-      message = created.stderr.trim() || created.stdout.trim() || "conversations channel create failed";
-    }
-  }
+  const create = createConversationsChannel(runner, project, derivation, options.from);
+  let status: ProjectChannelEnsureResult["status"] = create.status;
+  const messages: string[] = create.message ? [create.message] : [];
+  const warnings: string[] = [];
 
   let updated = project;
   let persisted = false;
-  const inStore = await store.getProject(project.id);
+  let eventRecorded = false;
+
+  // Everything past the channel creation is a store round-trip. In api/cloud
+  // mode any of these can fail against a backend that does not implement the
+  // route (or is momentarily unreachable) AFTER the channel already exists, so
+  // each step is fenced and reported through the result instead of thrown: a
+  // partially completed ensure must never surface as a raw transport error with
+  // no record of what landed (issue #28).
+  let inStore: Workspace | null = null;
+  try {
+    inStore = await store.getProject(project.id);
+  } catch (err) {
+    status = "error";
+    messages.push(`Could not read the project record back: ${errorText(err)}`);
+  }
+
   if (
     inStore &&
     options.persist !== false &&
     inStore.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim() !== derivation.channel
   ) {
-    updated = await store.updateProject(project.id, {
-      integrations: { ...inStore.integrations, [PROJECT_CHANNEL_INTEGRATION_KEY]: derivation.channel },
-      agent_id: options.agentId,
-      source: options.source,
-      command: options.command,
-    });
-    persisted = true;
+    try {
+      updated = await store.updateProject(project.id, {
+        integrations: { ...inStore.integrations, [PROJECT_CHANNEL_INTEGRATION_KEY]: derivation.channel },
+        agent_id: options.agentId,
+        source: options.source,
+        command: options.command,
+      });
+      persisted = true;
+    } catch (err) {
+      status = "error";
+      messages.push(`Could not link ${derivation.channel} on the project record: ${errorText(err)}`);
+    }
   } else if (inStore) {
     updated = inStore;
   }
 
   if (inStore) {
-    await store.recordEvent(project.id, {
-      event_type: "channel_ensured",
-      source: options.source ?? "cli",
-      agentId: options.agentId,
-      command: options.command,
-      after: {
-        channel: derivation.channel,
-        channel_class: derivation.channel_class,
-        status,
-        created: status === "created",
-        persisted,
-        message: message ?? null,
-      } as JsonObject,
-    });
+    // Best-effort audit trail. The channel and the project link are already
+    // committed here; a backend that does not expose POST /projects/:id/events
+    // must not turn a completed ensure into a total failure.
+    try {
+      await store.recordEvent(project.id, {
+        event_type: "channel_ensured",
+        source: options.source ?? "cli",
+        agentId: options.agentId,
+        command: options.command,
+        after: {
+          channel: derivation.channel,
+          channel_class: derivation.channel_class,
+          status,
+          created: status === "created",
+          persisted,
+          message: messages[0] ?? null,
+        } as JsonObject,
+      });
+      eventRecorded = true;
+    } catch (err) {
+      warnings.push(`Channel ensure audit event was not recorded: ${errorText(err)}`);
+    }
   }
 
+  const linked = Boolean(updated.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim());
   return {
     ...derivation,
     status,
-    created: status === "created",
-    linked: Boolean(updated.integrations[PROJECT_CHANNEL_INTEGRATION_KEY]?.trim()),
+    created: create.status === "created",
+    linked,
     persisted,
-    message,
+    message: messages.length ? messages.join("; ") : undefined,
+    warnings,
+    side_effects: {
+      channel_created: create.status === "created",
+      channel_present: create.status === "created" || create.status === "exists",
+      integration_linked: linked,
+      event_recorded: eventRecorded,
+    },
     project: updated,
   };
 }

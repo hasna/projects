@@ -953,14 +953,24 @@ function registerAgentAssistCommands(program: Command): void {
             linked: result.linked,
             persisted: result.persisted,
             message: result.message,
+            warnings: result.warnings,
+            side_effects: result.side_effects,
             project: { id: result.project.id, slug: result.project.slug, integrations: result.project.integrations },
           }, opts);
         } else if (result.status === "planned") {
           console.log(chalk.dim(`[dry-run] Would ensure conversations channel #${result.channel} (${result.channel_class}).`));
         } else if (result.status === "error") {
           console.error(chalk.red(`Channel ensure failed for #${result.channel}: ${result.message ?? "unknown error"}`));
+          // Partial-state evidence so a retry is informed rather than blind;
+          // ensure is idempotent, so re-running is always safe.
+          console.error(chalk.dim(
+            `  committed: channel_created=${result.side_effects.channel_created} channel_present=${result.side_effects.channel_present} integration_linked=${result.side_effects.integration_linked} event_recorded=${result.side_effects.event_recorded}`,
+          ));
         } else {
           console.log(chalk.green(`✓ Channel ${result.status === "created" ? "created" : "exists"}: #${result.channel}`) + chalk.dim(` (${result.channel_class}${result.persisted ? ", linked on project" : ""})`));
+        }
+        if (!wantsJson(opts)) {
+          for (const warning of result.warnings) console.error(chalk.yellow(`! ${warning}`));
         }
         if (result.status === "error") process.exit(1);
       } catch (err) {

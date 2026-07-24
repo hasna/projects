@@ -24,6 +24,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   inheriting the CLI process cwd. The resolved path is escaped through the same
   tmux format-literal guard as explicit paths, and window creation still
   succeeds when the lookup fails.
+- **`projects channel --ensure` no longer reports total failure after its side
+  effects landed (api/cloud mode).** `ensureProjectChannelViaStore` performs
+  three independent mutations — create the Conversations channel, persist
+  `integrations.conversations_channel`, append a `channel_ensured` audit event.
+  The final step POSTs to `/projects/:id/events`, which the cloud API does not
+  serve, so a fully completed ensure exited 1 with a raw
+  `Hasna request failed: POST /projects/<id>/events -> 404` while the channel
+  and the project link were already committed. Agents then treated a linked
+  channel as missing and retried into drift. The audit event is now recorded
+  best-effort and reported through a non-fatal `warnings` entry; the store
+  read-back and the integration link are fenced too, so a failure there returns
+  a structured result instead of throwing a raw transport error. (#28)
+- **Ensure results now carry structured partial-state evidence.**
+  `ProjectChannelEnsureResult` gained `warnings: string[]` and
+  `side_effects: { channel_created, channel_present, integration_linked,
+  event_recorded }`, both surfaced in `projects channel --ensure --json` and
+  printed on failure in text mode, so a retry is informed rather than blind.
+  Ensure remains idempotent: a second run on an existing, already-linked channel
+  reports `status: "exists"` with no duplicate write.
+- **The derived channel class is passed to Conversations.** `channel create` is
+  now invoked with `--class <package|product|initiative|loop-lane>` and
+  `--topic`, so project channels satisfy the fleet naming/class convention
+  instead of landing without `metadata.channel_schema.class`. Older
+  `conversations` builds that reject those flags are detected and retried with
+  the previous minimal arg set.
 
 ## [0.1.92]
 

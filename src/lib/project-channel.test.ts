@@ -5,17 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkspace, getWorkspace, listWorkspaceEvents } from "../db/workspaces.js";
 import { runMigrations } from "../db/schema.js";
-import type { WorkspaceKind } from "../types/workspace.js";
+import type { Workspace, WorkspaceKind } from "../types/workspace.js";
 import {
   classifyProjectChannelName,
   deriveProjectChannel,
   ensureProjectChannel,
+  ensureProjectChannelViaStore,
   normalizeProjectChannelName,
   resolveProjectChannel,
   resolveProjectChannelForProject,
   shouldEnsureProjectChannel,
   type ConversationsChannelRunner,
   type ConversationsRunResult,
+  type ProjectChannelStore,
 } from "./project-channel.js";
 import { executeWorkspaceCreation } from "./workspace-plan.js";
 import { startProject } from "./project-start.js";
@@ -339,5 +341,149 @@ describe("channel ensure on project create/start", () => {
       rmSync(path, { recursive: true, force: true });
       db.close();
     }
+  });
+});
+
+describe("ensureProjectChannelViaStore (api/cloud mode)", () => {
+  // Minimal in-memory ProjectChannelStore double. Each hook can be swapped to
+  // model an api backend that implements only part of the surface.
+  function makeStore(overrides: Partial<ProjectChannelStore> = {}): {
+    store: ProjectChannelStore;
+    project: Workspace;
+    updates: Array<Record<string, unknown>>;
+    events: Array<Record<string, unknown>>;
+  } {
+    const project = {
+      id: "wks_cloud000000000000001",
+      slug: "cloud-demo",
+      name: "Cloud Demo",
+      kind: "internal-app",
+      status: "active",
+      integrations: {},
+      tags: [],
+      metadata: {},
+    } as unknown as Workspace;
+    const updates: Array<Record<string, unknown>> = [];
+    const events: Array<Record<string, unknown>> = [];
+    let current = project;
+    const store: ProjectChannelStore = {
+      mode: "api",
+      async getProject() {
+        return current;
+      },
+      async updateProject(_id, patch) {
+        updates.push(patch as Record<string, unknown>);
+        current = { ...current, integrations: { ...current.integrations, ...(patch.integrations ?? {}) } };
+        return current;
+      },
+      async recordEvent(_id, input) {
+        events.push(input as unknown as Record<string, unknown>);
+        return input;
+      },
+      ...overrides,
+    };
+    return { store, project, updates, events };
+  }
+
+  test("a 404 from the events route does not fail an ensure whose side effects landed", async () => {
+    // Regression (issue #28): the channel was created and the integration was
+    // persisted, then `POST /projects/:id/events` 404'd and the raw transport
+    // error escaped -> the CLI exited 1 on a fully completed ensure.
+    const { store, project, updates } = makeStore({
+      recordEvent: async () => {
+        throw new Error("Hasna request failed: POST /projects/wks_cloud000000000000001/events -> 404");
+      },
+    });
+    const { calls, runner } = recordingRunner(() => ok);
+
+    const result = await ensureProjectChannelViaStore(store, project, { runner, source: "cli" });
+
+    expect(result.status).toBe("created");
+    expect(result.created).toBe(true);
+    expect(result.channel).toBe("iapp-cloud-demo");
+    expect(result.linked).toBe(true);
+    expect(result.persisted).toBe(true);
+    expect(result.message).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(updates).toHaveLength(1);
+    // The failure is reported as a non-fatal warning with the audit event
+    // marked as the only thing that did not land.
+    expect(result.warnings.join(" ")).toContain("audit event was not recorded");
+    expect(result.side_effects).toEqual({
+      channel_created: true,
+      channel_present: true,
+      integration_linked: true,
+      event_recorded: false,
+    });
+  });
+
+  test("passes the derived channel class and topic to conversations", async () => {
+    // Regression (issue #28): ensure created class-less channels because it
+    // never forwarded the derived channel class.
+    const { store, project } = makeStore();
+    const { calls, runner } = recordingRunner(() => ok);
+
+    const result = await ensureProjectChannelViaStore(store, project, { runner, from: "agent-demo" });
+
+    expect(result.channel_class).toBe("product");
+    const args = calls[0] ?? [];
+    expect(args.slice(0, 3)).toEqual(["channel", "create", "iapp-cloud-demo"]);
+    expect(args[args.indexOf("--class") + 1]).toBe("product");
+    expect(args).toContain("--topic");
+    expect(args[args.indexOf("--from") + 1]).toBe("agent-demo");
+  });
+
+  test("retries without class/topic when the installed conversations CLI rejects them", async () => {
+    const { store, project } = makeStore();
+    const { calls, runner } = recordingRunner((args) =>
+      args.includes("--class") ? { ok: false, stdout: "", stderr: "error: unknown option '--class'" } : ok,
+    );
+
+    const result = await ensureProjectChannelViaStore(store, project, { runner });
+
+    expect(result.status).toBe("created");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).not.toContain("--class");
+    expect(calls[1]).not.toContain("--topic");
+  });
+
+  test("an existing channel retry is idempotent and stays successful", async () => {
+    const { store, project, updates } = makeStore({
+      recordEvent: async () => {
+        throw new Error("Hasna request failed: POST /projects/x/events -> 404");
+      },
+    });
+    const { runner } = recordingRunner(() => ({ ok: false, stdout: "", stderr: "Channel already exists." }));
+
+    const first = await ensureProjectChannelViaStore(store, project, { runner });
+    const second = await ensureProjectChannelViaStore(store, first.project, { runner });
+
+    expect(first.status).toBe("exists");
+    expect(second.status).toBe("exists");
+    expect(second.linked).toBe(true);
+    // Second run finds the link already correct: no duplicate write.
+    expect(updates).toHaveLength(1);
+    expect(second.persisted).toBe(false);
+  });
+
+  test("a failed integration link reports structured partial state instead of throwing", async () => {
+    const { store, project } = makeStore({
+      updateProject: async () => {
+        throw new Error("Hasna request failed: PATCH /projects/wks_cloud000000000000001 -> 503");
+      },
+    });
+    const { runner } = recordingRunner(() => ok);
+
+    const result = await ensureProjectChannelViaStore(store, project, { runner });
+
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("Could not link iapp-cloud-demo on the project record");
+    expect(result.persisted).toBe(false);
+    expect(result.side_effects).toEqual({
+      channel_created: true,
+      channel_present: true,
+      integration_linked: false,
+      event_recorded: true,
+    });
   });
 });
