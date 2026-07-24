@@ -237,7 +237,7 @@ function errorText(err: unknown): string {
  * channel a human label. Older `conversations` builds do not know those flags,
  * so callers fall back to the minimal arg set — see {@link createConversationsChannel}.
  */
-export function buildChannelCreateArgs(
+function buildChannelCreateArgs(
   project: Workspace,
   derivation: ProjectChannelDerivation,
   options: { from?: string; withMetadata?: boolean } = {},

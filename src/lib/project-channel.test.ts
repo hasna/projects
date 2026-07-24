@@ -466,6 +466,29 @@ describe("ensureProjectChannelViaStore (api/cloud mode)", () => {
     expect(second.persisted).toBe(false);
   });
 
+  test("an unreadable project record reports partial state instead of throwing", async () => {
+    // The store read-back happens after the channel already exists, so a
+    // backend hiccup there must not escape as a raw transport error either.
+    const { store, project } = makeStore({
+      getProject: async () => {
+        throw new Error("Hasna request failed: GET /projects/wks_cloud000000000000001 -> 502");
+      },
+    });
+    const { runner } = recordingRunner(() => ok);
+
+    const result = await ensureProjectChannelViaStore(store, project, { runner });
+
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("Could not read the project record back");
+    expect(result.persisted).toBe(false);
+    expect(result.side_effects).toEqual({
+      channel_created: true,
+      channel_present: true,
+      integration_linked: false,
+      event_recorded: false,
+    });
+  });
+
   test("a failed integration link reports structured partial state instead of throwing", async () => {
     const { store, project } = makeStore({
       updateProject: async () => {

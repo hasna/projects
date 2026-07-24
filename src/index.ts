@@ -378,6 +378,7 @@ export type {
   ProjectChannelDerivation,
   ProjectChannelEnsureResult,
   ProjectChannelResolution,
+  ProjectChannelSideEffects,
 } from "./lib/project-channel.js";
 export {
   DEFAULT_WORKSPACE_AGENT_MODEL as DEFAULT_PROJECT_AGENT_MODEL,
