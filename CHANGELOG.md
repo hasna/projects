@@ -4,6 +4,25 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.92]
+
+### Added
+
+- **Projects secret redaction across every output surface.** New
+  `src/lib/redaction.ts` scrubs secret-shaped keys (password/token/api_key/
+  client_secret/authorization/cookie/dsn/connection_string/…), URL credentials,
+  `Authorization` headers, secret CLI flags, `ENV=value` assignments, PEM
+  private-key blocks, and known token prefixes (`sk-`, `ghp_`, `github_pat_`,
+  `npm_`, `xox*`, `AKIA…`). It is wired through CLI JSON/text printers, the MCP
+  JSON-RPC tool responses, the SDK row mappers (`rowTo*`), the dashboard/reports
+  servers, and the agent context/handoff/runs surfaces, and is also applied at
+  write time for agent-run and workspace-event records.
+- **`projects permissions repair` (CLI) and `projects_permissions_repair` (MCP)
+  plus SDK export.** Dry-run by default; `--apply` tightens local Projects
+  registry DB/WAL/SHM, backups, canonical stores, and (optionally) registered
+  project report and dashboard artifacts to private modes (0600/0700). Skips
+  symlinks, never deletes, and reports per-path actions.
+
 ## [0.1.91]
 
 ### Security
