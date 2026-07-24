@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `projects events record` now fails fast with a clear
+  `Recording project audit events is a local-only operation and is not available
+  in api/cloud mode.` message when a cloud/self-hosted backend is active, instead
+  of silently persisting the event to the local sqlite store (or leaking a raw
+  upstream `404` for `POST /projects/:id/events`, which the `/v1` API does not
+  expose). Recording custom audit events is a machine-local write; the cloud API
+  serves only `GET /projects/:id/events`. This makes the command consistent with
+  the sibling registry commands' cloud awareness.
+
 ## [0.1.84] - 2026-07-07
 
 ### Fixed

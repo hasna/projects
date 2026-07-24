@@ -1131,6 +1131,36 @@ describe("project-first CLI surface", () => {
     expect(compactText).toContain("older hidden. Use --limit <n>, --verbose, or --json for details.");
   });
 
+  test("events record gates cleanly as local-only in api/cloud mode instead of leaking a raw 404", () => {
+    const root = mkdtempSync(join(tmpdir(), "projects-cli-events-cloud-"));
+    const env = {
+      HASNA_PROJECTS_DB_PATH: join(root, "projects.db"),
+      // Force the cloud/self-hosted backend to resolve; the /v1 API exposes no
+      // POST /projects/:id/events route, so recording must fail fast with a
+      // clear local-only message rather than POSTing and leaking a raw 404.
+      HASNA_PROJECTS_STORAGE_MODE: "self_hosted",
+      HASNA_PROJECTS_API_URL: "https://projects.invalid.hasna.test",
+      HASNA_PROJECTS_API_KEY: "test-key",
+    };
+
+    const record = runProjects([
+      "events",
+      "record",
+      "some-project",
+      "custom_event",
+      "--prompt",
+      "x",
+      "--json",
+    ], env);
+
+    expect(record.exitCode).toBe(1);
+    const stderr = text(record.stderr);
+    expect(stderr).toContain("local-only operation and is not available in api/cloud mode");
+    // Must not leak the raw upstream transport error or hit the network.
+    expect(stderr).not.toContain("Hasna request failed");
+    expect(stderr).not.toContain("404");
+  });
+
   test("project agents can be assigned and shown as project metadata", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-cli-agents-"));
     const env = { HASNA_PROJECTS_DB_PATH: join(root, "projects.db") };

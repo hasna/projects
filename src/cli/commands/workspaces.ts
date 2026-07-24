@@ -490,6 +490,18 @@ function resolveProjectTarget(target: string | undefined): Workspace {
   return resolveRegisteredProjectTargetOrThrow(target).project;
 }
 
+// Guard for writes that only exist on the machine-local sqlite store. When a
+// cloud/self-hosted projects backend is active, the /v1 API exposes no matching
+// write route (e.g. it serves GET /projects/:id/events but not POST), so calling
+// through would either leak a raw upstream 404 or silently persist to the local
+// store instead of the cloud project. Fail fast with a clear, actionable message
+// that mirrors the sibling registry commands' cloud awareness.
+function assertLocalOnlyWrite(operation: string): void {
+  if (resolveProjectsBackend()) {
+    throw new Error(`${operation} is a local-only operation and is not available in api/cloud mode.`);
+  }
+}
+
 function printRows(rows: Array<Record<string, unknown>>, columns: string[]): void {
   if (!rows.length) {
     console.log(chalk.dim("No records found."));
@@ -2147,6 +2159,7 @@ function registerProjectCommands(program: Command): void {
     .option("-j, --json", "Output JSON")
     .action((projectTarget, type, opts) => {
       try {
+        assertLocalOnlyWrite("Recording project audit events");
         const project = resolveProjectTarget(projectTarget);
         const event = recordWorkspaceEvent({
           workspace_id: project.id,
