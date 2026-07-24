@@ -312,18 +312,14 @@ contexts.
 
 ## Storage Sync
 
-Production storage for Hasna XYZ uses the `projects` database on
-`hasna-xyz-infra-apps-prod-postgres`. The runtime secret path is
-`hasna/xyz/opensource/projects/prod/rds`; load that secret into
-`HASNA_PROJECTS_DATABASE_URL` for runtime or smoke commands and do not print
-the value. `PROJECTS_DATABASE_URL` remains available as a local/self-hosted
-fallback.
+Set `HASNA_PROJECTS_DATABASE_URL` to your PostgreSQL connection string for
+runtime or smoke commands, and do not print the value. `PROJECTS_DATABASE_URL`
+remains available as a local/self-hosted fallback. This package ships no default
+database, cluster, or secret-manager identifier — the connection string is
+operator-supplied configuration only, loaded from your own secret store.
 
 ```bash
-export HASNA_PROJECTS_DATABASE_URL="<value from hasna/xyz/opensource/projects/prod/rds>"
-projects storage status --json
-projects storage push
-projects storage pull
+export HASNA_PROJECTS_DATABASE_URL="<your PostgreSQL connection string>"
 ```
 
 `projects storage status --json` includes a `readiness` object that separates

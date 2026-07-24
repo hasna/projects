@@ -4,6 +4,23 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.91]
+
+### Security
+
+- **Scrub internal infra identifiers from the shipped `README.md`.** The
+  Storage Sync section named the internal production RDS cluster
+  (`hasna-xyz-infra-apps-prod-postgres`) and the Secrets Manager runtime-secret
+  path in prose and an `export` example. `README.md` ships in the published npm
+  tarball (`files`), so these leaked to every installer. Replaced with generic,
+  operator-supplied guidance ("your PostgreSQL connection string"); the package
+  ships no default database, cluster, or secret-manager identifier. Also dropped
+  the stale `projects storage status/push/pull` command examples from that block
+  (those subcommands were removed in the 0.1.90 `ProjectStore` reconciliation).
+  The runtime-code leak (the removed `getCanonicalProjectsRdsConfig()` constants
+  echoed by the old `storage status` CLI/MCP surface) was already eliminated in
+  0.1.90; this is the last remaining occurrence, in documentation only.
+
 ## [0.1.90]
 
 ### Reconciled
