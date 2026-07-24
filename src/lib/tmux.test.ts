@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { createGroup, createSession, createWindow, restartSession, withTmuxCommandRunnerForTest } from "./tmux.js";
+import {
+  alignGroupedSessionWorkingDirectories,
+  createGroup,
+  createSession,
+  createWindow,
+  restartSession,
+  setSessionWorkingDirectory,
+  withTmuxCommandRunnerForTest,
+} from "./tmux.js";
 
 function installFakeTmux(dir: string): string {
   const logPath = join(dir, "tmux-argv.jsonl");
@@ -198,6 +206,76 @@ describe("tmux project working directory", () => {
 
     expect(commands[1]).toEqual([
       "new-window", "-d", "-t", "opensource", "-n", "open-todos", "-c", "/tmp/proj##(touch /tmp/pwned)",
+    ]);
+  });
+});
+
+function sessionLocationRunner(
+  locations: Array<{ name: string; group: string; path: string }>,
+  commands: string[][],
+) {
+  return (args: string[]): string => {
+    commands.push(args);
+    if (args[0] === "list-sessions") {
+      return locations.map((location) => [location.name, location.group, location.path].join("\t")).join("\n");
+    }
+    if (args[0] === "attach-session") {
+      // Real tmux applies -c and then fails to attach without a terminal.
+      throw new Error("open terminal failed: not a terminal");
+    }
+    return "";
+  };
+}
+
+describe("tmux grouped session working directories", () => {
+  test("realigns every grouped session that drifted away from the project path", () => {
+    const commands: string[][] = [];
+    const aligned = withTmuxCommandRunnerForTest(
+      sessionLocationRunner([
+        { name: "open-todos", group: "opensource", path: "/home/hasna/workspace/hasna/opensource/open-todos" },
+        { name: "opensource", group: "opensource", path: "/home/hasna" },
+        { name: "unrelated", group: "", path: "/home/hasna" },
+      ], commands),
+      () => alignGroupedSessionWorkingDirectories("open-todos", "/home/hasna/workspace/hasna/opensource/open-todos"),
+    );
+
+    expect(aligned).toEqual(["opensource"]);
+    expect(commands.filter((args) => args[0] === "attach-session")).toEqual([
+      ["attach-session", "-c", "/home/hasna/workspace/hasna/opensource/open-todos", "-t", "opensource"],
+    ]);
+  });
+
+  test("leaves sessions that are not in a group untouched", () => {
+    const commands: string[][] = [];
+    const aligned = withTmuxCommandRunnerForTest(
+      sessionLocationRunner([{ name: "work", group: "", path: "/home/hasna" }], commands),
+      () => alignGroupedSessionWorkingDirectories("work", "/tmp/proj"),
+    );
+
+    expect(aligned).toEqual([]);
+    expect(commands.some((args) => args[0] === "attach-session")).toBe(false);
+  });
+
+  test("keeps working when the tmux server is not running", () => {
+    const commands: string[][] = [];
+    const aligned = withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      throw new Error("no server running on /tmp/tmux-1000/default");
+    }, () => alignGroupedSessionWorkingDirectories("work", "/tmp/proj"));
+
+    expect(aligned).toEqual([]);
+    expect(commands.some((args) => args[0] === "attach-session")).toBe(false);
+  });
+
+  test("escapes tmux format command substitution when setting a session cwd", () => {
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest(
+      sessionLocationRunner([], commands),
+      () => setSessionWorkingDirectory("proj", "/tmp/#(touch /tmp/pwned)"),
+    );
+
+    expect(commands).toEqual([
+      ["attach-session", "-c", "/tmp/##(touch /tmp/pwned)", "-t", "proj"],
     ]);
   });
 });

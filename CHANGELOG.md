@@ -4,6 +4,25 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.95]
+
+### Fixed
+
+- **Grouped tmux sessions moved into a group outside the CLI keep the project
+  working directory** ([#2](https://github.com/hasna/projects/issues/2),
+  duplicate of [#1](https://github.com/hasna/projects/issues/1)). 0.1.93 anchored
+  the groups Projects itself creates and made `createWindow()` fall back to
+  `#{session_path}`, but a session added to a group by hand
+  (`tmux new-session -t <project> -s <peer>`) still records the cwd of the shell
+  that ran the move — usually `/home/<user>`. tmux resolves the start directory
+  of a window opened by an *attached* client from that session cwd, so grouped
+  windows opened by hand kept landing outside the project. `projects start` now
+  realigns every session in the target session's group onto the project path
+  (new `alignGroupedSessionWorkingDirectories()` / `listSessionLocations()` /
+  `setSessionWorkingDirectory()` helpers). Ungrouped sessions are deliberately
+  left untouched, so shared sessions keep the cwd of whoever created them, and a
+  failed realign can never fail a start.
+
 ## [0.1.94]
 
 ### Fixed

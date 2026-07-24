@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  alignGroupedSessionWorkingDirectories,
   createSession,
   createWindow,
   execInWindow,
@@ -302,6 +303,19 @@ export function applyWorkspaceTmux(workspace: Workspace, options: ApplyWorkspace
         detached: window.detached ?? true,
       });
       result.windows.push({ type: "tmux_window", target: `${sessionName}:${window.name}`, status: "completed" });
+    }
+
+    // Sessions grouped with this one share its windows but keep their own
+    // working directory, so a group move performed outside the CLI leaves them
+    // pointing at the shell that ran `tmux new-session -t`. Realign the group on
+    // the project path so newly opened grouped windows stay in the project.
+    const sessionCwd = first.path ?? workspace.primary_path ?? undefined;
+    if (sessionCwd) {
+      try {
+        alignGroupedSessionWorkingDirectories(sessionName, resolve(sessionCwd));
+      } catch {
+        // Best effort: realigning the group must never fail a start.
+      }
     }
   } catch (err) {
     result.session_action = "failed";

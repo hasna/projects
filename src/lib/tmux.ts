@@ -85,6 +85,14 @@ export interface TmuxGroup {
   windows: number;
 }
 
+export interface TmuxSessionLocation {
+  name: string;
+  group: string;
+  path: string;
+}
+
+const SESSION_LOCATION_DELIMITER = "\t";
+
 export interface CreateGroupOptions {
   /**
    * Working directory the group session starts in. tmux resolves the start
@@ -150,6 +158,80 @@ export function destroyGroup(name: string): void {
   } catch {
     // ignore
   }
+}
+
+export function listSessionLocations(): TmuxSessionLocation[] {
+  let output = "";
+  try {
+    output = runTmux(["list-sessions", "-F", [
+      "#{session_name}",
+      "#{session_group}",
+      "#{session_path}",
+    ].join(SESSION_LOCATION_DELIMITER)]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("no server running")) return [];
+    throw err;
+  }
+  return output
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [name, group, path] = line.split(SESSION_LOCATION_DELIMITER);
+      return { name: name || "", group: group || "", path: path || "" };
+    })
+    .filter((location) => location.name.length > 0);
+}
+
+/**
+ * Point a tmux session's working directory at `cwd`.
+ *
+ * tmux only exposes session cwd mutation through `attach-session -c`. The
+ * runner always invokes tmux with piped stdio, so the attach itself can never
+ * succeed (tmux reports "open terminal failed: not a terminal") and can never
+ * hijack the caller's terminal; tmux applies `-c` before it tries to attach, so
+ * the working directory is still updated. The failure is therefore expected and
+ * swallowed.
+ */
+export function setSessionWorkingDirectory(session: string, cwd: string): void {
+  if (!cwd) return;
+  try {
+    runTmux(["attach-session", "-c", tmuxFormatLiteral(cwd), "-t", session]);
+  } catch {
+    // Expected: attaching without a terminal fails after -c has been applied.
+  }
+}
+
+/**
+ * Keep every session in a tmux session group pointed at the project directory.
+ *
+ * `createGroup()` anchors the groups Projects creates, and `createWindow()`
+ * falls back to `#{session_path}`, but a session moved into a group outside the
+ * CLI (`tmux new-session -t <project> -s <peer>`) records the cwd of whatever
+ * shell ran that command — usually $HOME. tmux resolves the start directory of
+ * a window opened by an *attached* client from that session cwd, so grouped
+ * windows opened by hand still land outside the project until the group is
+ * realigned. Ungrouped sessions are left alone: their cwd belongs to whoever
+ * created them.
+ */
+export function alignGroupedSessionWorkingDirectories(session: string, cwd: string): string[] {
+  if (!session || !cwd) return [];
+  let locations: TmuxSessionLocation[];
+  try {
+    locations = listSessionLocations();
+  } catch {
+    return [];
+  }
+  const current = locations.find((location) => location.name === session);
+  if (!current || !current.group) return [];
+  const aligned: string[] = [];
+  for (const location of locations) {
+    if (location.group !== current.group) continue;
+    if (location.path === cwd) continue;
+    setSessionWorkingDirectory(location.name, cwd);
+    aligned.push(location.name);
+  }
+  return aligned;
 }
 
 export function listSessions(): TmuxSession[] {

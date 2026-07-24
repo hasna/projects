@@ -32,17 +32,40 @@ function parseFlag(args: string[], flag: string): string | null {
   return index >= 0 ? args[index + 1] ?? null : null;
 }
 
-function createTmuxMock(initial: Record<string, string[]> = {}) {
+interface TmuxMockOptions {
+  groups?: Record<string, string>;
+  paths?: Record<string, string>;
+}
+
+function createTmuxMock(initial: Record<string, string[]> = {}, options: TmuxMockOptions = {}) {
   const sessions = new Map<string, string[]>(
     Object.entries(initial).map(([name, windows]) => [name, [...windows]]),
   );
+  const groups = new Map<string, string>(Object.entries(options.groups ?? {}));
+  const paths = new Map<string, string>(Object.entries(options.paths ?? {}));
   const commands: string[][] = [];
   const runner = (args: string[]): string => {
     commands.push(args);
     if (args[0] === "list-sessions") {
+      if ((parseFlag(args, "-F") ?? "").includes("#{session_path}")) {
+        return Array.from(sessions.keys())
+          .map((name) => [name, groups.get(name) ?? "", paths.get(name) ?? ""].join("\t"))
+          .join("\n");
+      }
       return Array.from(sessions.entries())
         .map(([name, windows]) => `${name}::${windows.length}:0`)
         .join("\n");
+    }
+    if (args[0] === "display-message") {
+      const session = parseFlag(args, "-t");
+      return session ? paths.get(session) ?? "" : "";
+    }
+    if (args[0] === "attach-session") {
+      const session = parseFlag(args, "-t");
+      const cwd = parseFlag(args, "-c");
+      if (session && cwd) paths.set(session, cwd);
+      // Real tmux applies -c and then fails to attach without a terminal.
+      throw new Error("open terminal failed: not a terminal");
     }
     if (args[0] === "new-session") {
       const session = parseFlag(args, "-s");
@@ -75,7 +98,7 @@ function createTmuxMock(initial: Record<string, string[]> = {}) {
     if (args[0] === "send-keys") return "";
     throw new Error(`Unexpected tmux command: ${args.join(" ")}`);
   };
-  return { sessions, commands, runner };
+  return { sessions, groups, paths, commands, runner };
 }
 
 describe("workspace tmux runtime", () => {
@@ -133,4 +156,50 @@ describe("workspace tmux runtime", () => {
     expect(tmux.commands.some((args) => args[0] === "send-keys" && args.some((arg) => arg.includes("cd --")))).toBe(false);
   });
 
+  // Regression: hasna/projects#2 (duplicate of #1). `createGroup()`/`createWindow()`
+  // anchor the groups Projects itself creates, but a session moved into a group
+  // by hand (`tmux new-session -t <project> -s <peer>`) keeps the cwd of the
+  // shell that ran the move, so grouped windows opened from that peer still
+  // start in $HOME.
+  test("realigns grouped sessions on the project path after a group move", () => {
+    const tmux = createTmuxMock(
+      { "runtime-project": ["01", "02"], "runtime-project-grouped": ["01", "02"] },
+      {
+        groups: { "runtime-project": "runtime-project", "runtime-project-grouped": "runtime-project" },
+        paths: { "runtime-project": "/tmp/runtime-project", "runtime-project-grouped": "/home/hasna" },
+      },
+    );
+
+    const result = withTmuxCommandRunnerForTest(tmux.runner, () => applyWorkspaceTmux(workspace(), {
+      windows: [
+        { name: "01", detached: true },
+        { name: "02", detached: true },
+      ],
+      recordEvents: false,
+    }));
+
+    expect(result.success).toBe(true);
+    expect(tmux.paths.get("runtime-project-grouped")).toBe("/tmp/runtime-project");
+    expect(tmux.commands.filter((args) => args[0] === "attach-session")).toEqual([
+      ["attach-session", "-c", "/tmp/runtime-project", "-t", "runtime-project-grouped"],
+    ]);
+  });
+
+  test("does not touch the working directory of ungrouped sessions", () => {
+    const tmux = createTmuxMock(
+      { "runtime-project": ["01", "02"], other: ["01"] },
+      { paths: { "runtime-project": "/tmp/runtime-project", other: "/home/hasna" } },
+    );
+
+    withTmuxCommandRunnerForTest(tmux.runner, () => applyWorkspaceTmux(workspace(), {
+      windows: [
+        { name: "01", detached: true },
+        { name: "02", detached: true },
+      ],
+      recordEvents: false,
+    }));
+
+    expect(tmux.commands.some((args) => args[0] === "attach-session")).toBe(false);
+    expect(tmux.paths.get("other")).toBe("/home/hasna");
+  });
 });
