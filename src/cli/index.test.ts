@@ -87,6 +87,21 @@ describe("project-first CLI surface", () => {
     }
   });
 
+  test("subcommand --help/-h print commander usage instead of invoking the prompt agent", () => {
+    for (const helpFlag of ["--help", "-h"]) {
+      const result = runProjects(["create", helpFlag]);
+      const stdout = text(result.stdout);
+
+      expect(result.exitCode).toBe(0);
+      expect(stdout).toContain("Usage: projects create [options]");
+      expect(stdout).toContain("Create or plan a project anywhere on disk");
+      // Regression guard: prompt-agent output describes "parameters" in prose and
+      // never emits a commander usage banner. If routing regresses, the help flag
+      // is treated as a natural-language prompt and this banner disappears.
+      expect(stdout).toContain("--name <name>");
+    }
+  });
+
   test("dashboard validate emits structured JSON errors for malformed input", () => {
     const root = mkdtempSync(join(tmpdir(), "projects-dashboard-invalid-"));
     const invalidFile = join(root, "invalid.json");
