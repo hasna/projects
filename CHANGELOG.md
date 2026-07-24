@@ -4,6 +4,27 @@ All notable changes to `@hasna/projects` are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.93]
+
+### Fixed
+
+- **Grouped tmux sessions no longer lose the project working directory**
+  ([#1](https://github.com/hasna/projects/issues/1)). `createGroup()` created
+  the group session with neither a start directory nor a group target, so the
+  session was anchored in the working directory of whatever process created it
+  (typically `/home/hasna`). Because tmux resolves a new window's start
+  directory from the client's cwd — and grouped sessions share their window
+  list — every window opened in the group landed in `/home/hasna` instead of
+  the project path. `createGroup(name, { cwd, windowName, group })` now passes
+  `-c <project path>` and joins an existing group with `-t` (omitting `-n`,
+  which tmux rejects alongside `-t`).
+- **`createWindow()` falls back to the session's own start directory.** When no
+  explicit `cwd` is supplied, the window start directory is now resolved from
+  `#{session_path}` (new exported `sessionPath()` helper) instead of silently
+  inheriting the CLI process cwd. The resolved path is escaped through the same
+  tmux format-literal guard as explicit paths, and window creation still
+  succeeds when the lookup fails.
+
 ## [0.1.92]
 
 ### Added

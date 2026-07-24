@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { createSession, createWindow, restartSession } from "./tmux.js";
+import { createGroup, createSession, createWindow, restartSession, withTmuxCommandRunnerForTest } from "./tmux.js";
 
 function installFakeTmux(dir: string): string {
   const logPath = join(dir, "tmux-argv.jsonl");
@@ -126,5 +126,78 @@ describe("tmux shell safety", () => {
         ["new-window", "-d", "-t", "format-safe-session:3", "-n", "editor", "-c", cwd.replace(/#/g, "##")],
       ]);
     });
+  });
+});
+
+describe("tmux project working directory", () => {
+  test("createGroup anchors the group session in the project directory", () => {
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      return "";
+    }, () => createGroup("opensource", { cwd: "/home/hasna/workspace/hasna/opensource", windowName: "opensource" }));
+
+    expect(commands).toEqual([
+      ["new-session", "-d", "-s", "opensource", "-n", "opensource", "-c", "/home/hasna/workspace/hasna/opensource"],
+    ]);
+  });
+
+  test("createGroup joins an existing tmux group with the project directory and without -n", () => {
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      return "";
+    }, () => createGroup("open-todos", {
+      group: "opensource",
+      cwd: "/home/hasna/workspace/hasna/opensource/open-todos",
+      windowName: "open-todos",
+    }));
+
+    // tmux rejects "-n" together with "-t" ("command or window name given with target").
+    expect(commands).toEqual([
+      ["new-session", "-d", "-s", "open-todos", "-t", "opensource", "-c", "/home/hasna/workspace/hasna/opensource/open-todos"],
+    ]);
+  });
+
+  test("createWindow without an explicit cwd falls back to the session start directory", () => {
+    const projectPath = "/home/hasna/workspace/hasna/opensource/open-todos";
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      if (args[0] === "display-message") return projectPath;
+      return "";
+    }, () => createWindow("opensource", "open-todos", undefined, { detached: true }));
+
+    expect(commands).toEqual([
+      ["display-message", "-p", "-t", "opensource", "#{session_path}"],
+      ["new-window", "-d", "-t", "opensource", "-n", "open-todos", "-c", projectPath],
+    ]);
+  });
+
+  test("createWindow keeps working when the session start directory cannot be resolved", () => {
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      if (args[0] === "display-message") throw new Error("no server running on /tmp/tmux-1000/default");
+      return "";
+    }, () => createWindow("opensource", "open-todos", undefined, { detached: true }));
+
+    expect(commands).toEqual([
+      ["display-message", "-p", "-t", "opensource", "#{session_path}"],
+      ["new-window", "-d", "-t", "opensource", "-n", "open-todos"],
+    ]);
+  });
+
+  test("createWindow escapes a session start directory containing tmux format syntax", () => {
+    const commands: string[][] = [];
+    withTmuxCommandRunnerForTest((args) => {
+      commands.push(args);
+      if (args[0] === "display-message") return "/tmp/proj#(touch /tmp/pwned)";
+      return "";
+    }, () => createWindow("opensource", "open-todos", undefined, { detached: true }));
+
+    expect(commands[1]).toEqual([
+      "new-window", "-d", "-t", "opensource", "-n", "open-todos", "-c", "/tmp/proj##(touch /tmp/pwned)",
+    ]);
   });
 });

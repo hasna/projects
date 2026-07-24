@@ -85,6 +85,20 @@ export interface TmuxGroup {
   windows: number;
 }
 
+export interface CreateGroupOptions {
+  /**
+   * Working directory the group session starts in. tmux resolves the start
+   * directory of a window from the session it is created in, so a group
+   * session without a project path leaves every grouped window in the cwd of
+   * whichever process happened to create the group.
+   */
+  cwd?: string;
+  /** Name for the initial window. Ignored when joining an existing group (tmux rejects -n with -t). */
+  windowName?: string;
+  /** Existing tmux session group to join instead of anchoring a new one. */
+  group?: string;
+}
+
 export function listGroups(): TmuxGroup[] {
   const sessions = listSessions();
   const groupMap = new Map<string, TmuxGroup>();
@@ -100,11 +114,33 @@ export function listGroups(): TmuxGroup[] {
   return Array.from(groupMap.values());
 }
 
-export function createGroup(name: string): void {
+export function createGroup(name: string, options: CreateGroupOptions = {}): void {
+  const args = ["new-session", "-d", "-s", name];
+  if (options.group) {
+    // tmux refuses "-n" together with "-t"; the grouped session shares the
+    // window list of the group it joins.
+    args.push("-t", options.group);
+  } else if (options.windowName) {
+    args.push("-n", options.windowName);
+  }
+  if (options.cwd) args.push("-c", tmuxFormatLiteral(options.cwd));
   try {
-    runTmux(["new-session", "-d", "-s", name]);
+    runTmux(args);
   } catch {
     // Group already exists
+  }
+}
+
+/**
+ * Working directory a tmux session was started in, used as the fallback start
+ * directory for windows created without an explicit cwd.
+ */
+export function sessionPath(session: string): string | undefined {
+  try {
+    const value = runTmux(["display-message", "-p", "-t", session, "#{session_path}"]);
+    return value || undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -202,10 +238,14 @@ export function createSession(name: string, projectPath?: string, windowName?: s
 
 export function createWindow(session: string, name: string, command?: string, options: CreateWindowOptions = {}): void {
   const target = typeof options.index === "number" ? `${session}:${options.index}` : session;
+  // Without "-c" tmux starts the window in the working directory of the client
+  // issuing the command, not the session's. Fall back to the session's own
+  // start directory so project windows never silently land in the CLI's cwd.
+  const cwd = options.cwd || sessionPath(session);
   const args = ["new-window"];
   if (options.detached === true) args.push("-d");
   args.push("-t", target, "-n", name);
-  if (options.cwd) args.push("-c", tmuxFormatLiteral(options.cwd));
+  if (cwd) args.push("-c", tmuxFormatLiteral(cwd));
   if (command) args.push(wrapInteractiveCommand(command));
   runTmux(args);
 }
