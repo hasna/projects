@@ -68,8 +68,15 @@ jobs:
           fi
           echo "npm ${have} meets the ${need} minimum for trusted publishing"
 
-      - name: Install locked dependencies with release-age quarantine
-        run: bun install --frozen-lockfile --minimum-release-age 604800
+      # --minimum-release-age is deliberately NOT passed here. A frozen lockfile
+      # performs no resolution, so the age filter has nothing left to filter and
+      # the flag is a measured no-op: `bun install --frozen-lockfile
+      # --minimum-release-age 999999999` exits 0, while the same command without
+      # --frozen-lockfile exits 1 with "blocked by minimum-release-age". The
+      # quarantine is real, but it belongs at lockfile-UPDATE time; naming it
+      # here promised a protection this step cannot deliver.
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
 
       - name: Bind the tag to the package version
         id: version
@@ -95,6 +102,26 @@ jobs:
             exit 1
           fi
           echo "tag ${GITHUB_REF_NAME} agrees with package.json ${pkg_version}"
+
+      # Tags are not protected by this repository's main-branch ruleset. Bind
+      # the release to reviewed history in the workflow itself so a tag on an
+      # unmerged branch cannot publish different code.
+      #
+      # The sibling repositories carry `if: github.event_name == 'push'` on this
+      # step, because they also expose a workflow_dispatch trigger and gate the
+      # publish step the same way. This workflow has neither: `push: tags` is the
+      # only trigger and no step here is event-gated, so the condition would be
+      # vacuous today and a fail-open tomorrow — adding any further trigger would
+      # silence this guard while the ungated publish step below still ran. Leave
+      # it unconditional unless the publish step gains the same condition.
+      - name: Require the release commit on protected main
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" "refs/remotes/origin/main"; then
+            echo "::error::release commit ${GITHUB_SHA} is not contained in protected main"
+            exit 1
+          fi
+          echo "release commit ${GITHUB_SHA} is contained in protected main"
 
       # npm versions are immutable, so a version that already exists can never
       # be replaced by this run. Failing here names that plainly instead of
